@@ -1,0 +1,18 @@
+{
+  "name": "p2pgpu-worker",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@webgpu/types": "*",
+    "typescript": "*",
+    "vite": "*"
+  }
+}

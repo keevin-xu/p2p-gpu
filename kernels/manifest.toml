@@ -1,0 +1,63 @@
+# Kernel manifest — the registry the coordinator loads at startup.
+#
+# Format and authoring rules: docs/KERNELS.md
+#
+# ┌─ BEFORE ADDING A KERNEL ────────────────────────────────────────────────┐
+# │ Compute FLOP-per-output-byte. It MUST exceed 1e6 (rule R5), or be       │
+# │ redesignable to exceed it via on-node accumulation. Record the          │
+# │ calculation in `r5_ratio` / `r5_note` AND as a DECISIONS.md entry,      │
+# │ written BEFORE the WGSL (rule R9 / DL1).                               │
+# │                                                                         │
+# │ Below that bar the workload is transfer-bound and adding nodes will     │
+# │ not help. See RESEARCH.md §2 for the derivation.                        │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# `determinism` decides how the validator compares replicas. Getting it wrong
+# causes honest workers to be blacklisted — a miserable bug to trace (R6).
+# When unsure, declare the weaker guarantee.
+#   "exact"       → integer-only result path; bitwise comparison valid
+#   "tolerant"    → float; requires rel_eps / abs_eps, both justified
+#   "statistical" → Monte Carlo; distributional consistency check
+
+# ── Workload B — added in Phase 1, step 1.7 ──────────────────────────────
+# Integer-exact, tiny output, trivially clears R5. Deliberately the first
+# kernel: it lets the whole pipeline be debugged without the path tracer's
+# complexity confounding it.
+#
+# [kernels.brute_search_v1]
+# file            = "brute_search.wgsl"
+# entry_point     = "main"
+# workgroup_size  = [256, 1, 1]
+# determinism     = "exact"
+# output_bytes    = 32
+# output_dtype    = "u32"
+# param_layout    = "BruteSearchParams"
+# accumulates     = false
+# flop_per_unit   = 128
+# r5_ratio        = 4.0e8
+# r5_note         = "..."
+
+# ── Workload A — added in Phase 5, step 5.9 ──────────────────────────────
+# Fails R5 naively (~6.3e4, 16x short). Clears it only via accumulation.
+# `min_iterations` is DERIVED from the step 5.1 calculation, not guessed.
+#
+# [kernels.pathtrace_tile_v1]
+# file            = "pathtrace_tile.wgsl"
+# entry_point     = "main"
+# workgroup_size  = [8, 8, 1]
+# determinism     = "statistical"
+# output_bytes    = 65536
+# output_dtype    = "f32"
+# param_layout    = "PathTraceParams"
+# accumulates     = true
+# min_iterations  = 100000
+# flop_per_unit   = 1000
+# r5_ratio        = 6.3e6
+# r5_note         = "..."
+
+# ── Calibration — added in Phase 0/1 ─────────────────────────────────────
+# The join-time benchmark kernel (step 0.5). Compute-bound with a known FLOP
+# count; its score feeds the adaptive sizer (step 2.10).
+#
+# [kernels.calibrate_v1]
+# ...
