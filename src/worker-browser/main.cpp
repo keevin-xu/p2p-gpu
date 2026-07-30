@@ -2,36 +2,38 @@
 // Task loop runs off the main thread (Phase 1 step 1.24) — background tabs
 // throttle the main thread and rAF stops firing.
 //
-// Step 0.6: the browser twin of worker-native's smoke test. Same seam, same
-// kernel_host.cpp, same WGSL file — the ONLY difference is which platform/
-// translation unit got linked. That is the dual-target thesis (R2), and if
-// this file ever needs an #ifdef, the thesis is in trouble.
+// Steps 0.6/0.9: the browser twin of worker-native. Same seam, same
+// kernel_host.cpp, same smoke.cpp, same WGSL bytes — the ONLY difference is
+// which platform/ translation unit got linked. That is the dual-target thesis
+// (R2), and if this file ever needs an #ifdef, the thesis is in trouble.
+//
+// The verification logic is deliberately NOT here. It lives in worker-core so
+// both targets check results with identical code; otherwise step 0.9 would only
+// prove that two hand-written verifiers agree.
 //
 // ── R7 ───────────────────────────────────────────────────────────────────
-// NO GPU WORK HAPPENS AT STARTUP. main() only registers a callback; the run
-// begins when the user clicks. Explicit opt-in is a hard rule from day one,
-// not polish (Coinhive, RESEARCH.md §4). The rest of the R7 surface —
-// contributing indicator, throttle, instant stop — lands in step 1.23.
+// NO GPU WORK HAPPENS AT STARTUP. main() only logs readiness; the run begins
+// when the user clicks. Explicit opt-in is a hard rule from day one, not polish
+// (Coinhive, RESEARCH.md §4). The rest of the R7 surface — contributing
+// indicator, throttle, instant stop — lands in step 1.23.
 
-#include <cstdio>
 #include <fstream>
-#include <numeric>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include <emscripten/emscripten.h>
 
-#include "p2pgpu/worker/kernel_host.hpp"
 #include "p2pgpu/worker/platform.hpp"
+#include "p2pgpu/worker/smoke.hpp"
 
 namespace {
 
 std::string ReadFile(const std::string& path) {
     // The WGSL is embedded into the module by --embed-file at build time, so
-    // ordinary file I/O works. Step 1.12 replaces this with an HTTP fetch of
-    // the kernel by id from the coordinator; the *bytes* stay identical either
-    // way, which is what keeps step 0.9's cross-target comparison meaningful.
+    // ordinary file I/O works and the browser sees the SAME BYTES the native
+    // worker reads from disk — which is what makes step 0.9's comparison
+    // meaningful. Step 1.12 replaces this with an HTTP fetch by kernel id.
     std::ifstream f(path);
     if (!f) {
         return {};
@@ -41,12 +43,18 @@ std::string ReadFile(const std::string& path) {
     return ss.str();
 }
 
-int RunSmokeTest() {
+std::string g_report;   // outlives the call; ui.js reads it via the pointer below
+
+}  // namespace
+
+// Called from web/ui.js on the R7 opt-in click. Not called by main().
+extern "C" EMSCRIPTEN_KEEPALIVE int p2pgpu_run_smoke_test() {
     namespace platform = p2pgpu::worker::platform;
 
-    const std::string wgsl = ReadFile("/kernels/smoke_double.wgsl");
-    if (wgsl.empty()) {
-        platform::Log("error", "could not read embedded kernel");
+    const std::string double_src = ReadFile("/kernels/smoke_double.wgsl");
+    const std::string hash_src   = ReadFile("/kernels/smoke_hash.wgsl");
+    if (double_src.empty() || hash_src.empty()) {
+        platform::Log("error", "could not read embedded kernels");
         return 1;
     }
 
@@ -57,56 +65,29 @@ int RunSmokeTest() {
     }
 
     const platform::AdapterDescription info = platform::DescribeAdapter(ctx);
+    platform::Log("info", "target  : browser");
     platform::Log("info", "adapter : " + info.vendor + " / " + info.architecture +
                               " / " + info.device);
     platform::Log("info", "backend : " + info.backend);
 
-    // Identical to worker-native: 1000 elements against a 256 workgroup, so
-    // the dispatch overhangs and the kernel's bounds check is exercised.
-    std::vector<float> input(1000);
-    std::iota(input.begin(), input.end(), 1.0F);
-
-    const auto result =
-        p2pgpu::worker::RunUnaryF32Kernel(ctx, wgsl, "main", input, 256);
-    if (!result) {
-        platform::Log("error", "kernel execution failed");
-        platform::ReleaseDevice(ctx);
-        return 1;
-    }
-
-    // THE READBACK ASSERTION. A shader that appears to run but writes nothing
-    // is the most common early WebGPU bug and looks exactly like success if
-    // you only check return codes.
-    std::size_t mismatches = 0;
-    for (std::size_t i = 0; i < input.size(); ++i) {
-        if ((*result)[i] != input[i] * 2.0F) {
-            if (mismatches < 5) {
-                platform::Log("error", "  [" + std::to_string(i) + "] expected " +
-                                           std::to_string(input[i] * 2.0F) + " got " +
-                                           std::to_string((*result)[i]));
-            }
-            ++mismatches;
-        }
-    }
-
+    const std::vector<p2pgpu::worker::KernelSource> kernels{
+        {"smoke_double", double_src},
+        {"smoke_hash", hash_src},
+    };
+    const auto report = p2pgpu::worker::RunSmokeSuite(ctx, kernels);
     platform::ReleaseDevice(ctx);
 
-    if (mismatches != 0) {
-        platform::Log("error", "FAIL: " + std::to_string(mismatches) + "/" +
-                                   std::to_string(input.size()) + " elements wrong");
-        return 1;
-    }
-    platform::Log("info", "PASS: " + std::to_string(input.size()) + "/" +
-                              std::to_string(input.size()) +
-                              " elements correct (out[i] == in[i] * 2.0)");
-    return 0;
+    g_report = "target  : browser\nadapter : " + info.vendor + " / " +
+               info.architecture + " / " + info.device + "\nbackend : " +
+               info.backend + "\n" + report.report;
+
+    platform::Log("info", report.passed ? "PASS" : "FAIL");
+    return report.passed ? 0 : 1;
 }
 
-}  // namespace
-
-// Called from web/ui.js when the user clicks Start (R7). Not called by main().
-extern "C" EMSCRIPTEN_KEEPALIVE int p2pgpu_run_smoke_test() {
-    return RunSmokeTest();
+/// The canonical report text, for ui.js to POST back for cross-target diffing.
+extern "C" EMSCRIPTEN_KEEPALIVE const char* p2pgpu_report() {
+    return g_report.c_str();
 }
 
 int main() {

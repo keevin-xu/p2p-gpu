@@ -131,6 +131,7 @@ add_library(p2pgpu-worker-core STATIC
     src/worker-core/task_loop.cpp
     src/worker-core/kernel_host.cpp
     src/worker-core/accumulator.cpp
+    src/worker-core/smoke.cpp              # portable: shared 0.6/0.8/0.9 checks
     src/worker-core/transport.cpp          # portable: libdatachannel API on both
 )
 target_include_directories(p2pgpu-worker-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -232,9 +233,14 @@ else()
         # Embed the WGSL so the browser reads the SAME BYTES as worker-native,
         # which is what makes step 0.9's cross-target comparison mean anything.
         # Step 1.12 replaces this with an HTTP fetch from the coordinator.
-        "--embed-file" "${CMAKE_CURRENT_SOURCE_DIR}/kernels/smoke_double.wgsl@/kernels/smoke_double.wgsl"
+        # SHELL: is required, not decoration. CMake de-duplicates repeated link
+        # options, so a bare second `--embed-file` gets dropped and its path is
+        # left orphaned — emcc then reports it as a missing input file. SHELL:
+        # keeps each flag glued to its own argument.
+        "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/kernels/smoke_double.wgsl@/kernels/smoke_double.wgsl"
+        "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/kernels/smoke_hash.wgsl@/kernels/smoke_hash.wgsl"
         # p2pgpu_run_smoke_test is called from ui.js on the R7 opt-in click.
-        -sEXPORTED_FUNCTIONS=_main,_p2pgpu_run_smoke_test
+        -sEXPORTED_FUNCTIONS=_main,_p2pgpu_run_smoke_test,_p2pgpu_report
         -sEXPORTED_RUNTIME_METHODS=ccall,cwrap
         # ASYNCIFY yields between dispatches (R4) without blocking. NOTE its
         # tension with step 1.24's -sPROXY_TO_PTHREAD: with the task loop on its

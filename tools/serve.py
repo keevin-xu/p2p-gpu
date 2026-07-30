@@ -27,6 +27,40 @@ import socketserver
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    # Where POSTed reports land. Set from main() so it does not depend on the
+    # served directory.
+    results_dir = "results"
+
+    def do_POST(self):  # noqa: N802 - name fixed by BaseHTTPRequestHandler
+        """Capture the browser's step-0.9 report so it can be diffed offline.
+
+        DEVELOPMENT HARNESS ONLY. Nothing in the real system posts anything to
+        the coordinator this way; this exists so a cross-target comparison does
+        not require copying 8000 hex characters out of a browser console by
+        hand. It is unauthenticated and writes to a fixed filename, which is
+        fine for a loopback-only dev server and would not be anywhere else.
+        """
+        if self.path != "/report":
+            self.send_error(404)
+            return
+
+        length = int(self.headers.get("Content-Length", 0))
+        # Bound it. Even a dev tool should not let a stray request allocate
+        # arbitrary memory — the report is a few KB.
+        if length <= 0 or length > 4 * 1024 * 1024:
+            self.send_error(413)
+            return
+
+        body = self.rfile.read(length)
+        os.makedirs(self.results_dir, exist_ok=True)
+        path = os.path.join(self.results_dir, "0.9-browser.txt")
+        with open(path, "wb") as f:
+            f.write(body)
+        print(f"  wrote {path} ({len(body)} bytes)")
+
+        self.send_response(204)
+        self.end_headers()
+
     def end_headers(self):
         # Cross-origin isolation (docs/RISKS.md §1).
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
@@ -45,7 +79,11 @@ def main() -> int:
     parser.add_argument("--dir", default="build/wasm/web",
                         help="directory to serve (default: build/wasm/web)")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--results", default="results",
+                        help="where POSTed reports land (default: results)")
     args = parser.parse_args()
+
+    Handler.results_dir = os.path.abspath(args.results)
 
     if not os.path.isdir(args.dir):
         print(f"error: {args.dir} does not exist — run `cmake --build build/wasm` first")

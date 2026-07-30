@@ -6,20 +6,19 @@
 // Phase 4 step 4.19 packages this so a borrowed machine can join with one
 // command (docs/RISKS.md R-D).
 //
-// Right now it is step 0.8's harness: acquire a device, run the smoke kernel,
-// and ASSERT THE READBACK. The assertion is the point — a shader that appears
-// to run but writes nothing is the most common early WebGPU bug, and it looks
-// exactly like success if you only check return codes.
+// Right now it is the native side of steps 0.8/0.9: load the WGSL, run the
+// shared smoke suite, write the report. NOTE THE VERIFICATION IS NOT HERE — it
+// lives in worker-core/smoke.cpp so the browser runs byte-identical checking
+// code. That is what makes step 0.9's cross-target comparison meaningful.
 
 #include <cstdio>
 #include <fstream>
-#include <numeric>
 #include <sstream>
 #include <string>
 #include <vector>
 
-#include "p2pgpu/worker/kernel_host.hpp"
 #include "p2pgpu/worker/platform.hpp"
+#include "p2pgpu/worker/smoke.hpp"
 
 namespace {
 
@@ -35,17 +34,15 @@ std::string ReadFile(const std::string& path) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main() {
     namespace platform = p2pgpu::worker::platform;
 
     // CLI11 argument handling arrives with the real task loop in step 1.22.
-    const std::string kernel_path =
-        argc > 1 ? std::string{argv[1]}
-                 : std::string{P2PGPU_KERNEL_DIR} + "/smoke_double.wgsl";
-
-    const std::string wgsl = ReadFile(kernel_path);
-    if (wgsl.empty()) {
-        std::fprintf(stderr, "could not read kernel: %s\n", kernel_path.c_str());
+    const std::string dir = P2PGPU_KERNEL_DIR;
+    const std::string double_src = ReadFile(dir + "/smoke_double.wgsl");
+    const std::string hash_src   = ReadFile(dir + "/smoke_hash.wgsl");
+    if (double_src.empty() || hash_src.empty()) {
+        std::fprintf(stderr, "could not read kernels from %s\n", dir.c_str());
         return 1;
     }
 
@@ -57,46 +54,21 @@ int main(int argc, char** argv) {
     }
 
     const platform::AdapterDescription info = platform::DescribeAdapter(ctx);
+    std::printf("target  : native\n");
     std::printf("adapter : %s / %s / %s\n", info.vendor.c_str(),
                 info.architecture.c_str(), info.device.c_str());
     std::printf("backend : %s\n", info.backend.c_str());
 
-    // 1000 elements deliberately does NOT divide the 256 workgroup size, so the
-    // dispatch overhangs and the kernel's bounds check gets exercised.
-    std::vector<float> input(1000);
-    std::iota(input.begin(), input.end(), 1.0F);
-
-    const auto result =
-        p2pgpu::worker::RunUnaryF32Kernel(ctx, wgsl, "main", input, 256);
-    if (!result) {
-        std::fprintf(stderr, "kernel execution failed\n");
-        platform::ReleaseDevice(ctx);
-        return 1;
-    }
-
-    // THE READBACK ASSERTION (steps 0.6 / 0.8). Exact comparison is valid here:
-    // multiplying by 2.0 is exactly representable in binary floating point, so
-    // this is not an R6 tolerance case. Genuine R6 divergence needs real
-    // arithmetic across differing vendors.
-    std::size_t mismatches = 0;
-    for (std::size_t i = 0; i < input.size(); ++i) {
-        if ((*result)[i] != input[i] * 2.0F) {
-            if (mismatches < 5) {
-                std::fprintf(stderr, "  [%zu] expected %.1f got %.1f\n", i,
-                             static_cast<double>(input[i] * 2.0F),
-                             static_cast<double>((*result)[i]));
-            }
-            ++mismatches;
-        }
-    }
-
+    const std::vector<p2pgpu::worker::KernelSource> kernels{
+        {"smoke_double", double_src},
+        {"smoke_hash", hash_src},
+    };
+    const auto report = p2pgpu::worker::RunSmokeSuite(ctx, kernels);
     platform::ReleaseDevice(ctx);
 
-    if (mismatches != 0) {
-        std::fprintf(stderr, "FAIL: %zu/%zu elements wrong\n", mismatches, input.size());
-        return 1;
-    }
-    std::printf("PASS: %zu/%zu elements correct (out[i] == in[i] * 2.0)\n",
-                input.size(), input.size());
-    return 0;
+    // Report to stdout (redirect it to a file for the 0.9 comparison), verdict
+    // to stderr so a human sees it without polluting the artifact.
+    std::fputs(report.report.c_str(), stdout);
+    std::fprintf(stderr, "%s\n", report.passed ? "PASS" : "FAIL");
+    return report.passed ? 0 : 1;
 }

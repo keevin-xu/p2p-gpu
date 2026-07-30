@@ -9,6 +9,7 @@
 // the source text is passed IN. Keeping acquisition out of worker-core is what
 // stops a `#ifdef __EMSCRIPTEN__` appearing in portable code.
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -19,23 +20,31 @@
 
 namespace p2pgpu::worker {
 
-/// Run a single-dispatch f32 -> f32 compute kernel and read the result back.
+/// Run a single-dispatch element-wise compute kernel and read the result back.
 ///
-/// Step 0.8's smoke test: the narrowest thing that proves a WGSL compute
+/// Deliberately **untyped** — it moves bytes. The kernel's WGSL declares what
+/// those bytes mean, and `OutputSpec.dtype` carries it on the wire
+/// (`PROTOCOL.md`). Baking f32 in here would mean a near-duplicate function per
+/// dtype, and `DType` already lists five.
+///
+/// Step 0.8/0.9's smoke path: the narrowest thing that proves a WGSL compute
 /// pipeline works end to end on a target — module, pipeline, bind group,
 /// dispatch, copy, map, readback. `worker-native` and `worker-browser` call
-/// this with the SAME WGSL file, which is what makes step 0.9's cross-target
-/// output comparison meaningful.
+/// this with the SAME WGSL bytes, which is what makes step 0.9's cross-target
+/// comparison mean anything.
 ///
 /// Expects the kernel to bind `input` at @binding(0) and `output` at
-/// @binding(1) in @group(0), with the given 1-D workgroup size.
+/// @binding(1) in @group(0), with the given 1-D workgroup size. Output is the
+/// same byte length as input. `element_count` drives dispatch sizing and is the
+/// kernel's own element count, not a byte count.
 ///
 /// Returns std::nullopt on any failure; failures are logged through the seam.
-[[nodiscard]] std::optional<std::vector<float>> RunUnaryF32Kernel(
+[[nodiscard]] std::optional<std::vector<std::byte>> RunUnaryKernel(
     const platform::GpuContext& ctx,
     std::string_view wgsl_source,
     std::string_view entry_point,
-    std::span<const float> input,
+    std::span<const std::byte> input,
+    std::uint32_t element_count,
     std::uint32_t workgroup_size);
 
 }  // namespace p2pgpu::worker

@@ -90,6 +90,18 @@
         }
         startBtn.disabled = false;
         startBtn.textContent = "Run again";
+
+        // Step 0.9: POST the canonical report so it can be diffed against the
+        // native run byte-for-byte. Purely a development convenience — the dev
+        // server writes it to results/. Nothing in the real system does this,
+        // and a failure here must not affect the PASS/FAIL above.
+        var report = worker.ccall("p2pgpu_report", "string", [], []);
+        fetch("/report", { method: "POST", body: report }).then(function () {
+          append("[dev] report posted to results/0.9-browser.txt");
+        }).catch(function () {
+          append("[dev] report POST failed (serve.py not running?) — " +
+                 "copy the text above manually");
+        });
       });
   });
 })();

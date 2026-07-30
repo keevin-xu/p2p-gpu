@@ -74,15 +74,16 @@ void MapThunk(WGPUMapAsyncStatus status, WGPUStringView, void* ud, void*) {
 
 }  // namespace
 
-std::optional<std::vector<float>> RunUnaryF32Kernel(
+std::optional<std::vector<std::byte>> RunUnaryKernel(
     const platform::GpuContext& ctx,
     std::string_view wgsl_source,
     std::string_view entry_point,
-    std::span<const float> input,
+    std::span<const std::byte> input,
+    std::uint32_t element_count,
     std::uint32_t workgroup_size) {
 
-    if (!ctx.valid() || input.empty() || workgroup_size == 0) {
-        Log("error", "RunUnaryF32Kernel: invalid arguments");
+    if (!ctx.valid() || input.empty() || element_count == 0 || workgroup_size == 0) {
+        Log("error", "RunUnaryKernel: invalid arguments");
         return std::nullopt;
     }
 
@@ -207,8 +208,7 @@ std::optional<std::vector<float>> RunUnaryF32Kernel(
 
         // Round up so the tail elements get a thread. The kernel bounds-checks
         // the overhang against arrayLength (K1).
-        const auto count = static_cast<std::uint32_t>(input.size());
-        const std::uint32_t groups = (count + workgroup_size - 1) / workgroup_size;
+        const std::uint32_t groups = (element_count + workgroup_size - 1) / workgroup_size;
         wgpuComputePassEncoderDispatchWorkgroups(pass.get(), groups, 1, 1);
         wgpuComputePassEncoderEnd(pass.get());
     }
@@ -256,8 +256,9 @@ std::optional<std::vector<float>> RunUnaryF32Kernel(
 
     // Size is ours (we allocated it), not attacker-supplied, so this is a
     // bounded copy out of our own staging buffer.
-    const std::span<const float> mapped_view{static_cast<const float*>(mapped), input.size()};
-    std::vector<float> result(input.size());
+    const std::span<const std::byte> mapped_view{static_cast<const std::byte*>(mapped),
+                                                 byte_size};
+    std::vector<std::byte> result(byte_size);
     std::ranges::copy(mapped_view, result.begin());
 
     wgpuBufferUnmap(stage_buf.get());
