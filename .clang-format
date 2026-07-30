@@ -1,0 +1,11 @@
+# Enforced in CI. Do not hand-format — run clang-format -i.
+BasedOnStyle: Google
+Standard: c++20
+ColumnLimit: 100
+IndentWidth: 4
+AccessModifierOffset: -2
+PointerAlignment: Left
+DerivePointerAlignment: false
+AllowShortFunctionsOnASingleLine: Empty
+AlwaysBreakTemplateDeclarations: Yes
+IncludeBlocks: Regroup

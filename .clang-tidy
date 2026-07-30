@@ -1,0 +1,37 @@
+# Warnings are errors. Suppressions need an inline comment explaining why
+# (docs/CONVENTIONS.md §3).
+#
+# The cppcoreguidelines pointer-arithmetic and bounds checks are load-bearing
+# here, not style preferences: they are the automated half of rule R11's ban
+# on raw pointer arithmetic in code that touches network bytes.
+
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  concurrency-*,
+  cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  cppcoreguidelines-pro-bounds-constant-array-index,
+  cppcoreguidelines-pro-type-reinterpret-cast,
+  cppcoreguidelines-pro-type-cstyle-cast,
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-narrowing-conversions,
+  cppcoreguidelines-slicing,
+  misc-*,
+  modernize-*,
+  performance-*,
+  readability-*,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -misc-non-private-member-variables-in-classes
+
+WarningsAsErrors: '*'
+
+# Our headers only. The negative lookahead is load-bearing: a bare
+# '.*/(include|src|tests|fuzz)/.*' also matches vcpkg_installed/**/include/**,
+# which combined with WarningsAsErrors '*' turns every spdlog, flatbuffers, and
+# uWebSockets header into a build failure. Also excludes the build tree, where
+# flatc's generated headers live (R3) and which we neither write nor fix.
+HeaderFilterRegex: '^(?!.*(vcpkg_installed|/build/|/generated/)).*/(include|src|tests|fuzz)/.*$'
+FormatStyle: file

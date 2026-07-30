@@ -1,0 +1,53 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "p2pgpu",
+  "version": "0.1.0",
+  "description": "WebGPU volunteer-compute grid",
+
+  "$comment": [
+    "PINNING (D-0013). The builtin-baseline below IS the version pin — it fixes",
+    "the entire dependency graph, transitive deps included, to one vcpkg commit.",
+    "An overrides[] block is deliberately NOT used: it pins only direct deps and",
+    "survives a baseline bump, which is how you get direct deps held back while",
+    "their transitive deps move. The resolved versions are recorded in D-0013.",
+    "Updating dependencies = bump this one SHA, deliberately, as one diff.",
+    "",
+    "There is NO default-features here on purpose. Every preset states its",
+    "features explicitly via VCPKG_MANIFEST_FEATURES, because the wasm preset",
+    "must NOT drag in uwebsockets/libdatachannel/sqlite3/blake3 for the",
+    "wasm32-emscripten triplet.",
+    "",
+    "Adding anything not in the CONVENTIONS.md §10 baseline requires a",
+    "DECISIONS.md entry and human sign-off (DL5).",
+    "",
+    "NOT here, by necessity — both come via FetchContent and need their own",
+    "pins, as the baseline does not cover them:",
+    "  wgpu-native      : no vcpkg port; use the prebuilt release binaries",
+    "  datachannel-wasm : browser-side twin of libdatachannel"
+  ],
+
+  "dependencies": [
+    "flatbuffers",
+    "spdlog",
+    "cli11",
+    "stduuid"
+  ],
+
+  "features": {
+    "native": {
+      "description": "Coordinator and native worker (not built for wasm)",
+      "dependencies": [
+        "libdatachannel",
+        "uwebsockets",
+        "sqlite3",
+        "blake3"
+      ]
+    },
+    "tests": {
+      "description": "Test suite",
+      "dependencies": ["catch2"]
+    }
+  },
+
+  "builtin-baseline": "827a2e1203bc19941126c657166da44f2623acc4"
+}

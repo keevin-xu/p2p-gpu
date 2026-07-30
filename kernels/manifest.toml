@@ -37,7 +37,7 @@
 # r5_ratio        = 4.0e8
 # r5_note         = "..."
 
-# ── Workload A — added in Phase 5, step 5.9 ──────────────────────────────
+# ── Workload A — added in Phase 5, step 5.10 ─────────────────────────────
 # Fails R5 naively (~6.3e4, 16x short). Clears it only via accumulation.
 # `min_iterations` is DERIVED from the step 5.1 calculation, not guessed.
 #
@@ -56,8 +56,8 @@
 # r5_note         = "..."
 
 # ── Calibration — added in Phase 0/1 ─────────────────────────────────────
-# The join-time benchmark kernel (step 0.5). Compute-bound with a known FLOP
-# count; its score feeds the adaptive sizer (step 2.10).
+# The join-time benchmark kernel (step 0.10). Compute-bound with a known FLOP
+# count; its score feeds the adaptive sizer (step 2.12).
 #
 # [kernels.calibrate_v1]
 # ...

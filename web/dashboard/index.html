@@ -6,10 +6,20 @@
     <title>p2pgpu — dashboard</title>
   </head>
   <body>
+    <!--
+      Read-only live view over the coordinator's SSE metrics feed.
+      Static HTML + minimal JS, no build step, no framework — it is a
+      debugging tool that happens to demo well.
+
+      From Phase 5 it also renders the progressively converging path-traced
+      image, which is the project's demo (step 5.16).
+
+      Built in Phase 2 step 2.22.
+    -->
     <main id="app">
       <h1>p2pgpu dashboard</h1>
-      <p>Not yet implemented — see <code>docs/phases/PHASE_2.md</code> step 2.21.</p>
+      <p>Scaffolding only — see <code>docs/phases/PHASE_2.md</code> step 2.22.</p>
     </main>
-    <script type="module" src="/src/main.ts"></script>
+    <script src="dashboard.js"></script>
   </body>
 </html>

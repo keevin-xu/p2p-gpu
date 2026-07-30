@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>p2pgpu — contribute GPU time</title>
+  </head>
+  <body>
+    <!--
+      RULE R7 — EXPLICIT OPT-IN, ALWAYS.
+
+      No GPU work may begin without an affirmative user click. This page must
+      always show: a visible "contributing" indicator, a user-settable
+      throttle, and an instant stop control.
+
+      Hard requirement from day one, not a polish item. Silent background
+      compute is how Coinhive got every antivirus vendor to blacklist it and
+      the term "cryptojacking" invented (RESEARCH.md §4).
+
+      Built in Phase 1 step 1.23 — before the task loop, because it shapes the
+      worker's control flow.
+
+      DEPLOYMENT: this page must be served with COOP/COEP headers for
+      cross-origin isolation. Set them at first deploy, not at the end
+      (docs/RISKS.md §1).
+    -->
+    <main id="app">
+      <h1>p2pgpu</h1>
+      <p>Scaffolding only — not yet implemented.</p>
+      <p>See <code>docs/phases/PHASE_1.md</code> step 1.23.</p>
+    </main>
+
+    <script src="ui.js"></script>
+    <!-- <script src="p2pgpu-worker.js"></script>  emitted by the wasm preset -->
+  </body>
+</html>

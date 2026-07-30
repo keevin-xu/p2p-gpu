@@ -2,7 +2,7 @@
 
 > **Status: scaffolding.** Phase 0 not started. This README is a placeholder — it gets written properly in Phase 7 (step 7.13), once there are measurements to put in it.
 
-A volunteer-compute grid that runs GPU workloads across browser tabs via **WebGPU**. A Rust coordinator schedules work across heterogeneous, unreliable, untrusted worker nodes; workers run WGSL compute kernels and return results. Bulk assets are distributed peer-to-peer over WebRTC so coordinator egress stays flat as the fleet grows.
+A volunteer-compute grid that runs GPU workloads across browser tabs via **WebGPU**. A C++ coordinator schedules work across heterogeneous, unreliable, untrusted worker nodes; workers run WGSL compute kernels and return results. Bulk assets are distributed peer-to-peer over WebRTC so coordinator egress stays flat as the fleet grows.
 
 ---
 
@@ -44,9 +44,24 @@ Start with [`CLAUDE.md`](CLAUDE.md) — the hard rules and repository map.
 
 ## Stack
 
-Rust everywhere except the browser tab. Coordinator, native worker, and mock harness in Rust (`axum`, `tokio`, `wgpu`); browser worker and dashboard in TypeScript; kernels in WGSL, shared verbatim across implementations. Types cross the language boundary via `ts-rs` codegen — logic never does.
+**C++20 everywhere**, including the browser. One `worker-core` library compiles to both a native binary and a WebAssembly module from identical source, so `worker-native` and `worker-browser` are thin `main()` wrappers over the same code running the same WGSL kernels.
 
-Rationale: [`docs/DECISIONS.md`](docs/DECISIONS.md) D-0004.
+| | |
+|---|---|
+| Build | CMake + CMakePresets, vcpkg manifest |
+| Wire format | FlatBuffers — schema-driven, `Verifier` on all untrusted input |
+| Coordinator | uWebSockets, SQLite |
+| Worker transport | libdatachannel / datachannel-wasm — same API on both targets |
+| WebGPU | wgpu-native (`webgpu.h`) natively, Emscripten bindings in the browser |
+| Kernels | WGSL, shared verbatim |
+
+The single-language architecture is possible because libdatachannel exposes one WebRTC API to both native and WASM — the gap that usually forces a JavaScript or TypeScript layer in the browser. Rationale: [`docs/DECISIONS.md`](docs/DECISIONS.md) D-0008.
+
+## Security posture
+
+Anyone can connect as a worker, so every byte reaching the parser is attacker-controlled. In a memory-unsafe language that is a real cost, and it is treated as an engineered, *demonstrated* property rather than an assumed one: schema-driven deserialization behind a verifier, no raw pointer arithmetic at the boundary, every length validated before allocation, ASan/UBSan and libFuzzer in CI with a committed corpus.
+
+Rule R11 in [`CLAUDE.md`](CLAUDE.md); rationale in [`docs/DECISIONS.md`](docs/DECISIONS.md) D-0010.
 
 ---
 

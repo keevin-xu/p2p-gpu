@@ -1,8 +1,0 @@
-[toolchain]
-channel = "stable"
-components = ["rustfmt", "clippy"]
-
-# Pinned to `stable` rather than a specific version during scaffolding.
-# At Phase 0 step 0.2, replace with the exact version in use
-# (e.g. channel = "1.8x.0") so builds are reproducible across machines
-# and CI. Record the pin in DECISIONS.md.

@@ -1,0 +1,112 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": "ON"
+      },
+      "environment": {
+        "COMMENT_POLICY": "CMake 4 removed compatibility with cmake_minimum_required(VERSION <3.5), which some vcpkg ports still declare. This is the documented escape hatch and applies only to those ports — our own CMakeLists requires 3.25 and is unaffected. Remove once the dependency graph is clean (D-0013).",
+        "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
+      }
+    },
+    {
+      "name": "native-debug",
+      "inherits": "base",
+      "displayName": "Native debug + ASan/UBSan  (DEFAULT for development)",
+      "description": "Sanitizers on. Use for all development and tests. NEVER use for experiments — the ~2x slowdown corrupts every timing measurement (CONVENTIONS.md §8). Fuzzing is NOT here: Apple Clang ships no libFuzzer runtime, so it lives in the native-fuzz preset (D-0015).",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "P2PGPU_BUILD_TESTS": "ON",
+        "P2PGPU_BUILD_FUZZ": "OFF",
+        "VCPKG_MANIFEST_FEATURES": "native;tests",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "native-fuzz",
+      "inherits": "base",
+      "displayName": "libFuzzer harnesses  (Homebrew LLVM)",
+      "description": "Apple Clang has no libFuzzer runtime, so this preset uses Homebrew LLVM. P2PGPU_FUZZ_ONLY builds just p2pgpu-protocol + the harnesses, keeping the link surface to header-only flatbuffers so the two compilers never share a libc++ ABI boundary (D-0015).",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
+        "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++",
+        "COMMENT_AR": "Pin the archiver to Apple's. Left alone, CMake pairs /usr/bin/ar with Homebrew's llvm-ranlib, which rewrites the archive into GNU format (members '/', '//', '/0') that Apple's ld rejects: \"archive member '/' not a mach-o file\". Only bites this preset, because only this one uses a non-Apple toolchain.",
+        "CMAKE_AR": "/usr/bin/ar",
+        "CMAKE_RANLIB": "/usr/bin/ranlib",
+        "P2PGPU_BUILD_TESTS": "OFF",
+        "P2PGPU_BUILD_FUZZ": "ON",
+        "P2PGPU_FUZZ_ONLY": "ON",
+        "VCPKG_MANIFEST_FEATURES": "",
+        "CMAKE_CXX_FLAGS": "-fno-omit-frame-pointer -fno-sanitize-recover=all"
+      }
+    },
+    {
+      "name": "native-tsan",
+      "inherits": "base",
+      "displayName": "Native + ThreadSanitizer",
+      "description": "Coordinator concurrency checks. TSan is incompatible with ASan — separate preset by necessity.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "P2PGPU_BUILD_TESTS": "ON",
+        "P2PGPU_BUILD_FUZZ": "OFF",
+        "VCPKG_MANIFEST_FEATURES": "native;tests",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
+      }
+    },
+    {
+      "name": "native-release",
+      "inherits": "base",
+      "displayName": "Native release  (REQUIRED for all experiments)",
+      "description": "Optimized, hardening flags on, no sanitizers. Every chart in EVALUATION.md must be produced with this preset, and the CSV header must say so.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "P2PGPU_BUILD_TESTS": "ON",
+        "P2PGPU_BUILD_FUZZ": "OFF",
+        "VCPKG_MANIFEST_FEATURES": "native;tests"
+      }
+    },
+    {
+      "name": "wasm",
+      "inherits": "base",
+      "displayName": "Browser worker (Emscripten)",
+      "description": "Needs EMSDK set. Builds p2pgpu-worker-core + worker-browser only. Emscripten is chainloaded THROUGH vcpkg's toolchain — setting both as CMAKE_TOOLCHAIN_FILE would have them silently fight over the same variable.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+        "VCPKG_TARGET_TRIPLET": "wasm32-emscripten",
+        "VCPKG_MANIFEST_FEATURES": "",
+        "P2PGPU_BUILD_TESTS": "OFF",
+        "P2PGPU_BUILD_FUZZ": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "native-debug",   "configurePreset": "native-debug" },
+    { "name": "native-fuzz",    "configurePreset": "native-fuzz" },
+    { "name": "native-tsan",    "configurePreset": "native-tsan" },
+    { "name": "native-release", "configurePreset": "native-release" },
+    { "name": "wasm",           "configurePreset": "wasm" }
+  ],
+  "testPresets": [
+    {
+      "name": "native-debug",
+      "configurePreset": "native-debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "native-tsan",
+      "configurePreset": "native-tsan",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}
