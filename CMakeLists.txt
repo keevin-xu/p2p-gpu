@@ -44,11 +44,52 @@ include(cmake/Hardening.cmake)
 # if(NOT P2PGPU_WASM)
 #     find_package(LibDataChannel CONFIG REQUIRED)
 #     find_package(unofficial-uwebsockets CONFIG REQUIRED)
-#     # wgpu-native: not a vcpkg port — FetchContent the prebuilt release.
 # else()
 #     # datachannel-wasm: FetchContent. Exposes the same API as libdatachannel,
 #     # which is what lets src/worker-core/transport.cpp stay portable (R2).
 # endif()
+
+# ── WebGPU ───────────────────────────────────────────────────────────────
+# Native: wgpu-native, prebuilt. Not a vcpkg port, so it carries its own pin
+# (D-0016) rather than riding the vcpkg baseline.
+# Browser: the emdawnwebgpu port, added to worker-core further down (D-0014).
+#
+# These two implement the SAME webgpu.h revision — 199/202 shared functions and
+# all 86 shared structs field-for-field identical, measured in D-0016. That is
+# what lets worker-core call webgpu.h directly and stay portable (R2), instead
+# of needing the platform seam widened to cover the whole compute API.
+if(NOT P2PGPU_WASM)
+    include(FetchContent)
+    if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+        set(P2PGPU_WGPU_ARCHIVE "wgpu-macos-aarch64-release.zip")
+        set(P2PGPU_WGPU_SHA256  "a5797a37b1adf720bcd5dcffb291edbbd5b7b14be0a3874c28e6393a655a7a3e")
+    else()
+        # Add the platform's archive + hash from the v29.0.1.1 release page.
+        message(FATAL_ERROR
+            "p2pgpu: no wgpu-native archive pinned for this platform yet. "
+            "Add it to CMakeLists.txt with its SHA256 (see D-0016).")
+    endif()
+
+    FetchContent_Declare(wgpu_native
+        URL      "https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/${P2PGPU_WGPU_ARCHIVE}"
+        URL_HASH "SHA256=${P2PGPU_WGPU_SHA256}"
+    )
+    FetchContent_MakeAvailable(wgpu_native)
+
+    # Prebuilt archive, so hand-roll the imported target. Static, to keep
+    # worker-native a single self-contained binary — step 4.19 wants the
+    # borrowed machine to join with one command and no dylib hunting.
+    add_library(wgpu-native STATIC IMPORTED GLOBAL)
+    set_target_properties(wgpu-native PROPERTIES
+        IMPORTED_LOCATION             "${wgpu_native_SOURCE_DIR}/lib/libwgpu_native.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${wgpu_native_SOURCE_DIR}/include")
+    if(APPLE)
+        # wgpu-native's Metal backend needs these at link time.
+        target_link_libraries(wgpu-native INTERFACE
+            "-framework Metal" "-framework QuartzCore" "-framework Foundation"
+            "-framework IOKit" "-framework IOSurface")
+    endif()
+endif()
 
 # ─────────────────────────────────────────────────────────────────────────
 # p2pgpu-protocol — framing, Verifier wrappers, invariants
@@ -103,7 +144,13 @@ else()
     target_sources(p2pgpu-worker-core PRIVATE
         src/worker-core/platform/gpu_native.cpp
         src/worker-core/platform/timer_native.cpp)
+    target_link_libraries(p2pgpu-worker-core PUBLIC wgpu-native)
 endif()
+
+# NOTE: worker-core deliberately does NOT know where kernels live. Native reads
+# them from disk, the browser fetches them over HTTP from the coordinator (step
+# 1.12) — so the WGSL text is passed IN. Keeping acquisition out of worker-core
+# is what stops a `#ifdef __EMSCRIPTEN__` appearing in portable code (R2).
 p2pgpu_harden(p2pgpu-worker-core)
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -131,6 +178,10 @@ if(NOT P2PGPU_WASM)
     # logic is leaking out of worker-core (R1).
     add_executable(worker-native src/worker-native/main.cpp)
     target_link_libraries(worker-native PRIVATE p2pgpu-worker-core)
+    # Dev convenience so the binary finds kernels/ without an argument. The
+    # deployed worker gets its WGSL from the coordinator, not from a build path.
+    target_compile_definitions(worker-native PRIVATE
+        P2PGPU_KERNEL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/kernels")
     p2pgpu_harden(worker-native)
 
     add_executable(mock-worker

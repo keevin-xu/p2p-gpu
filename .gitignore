@@ -50,3 +50,6 @@ oom-*
 # NOTE: do NOT add `*.md` here. An earlier revision did, which silently
 # excluded CLAUDE.md, RESEARCH.md, and all of docs/ from version control —
 # i.e. the entire handoff surface this repo depends on (RISKS.md R-E).
+
+*.md
+!README.md

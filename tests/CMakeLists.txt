@@ -39,3 +39,12 @@ add_executable(tests
 
 # Placeholder so the target exists before any tests are written.
 target_sources(tests PRIVATE placeholder.cpp)
+
+# Sanitizer self-check (step 0.4). OFF by default so the deliberate bugs can
+# never ship. Turn on in a throwaway build dir to prove the sanitizers are
+# genuinely instrumenting our code — see the header of placeholder.cpp.
+option(P2PGPU_SELFCHECK "Compile the deliberate sanitizer self-check bugs" OFF)
+if(P2PGPU_SELFCHECK)
+    target_compile_definitions(tests PRIVATE P2PGPU_SELFCHECK)
+    message(WARNING "p2pgpu: P2PGPU_SELFCHECK is ON — `tests` contains deliberate bugs")
+endif()
