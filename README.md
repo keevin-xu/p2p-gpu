@@ -1,6 +1,6 @@
 # p2pgpu
 
-> **Status: scaffolding.** Phase 0 not started. This README is a placeholder — it gets written properly in Phase 7 (step 7.13), once there are measurements to put in it.
+> to be updated
 
 A volunteer-compute grid that runs GPU workloads across browser tabs via **WebGPU**. A C++ coordinator schedules work across heterogeneous, unreliable, untrusted worker nodes; workers run WGSL compute kernels and return results. Bulk assets are distributed peer-to-peer over WebRTC so coordinator egress stays flat as the fleet grows.
 
@@ -24,24 +24,6 @@ Full derivation and prior art: [`RESEARCH.md`](RESEARCH.md).
 
 ---
 
-## Documentation
-
-Start with [`CLAUDE.md`](CLAUDE.md) — the hard rules and repository map.
-
-| Doc | What it covers |
-|---|---|
-| [`RESEARCH.md`](RESEARCH.md) | Background, prior art, the physics |
-| [`docs/PROJECT_OVERVIEW.md`](docs/PROJECT_OVERVIEW.md) | Scope, non-goals, success criteria |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Modules, boundaries, state machines |
-| [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | The wire contract |
-| [`docs/KERNELS.md`](docs/KERNELS.md) | WGSL authoring rules, the R5 gate |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Eight phases, eight human gates |
-| [`docs/EVALUATION.md`](docs/EVALUATION.md) | The measurements that are the deliverable |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Why the system is the way it is |
-| [`docs/RISKS.md`](docs/RISKS.md) | Known traps — check here when things behave strangely |
-
----
-
 ## Stack
 
 **C++20 everywhere**, including the browser. One `worker-core` library compiles to both a native binary and a WebAssembly module from identical source, so `worker-native` and `worker-browser` are thin `main()` wrappers over the same code running the same WGSL kernels.
@@ -60,8 +42,6 @@ The single-language architecture is possible because libdatachannel exposes one 
 ## Security posture
 
 Anyone can connect as a worker, so every byte reaching the parser is attacker-controlled. In a memory-unsafe language that is a real cost, and it is treated as an engineered, *demonstrated* property rather than an assumed one: schema-driven deserialization behind a verifier, no raw pointer arithmetic at the boundary, every length validated before allocation, ASan/UBSan and libFuzzer in CI with a committed corpus.
-
-Rule R11 in [`CLAUDE.md`](CLAUDE.md); rationale in [`docs/DECISIONS.md`](docs/DECISIONS.md) D-0010.
 
 ---
 
