@@ -113,6 +113,19 @@ table TaskStats {
 // table Envelope { body: Body; }
 // root_type Envelope;
 
+// ── BUILD VERIFICATION (step 0.5) ────────────────────────────────────────
+// A root_type is required for flatc to emit VerifyXBuffer(), and the Verifier
+// is the single sanctioned bytes->fields path (R11) — so the build step cannot
+// be proven end to end without one.
+//
+// TEMPORARY. Step 1.1 replaces this with the real Body union and Envelope, at
+// which point `root_type` moves there. Nothing may depend on this shape, and it
+// is not part of the wire contract in docs/PROTOCOL.md.
+table BuildProbe {
+  schema_version: uint;
+}
+root_type BuildProbe;
+
 // ── Data plane (Phase 6) ─────────────────────────────────────────────────
 // Peer-supplied bytes are the least trustworthy input in the system — no
 // coordinator mediation at all. Bound index/total and use checked arithmetic

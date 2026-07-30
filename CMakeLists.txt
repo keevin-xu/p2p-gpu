@@ -104,15 +104,53 @@ add_library(p2pgpu-protocol STATIC
 )
 target_include_directories(p2pgpu-protocol PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+# SYSTEM: generated code and third-party headers are not ours to fix, and our
+# warning set (-Wconversion et al) would otherwise fire on every build.
+target_include_directories(p2pgpu-protocol SYSTEM PUBLIC
     ${CMAKE_CURRENT_BINARY_DIR}/generated      # flatc output lands here
 )
 p2pgpu_harden(p2pgpu-protocol)
 
-# Phase 1 step 1.1: wire up flatc.
-#   flatbuffers_generate_headers(TARGET p2pgpu-schema
-#       SCHEMAS protocol/p2pgpu.fbs
-#       INCLUDE_PREFIX p2pgpu)
-#   target_link_libraries(p2pgpu-protocol PUBLIC p2pgpu-schema flatbuffers::flatbuffers)
+# ─────────────────────────────────────────────────────────────────────────
+# flatc — schema to C++ headers, as a build step (step 0.5, rule R3)
+#
+# Output goes into the BUILD TREE only. The schema is the sole versioned
+# artifact; generated headers are never committed and never hand-edited, so
+# they cannot drift from protocol/p2pgpu.fbs. Editing the schema and
+# rebuilding is the ONLY way to change the wire format.
+#
+# NOTE we take the flatbuffers HEADERS but deliberately do NOT link
+# flatbuffers::flatbuffers. That is a STATIC imported target, and libflatbuffers
+# .a holds only the schema-parsing side (idl_parser, reflection, util) which we
+# never use — `flatbuffers::Verifier` is header-only. Linking it would break
+# D-0015: the fuzz preset builds p2pgpu-protocol with Homebrew LLVM while vcpkg
+# compiled that archive with Apple Clang, and mixing the two libc++ ABIs is
+# exactly the corruption D-0015 exists to prevent.
+# ─────────────────────────────────────────────────────────────────────────
+find_package(flatbuffers CONFIG REQUIRED)
+
+set(P2PGPU_SCHEMA           ${CMAKE_CURRENT_SOURCE_DIR}/protocol/p2pgpu.fbs)
+set(P2PGPU_GENERATED_DIR    ${CMAKE_CURRENT_BINARY_DIR}/generated/p2pgpu)
+set(P2PGPU_GENERATED_HEADER ${P2PGPU_GENERATED_DIR}/p2pgpu_generated.h)
+
+add_custom_command(
+    OUTPUT  ${P2PGPU_GENERATED_HEADER}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${P2PGPU_GENERATED_DIR}
+    # --scoped-enums so generated enums are `enum class`, matching the
+    # -Werror=switch discipline the task state machine relies on.
+    COMMAND flatbuffers::flatc --cpp --scoped-enums
+            -o ${P2PGPU_GENERATED_DIR} ${P2PGPU_SCHEMA}
+    DEPENDS ${P2PGPU_SCHEMA} flatbuffers::flatc
+    COMMENT "flatc: protocol/p2pgpu.fbs -> build tree"
+    VERBATIM)
+
+add_custom_target(p2pgpu-schema DEPENDS ${P2PGPU_GENERATED_HEADER})
+add_dependencies(p2pgpu-protocol p2pgpu-schema)
+
+# Headers only — see the note above on why the library is not linked.
+target_include_directories(p2pgpu-protocol SYSTEM PUBLIC
+    $<TARGET_PROPERTY:flatbuffers::flatbuffers,INTERFACE_INCLUDE_DIRECTORIES>)
 
 if(P2PGPU_FUZZ_ONLY)
     # Everything below this point is deliberately skipped — see D-0015.
