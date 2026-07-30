@@ -22,6 +22,11 @@ Workloads here either clear 10⁶ naturally (brute-force search, Monte Carlo) or
 
 Full derivation and prior art: [`RESEARCH.md`](RESEARCH.md).
 
+**New to GPU compute or distributed systems?** [`docs/PRIMER.md`](docs/PRIMER.md)
+explains the whole project from scratch — what a GPU kernel is, how the build
+works, where the 10⁶ number comes from, and why untrusted workers make result
+verification hard. Diagrams throughout.
+
 ---
 
 ## Stack

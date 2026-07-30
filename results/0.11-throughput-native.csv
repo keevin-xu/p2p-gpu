@@ -1,0 +1,13 @@
+# p2pgpu step 0.11/0.12 - calibrate_v1 throughput
+# device=Apple M4 Pro backend=metal vendor= arch=
+# timing=wall_clock timestamp_query_available=yes
+# NOTE: build under native-release; sanitizers corrupt timings
+invocations,iterations,dispatches,flops,wall_ms,gflops
+4096,2048,10,671088640,4.426,151.6
+16384,2048,10,2684354560,4.084,657.2
+65536,2048,10,10737418240,6.579,1632.1
+262144,2048,10,42949672960,23.861,1800.0
+1048576,2048,10,171798691840,92.458,1858.1
+4194304,2048,10,687194767360,366.653,1874.2
+# per_dispatch_overhead_us=23.22  (marginal, same command buffer)
+# per_submit_overhead_us=106.00  (full round trip, median)

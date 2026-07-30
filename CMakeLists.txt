@@ -132,6 +132,8 @@ add_library(p2pgpu-worker-core STATIC
     src/worker-core/kernel_host.cpp
     src/worker-core/accumulator.cpp
     src/worker-core/smoke.cpp              # portable: shared 0.6/0.8/0.9 checks
+    src/worker-core/gpu_info.cpp           # portable: adapter info, features, limits
+    src/worker-core/bench.cpp              # portable: throughput + overhead (0.10-0.12)
     src/worker-core/transport.cpp          # portable: libdatachannel API on both
 )
 target_include_directories(p2pgpu-worker-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

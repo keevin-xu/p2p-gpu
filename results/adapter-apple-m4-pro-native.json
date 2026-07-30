@@ -1,0 +1,16 @@
+{
+  "target": "native",
+  "vendor": "",
+  "architecture": "",
+  "device": "Apple M4 Pro",
+  "description": "",
+  "backend": "metal",
+  "features": ["timestamp-query", "shader-f16"],
+  "limits": {
+    "maxStorageBufferBindingSize": 134217728,
+    "maxBufferSize": 268435456,
+    "maxComputeWorkgroupsPerDimension": 65535,
+    "maxComputeInvocationsPerWorkgroup": 256,
+    "maxComputeWorkgroupStorageSize": 16384
+  }
+}

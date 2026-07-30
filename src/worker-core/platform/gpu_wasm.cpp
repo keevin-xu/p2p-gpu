@@ -17,44 +17,17 @@
 #if defined(__EMSCRIPTEN__)
 
 #include "p2pgpu/worker/platform.hpp"
+#include "p2pgpu/worker/wgpu_util.hpp"
 
 #include <emscripten/emscripten.h>
 #include <emscripten/console.h>
 
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace p2pgpu::worker::platform {
 namespace {
-
-constexpr WGPUStringView Str(const char* s) noexcept {
-    return WGPUStringView{s, WGPU_STRLEN};
-}
-
-std::string FromStr(WGPUStringView v) {
-    if (v.data == nullptr) {
-        return {};
-    }
-    if (v.length == WGPU_STRLEN) {
-        return std::string{v.data};
-    }
-    return std::string{v.data, v.length};
-}
-
-const char* BackendName(WGPUBackendType b) noexcept {
-    switch (b) {
-        case WGPUBackendType_Undefined: return "undefined";
-        case WGPUBackendType_Null:      return "null";
-        case WGPUBackendType_WebGPU:    return "webgpu";
-        case WGPUBackendType_D3D11:     return "d3d11";
-        case WGPUBackendType_D3D12:     return "d3d12";
-        case WGPUBackendType_Metal:     return "metal";
-        case WGPUBackendType_Vulkan:    return "vulkan";
-        case WGPUBackendType_OpenGL:    return "opengl";
-        case WGPUBackendType_OpenGLES:  return "opengles";
-        default:                        return "unknown";
-    }
-}
 
 std::function<void()>& LostHandler() {
     static std::function<void()> handler;
@@ -75,7 +48,7 @@ void DeviceLostThunk(WGPUDevice const*, WGPUDeviceLostReason reason,
     switch (reason) {
         case WGPUDeviceLostReason_Destroyed:
         case WGPUDeviceLostReason_CallbackCancelled:
-            Log("debug", "device released (expected): " + FromStr(message));
+            Log("debug", "device released (expected): " + wgpu::FromStr(message));
             return;
         case WGPUDeviceLostReason_Unknown:
         case WGPUDeviceLostReason_FailedCreation:
@@ -84,7 +57,7 @@ void DeviceLostThunk(WGPUDevice const*, WGPUDeviceLostReason reason,
     }
 
     Log("error", "device lost (" + std::to_string(static_cast<int>(reason)) +
-                     "): " + FromStr(message));
+                     "): " + wgpu::FromStr(message));
     if (LostHandler()) {
         LostHandler()();
     }
@@ -93,7 +66,7 @@ void DeviceLostThunk(WGPUDevice const*, WGPUDeviceLostReason reason,
 void UncapturedErrorThunk(WGPUDevice const*, WGPUErrorType type,
                           WGPUStringView message, void*, void*) {
     Log("error", "uncaptured wgpu error (" + std::to_string(static_cast<int>(type)) +
-                     "): " + FromStr(message));
+                     "): " + wgpu::FromStr(message));
 }
 
 struct AdapterResult {
@@ -112,7 +85,7 @@ void AdapterThunk(WGPURequestAdapterStatus status, WGPUAdapter adapter,
     if (status == WGPURequestAdapterStatus_Success) {
         r->adapter = adapter;
     } else {
-        Log("error", "requestAdapter failed: " + FromStr(message));
+        Log("error", "requestAdapter failed: " + wgpu::FromStr(message));
     }
     r->done = true;
 }
@@ -123,7 +96,7 @@ void DeviceThunk(WGPURequestDeviceStatus status, WGPUDevice device,
     if (status == WGPURequestDeviceStatus_Success) {
         r->device = device;
     } else {
-        Log("error", "requestDevice failed: " + FromStr(message));
+        Log("error", "requestDevice failed: " + wgpu::FromStr(message));
     }
     r->done = true;
 }
@@ -161,10 +134,19 @@ bool AcquireDevice(GpuContext& out) {
     // ── device ──
     DeviceResult device_result;
     WGPUDeviceDescriptor desc{};
-    desc.label = Str("p2pgpu-device");
+    desc.label = wgpu::Str("p2pgpu-device");
     desc.deviceLostCallbackInfo.mode = WGPUCallbackMode_AllowSpontaneous;
     desc.deviceLostCallbackInfo.callback = DeviceLostThunk;
     desc.uncapturedErrorCallbackInfo.callback = UncapturedErrorThunk;
+
+    // Ask for the optional features this adapter can actually provide (K6).
+    // Requesting one the adapter lacks fails device creation outright, so the
+    // list is filtered against the adapter first. Every feature here must have
+    // a fallback path — none may become a requirement to participate.
+    const std::vector<WGPUFeatureName> features =
+        wgpu::SupportedOptionalFeatures(out.adapter);
+    desc.requiredFeatureCount = features.size();
+    desc.requiredFeatures = features.empty() ? nullptr : features.data();
 
     WGPURequestDeviceCallbackInfo device_cb{};
     device_cb.mode = WGPUCallbackMode_AllowProcessEvents;
@@ -189,24 +171,6 @@ void ReleaseDevice(GpuContext& ctx) {
     if (ctx.device != nullptr)   { wgpuDeviceRelease(ctx.device);     ctx.device = nullptr; }
     if (ctx.adapter != nullptr)  { wgpuAdapterRelease(ctx.adapter);   ctx.adapter = nullptr; }
     if (ctx.instance != nullptr) { wgpuInstanceRelease(ctx.instance); ctx.instance = nullptr; }
-}
-
-AdapterDescription DescribeAdapter(const GpuContext& ctx) {
-    AdapterDescription out;
-    if (ctx.adapter == nullptr) {
-        return out;
-    }
-    WGPUAdapterInfo info{};
-    if (wgpuAdapterGetInfo(ctx.adapter, &info) != WGPUStatus_Success) {
-        return out;
-    }
-    out.vendor       = FromStr(info.vendor);
-    out.architecture = FromStr(info.architecture);
-    out.device       = FromStr(info.device);
-    out.description  = FromStr(info.description);
-    out.backend      = BackendName(info.backendType);
-    wgpuAdapterInfoFreeMembers(info);
-    return out;
 }
 
 bool WaitUntil(const GpuContext& ctx, const std::function<bool()>& done,

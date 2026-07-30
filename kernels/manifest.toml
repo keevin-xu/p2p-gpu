@@ -55,9 +55,39 @@
 # r5_ratio        = 6.3e6
 # r5_note         = "..."
 
-# ── Calibration — added in Phase 0/1 ─────────────────────────────────────
-# The join-time benchmark kernel (step 0.10). Compute-bound with a known FLOP
+# ── Calibration — added in step 0.10 ─────────────────────────────────────
+# The join-time benchmark kernel. Compute-bound with an exactly known FLOP
 # count; its score feeds the adaptive sizer (step 2.12).
 #
-# [kernels.calibrate_v1]
-# ...
+# Design + full R5 derivation: DECISIONS.md D-0018.
+# Measured throughput on real hardware: D-0019.
+
+[kernels.calibrate_v1]
+file            = "calibrate.wgsl"
+entry_point     = "main"
+workgroup_size  = [256, 1, 1]
+determinism     = "tolerant"
+rel_eps         = 1e-5
+abs_eps         = 1e-6
+output_bytes    = 4            # per workgroup: one f32 reduction result
+output_dtype    = "f32"
+param_layout    = "CalibrateParams"
+accumulates     = false
+iterations      = 2048         # default; R5 fails below ~1954
+flop_per_unit   = 2            # one FMA; a work_unit is one FMA op
+r5_ratio        = 1.05e6
+r5_note = """
+ratio = 512 x iterations, and the invocation count N cancels out:
+  output_bytes = 4 x (N/256) = N/64      (one f32 per workgroup)
+  FLOP         = N x iterations x 4 FMA x 2 = 8 x N x iterations
+  ratio        = (8 x N x iterations)/(N/64) = 512 x iterations
+At iterations=2048 that is 1.05e6, just over the 1e6 gate. Intensity is a
+tuning knob here, not a property of the workload (D-0001). Note that having
+every invocation write its own output instead of one per workgroup would give
+ratio = 2 x iterations, failing the gate by ~500x at the same iteration count.
+"""
+
+# `tolerant`, NOT `exact`: the result is a float sum over 256 partial sums, and
+# FMA contraction and summation order legitimately differ across vendors (R6).
+# Declaring it `exact` would blacklist honest workers. It is used for timing,
+# not for its value, so the epsilons only need to catch a grossly wrong answer.

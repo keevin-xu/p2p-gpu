@@ -46,6 +46,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace p2pgpu::worker::platform {
 
@@ -61,13 +62,31 @@ struct GpuContext {
 };
 
 /// Human-readable adapter description, for the E7 table and capability
-/// negotiation at join (docs/PROTOCOL.md `AdapterInfo`).
+/// negotiation at join (docs/PROTOCOL.md `AdapterInfo` / `GpuLimits`).
+///
+/// NOTE: the identity strings are populated DIFFERENTLY per target on the same
+/// GPU — native fills `device`, Chrome fills `vendor`/`architecture`, each
+/// leaving the other blank (docs/RISKS.md §1). Never key logic on one field
+/// being non-empty.
 struct AdapterDescription {
     std::string vendor;
     std::string architecture;
     std::string device;
     std::string description;
     std::string backend;
+
+    /// Optional WebGPU features actually granted on the device, e.g.
+    /// "timestamp-query", "shader-f16", "subgroups". K6: every one of these
+    /// must have a fallback path — a worker lacking a feature still contributes.
+    std::vector<std::string> features;
+
+    /// Queried limits. K4 forbids hardcoding these; tiling must respect the
+    /// real device's numbers, not the spec defaults.
+    std::uint64_t max_storage_buffer_binding_size = 0;
+    std::uint64_t max_buffer_size = 0;
+    std::uint32_t max_compute_workgroups_per_dim = 0;
+    std::uint32_t max_compute_invocations_per_workgroup = 0;
+    std::uint32_t max_compute_workgroup_storage_size = 0;
 };
 
 /// Acquire a GPU device. Returns false if unavailable — a blocklisted driver
@@ -79,8 +98,14 @@ struct AdapterDescription {
 /// context, so it doubles as the cleanup path for a failed acquisition.
 void ReleaseDevice(GpuContext& ctx);
 
-/// Read adapter identity and backend. Requires an acquired context.
+/// Read adapter identity, granted features, and queried limits. Requires an
+/// acquired context.
 [[nodiscard]] AdapterDescription DescribeAdapter(const GpuContext& ctx);
+
+/// Was `feature` granted on this device? Optional features must be *requested*
+/// at device creation, so adapter support alone is not enough — this reports
+/// what the device actually has (K6).
+[[nodiscard]] bool HasFeature(const GpuContext& ctx, WGPUFeatureName feature);
 
 /// Drive the GPU until `done()` reports true, or `timeout_ms` elapses.
 ///
