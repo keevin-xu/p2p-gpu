@@ -58,6 +58,23 @@
     statusEl.className = cls || "";
   }
 
+  // Ship the canonical report to the dev server, which tags it by browser and
+  // writes it under results/. Development convenience only — nothing in the
+  // real system posts anything this way, and a failure here must never affect
+  // the PASS/FAIL reported above.
+  //
+  // Only called for SUCCESSFUL runs: a failed run has no meaningful report, and
+  // posting an empty one just stacks a second, misleading error on top of the
+  // real failure (which is exactly what happened diagnosing Safari).
+  function post(name) {
+    var report = worker.ccall("p2pgpu_report", "string", [], []);
+    if (!report) { return; }
+    fetch("/report?name=" + encodeURIComponent(name),
+          { method: "POST", body: report })
+      .then(function () { append("[dev] posted results/ (" + name + ", browser-tagged)"); })
+      .catch(function () { append("[dev] POST failed — copy the text above"); });
+  }
+
   function append(text) {
     lines.push(text);
     logEl.textContent = lines.join("\n");
@@ -110,10 +127,7 @@
         chunkBtn.disabled = false;
         benchBtn.textContent = "Throughput (0.11)";
 
-        var report = worker.ccall("p2pgpu_report", "string", [], []);
-        fetch("/report?name=0.11-throughput.csv", { method: "POST", body: report })
-          .then(function () { append("[dev] posted results/0.11-throughput-<browser>.csv"); })
-          .catch(function () { append("[dev] POST failed — copy the text above"); });
+        if (rc === 0) { post("0.11-throughput.csv"); }
       });
   });
 
@@ -144,11 +158,7 @@
         startBtn.disabled = false;
         chunkBtn.textContent = "Chunking spike (0.15)";
 
-        var report = worker.ccall("p2pgpu_report", "string", [], []);
-        fetch("/report?name=0.15-chunking-browser.txt",
-              { method: "POST", body: report })
-          .then(function () { append("[dev] posted results/0.15-chunking-browser.txt"); })
-          .catch(function () { append("[dev] POST failed — copy the text above"); });
+        if (rc === 0) { post("0.15-chunking-browser.txt"); }
       });
   });
 
@@ -176,17 +186,7 @@
         startBtn.disabled = false;
         startBtn.textContent = "Run again";
 
-        // Step 0.9: POST the canonical report so it can be diffed against the
-        // native run byte-for-byte. Purely a development convenience — the dev
-        // server writes it to results/. Nothing in the real system does this,
-        // and a failure here must not affect the PASS/FAIL above.
-        var report = worker.ccall("p2pgpu_report", "string", [], []);
-        fetch("/report", { method: "POST", body: report }).then(function () {
-          append("[dev] report posted to results/0.9-browser.txt");
-        }).catch(function () {
-          append("[dev] report POST failed (serve.py not running?) — " +
-                 "copy the text above manually");
-        });
+        if (rc === 0) { post("0.9-browser.txt"); }
       });
   });
 })();

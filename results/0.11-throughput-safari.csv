@@ -1,0 +1,12 @@
+# p2pgpu step 0.11 - calibrate_v1 throughput (browser)
+# adapter=apple/apple/apple backend=webgpu
+# features=timestamp-query,shader-f16 timestamp_query=yes
+invocations,iterations,dispatches,flops,wall_ms,gflops
+4096,2048,10,671088640,8.740000,76.783597
+16384,2048,10,2684354560,8.740000,307.134389
+65536,2048,10,10737418240,13.080000,820.903535
+262144,2048,10,42949672960,22.140000,1939.912961
+1048576,2048,10,171798691840,80.640000,2130.440127
+4194304,2048,10,687194767360,312.760000,2197.195189
+# per_dispatch_overhead_us=39.520000
+# per_submit_overhead_us=4500.000000

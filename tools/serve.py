@@ -80,9 +80,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         name = f"{stem}-{self._browser_tag()}{ext or '.txt'}"
 
         length = int(self.headers.get("Content-Length", 0))
+
+        # An empty body is NOT "too large". Lumping the two together produced a
+        # baffling `413 Content Too Large` when Safari failed before generating
+        # a report — a misleading error on top of the real one, which is the
+        # last thing you want while diagnosing a failure.
+        if length <= 0:
+            self.send_error(400, "empty report (did the run fail before producing one?)")
+            return
+
         # Bound it. Even a dev tool should not let a stray request allocate
         # arbitrary memory — the report is a few KB.
-        if length <= 0 or length > 4 * 1024 * 1024:
+        if length > 4 * 1024 * 1024:
             self.send_error(413)
             return
 
