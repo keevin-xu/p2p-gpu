@@ -4,6 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>p2pgpu — contribute GPU time</title>
+    <!-- Empty data URI: suppresses the favicon 404 that otherwise clutters the
+         console during browser testing. Cheap, and console noise is the enemy
+         when the console is your only debugging surface. -->
+    <link rel="icon" href="data:," />
+    <style>
+      body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+             max-width: 44rem; margin: 3rem auto; padding: 0 1rem;
+             background: #111; color: #ddd; line-height: 1.5; }
+      h1 { font-size: 1.3rem; }
+      button { font: inherit; padding: .6rem 1.2rem; cursor: pointer;
+               background: #2d6; color: #000; border: 0; border-radius: 4px; }
+      button:disabled { background: #444; color: #888; cursor: default; }
+      #status { margin: 1rem 0; padding: .6rem 1rem; border-left: 3px solid #555; }
+      #status.running { border-color: #fc0; color: #fc0; }
+      #status.pass    { border-color: #2d6; color: #2d6; }
+      #status.fail    { border-color: #e44; color: #e44; }
+      pre { background: #1a1a1a; padding: 1rem; overflow-x: auto;
+            border-radius: 4px; font-size: .85rem; white-space: pre-wrap; }
+      .note { color: #888; font-size: .85rem; }
+    </style>
   </head>
   <body>
     <!--
@@ -17,20 +37,39 @@
       compute is how Coinhive got every antivirus vendor to blacklist it and
       the term "cryptojacking" invented (RESEARCH.md §4).
 
-      Built in Phase 1 step 1.23 — before the task loop, because it shapes the
-      worker's control flow.
+      STEP 0.6 STATUS: the opt-in gate below is real — main() does no GPU work,
+      it only signals readiness, and the kernel runs solely on the click. The
+      throttle slider and instant-stop control arrive with the task loop in
+      step 1.23, because there is nothing continuous to throttle or stop yet.
 
       DEPLOYMENT: this page must be served with COOP/COEP headers for
       cross-origin isolation. Set them at first deploy, not at the end
-      (docs/RISKS.md §1).
+      (docs/RISKS.md §1). tools/serve.py sets them locally.
     -->
     <main id="app">
-      <h1>p2pgpu</h1>
-      <p>Scaffolding only — not yet implemented.</p>
-      <p>See <code>docs/phases/PHASE_1.md</code> step 1.23.</p>
+      <h1>p2pgpu — step 0.6 browser smoke test</h1>
+
+      <p>
+        Runs one WGSL compute kernel on your GPU and verifies the result.
+        <strong>Nothing runs until you click.</strong>
+      </p>
+
+      <p><button id="start" disabled>Loading…</button></p>
+
+      <div id="status">idle — no GPU work has been started</div>
+
+      <pre id="log">(output appears here)</pre>
+
+      <p class="note">
+        Same <code>worker-core</code> and the same
+        <code>kernels/smoke_double.wgsl</code> bytes as the native worker.
+        Expect <code>PASS: 1000/1000 elements correct</code>.
+      </p>
     </main>
 
+    <!-- Order matters: the module defines createP2pgpuWorker(), which ui.js
+         calls. Loading ui.js first would reference it before it exists. -->
+    <script src="p2pgpu-worker.js"></script>
     <script src="ui.js"></script>
-    <!-- <script src="p2pgpu-worker.js"></script>  emitted by the wasm preset -->
   </body>
 </html>

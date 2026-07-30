@@ -63,6 +63,24 @@ std::function<void()>& LostHandler() {
 
 void DeviceLostThunk(WGPUDevice const*, WGPUDeviceLostReason reason,
                      WGPUStringView message, void*, void*) {
+    // CRITICAL: separate OUR teardown from a GENUINE loss.
+    //
+    // wgpuDeviceRelease fires this callback with reason `Destroyed`. Treating
+    // that as device loss would make the R4 recovery path run during our own
+    // shutdown — releasing leases we already released and re-acquiring a device
+    // we deliberately threw away. Only unexpected losses (TDR, driver reset,
+    // browser reclaim) may trigger recovery.
+    switch (reason) {
+        case WGPUDeviceLostReason_Destroyed:
+        case WGPUDeviceLostReason_CallbackCancelled:
+            Log("debug", "device released (expected): " + FromStr(message));
+            return;
+        case WGPUDeviceLostReason_Unknown:
+        case WGPUDeviceLostReason_FailedCreation:
+        default:
+            break;
+    }
+
     Log("error", "device lost (" + std::to_string(static_cast<int>(reason)) +
                      "): " + FromStr(message));
     if (LostHandler()) {

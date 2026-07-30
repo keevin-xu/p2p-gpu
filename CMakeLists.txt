@@ -202,7 +202,21 @@ else()
         src/worker-browser/ui_bridge.cpp
     )
     target_link_libraries(worker-browser PRIVATE p2pgpu-worker-core)
-    set_target_properties(worker-browser PROPERTIES OUTPUT_NAME "p2pgpu-worker" SUFFIX ".js")
+    # Emit into build/wasm/web alongside the static assets, so the whole
+    # directory is what gets served (and later deployed).
+    set_target_properties(worker-browser PROPERTIES
+        OUTPUT_NAME "p2pgpu-worker"
+        SUFFIX ".js"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/web")
+
+    # Copy the static R7 opt-in surface next to the module. No build step, no
+    # bundler — web/ is plain files by design (ARCHITECTURE.md §4).
+    add_custom_command(TARGET worker-browser POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/web/index.html"
+                "${CMAKE_CURRENT_SOURCE_DIR}/web/ui.js"
+                "${CMAKE_BINARY_DIR}/web/"
+        COMMENT "Copying web/ static assets")
 
     # WebGPU in the browser (D-0014). -sUSE_WEBGPU=1 was REMOVED in Emscripten
     # 6.0.5 — it is a hard configure error, not a warning. The replacement is
@@ -215,6 +229,13 @@ else()
     target_link_options(worker-browser PRIVATE
         --bind
         --use-port=emdawnwebgpu
+        # Embed the WGSL so the browser reads the SAME BYTES as worker-native,
+        # which is what makes step 0.9's cross-target comparison mean anything.
+        # Step 1.12 replaces this with an HTTP fetch from the coordinator.
+        "--embed-file" "${CMAKE_CURRENT_SOURCE_DIR}/kernels/smoke_double.wgsl@/kernels/smoke_double.wgsl"
+        # p2pgpu_run_smoke_test is called from ui.js on the R7 opt-in click.
+        -sEXPORTED_FUNCTIONS=_main,_p2pgpu_run_smoke_test
+        -sEXPORTED_RUNTIME_METHODS=ccall,cwrap
         # ASYNCIFY yields between dispatches (R4) without blocking. NOTE its
         # tension with step 1.24's -sPROXY_TO_PTHREAD: with the task loop on its
         # own thread, blocking is fine and ASYNCIFY's size/speed cost buys
