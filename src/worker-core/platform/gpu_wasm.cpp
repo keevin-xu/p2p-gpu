@@ -34,6 +34,13 @@ std::function<void()>& LostHandler() {
     return handler;
 }
 
+/// Set for ANY loss reason, including our own destroy. Guards the submit path
+/// (D-0022). One device per process is assumed.
+bool& LostFlag() {
+    static bool lost = false;
+    return lost;
+}
+
 void DeviceLostThunk(WGPUDevice const*, WGPUDeviceLostReason reason,
                      WGPUStringView message, void*, void*) {
     // CRITICAL: separate OUR teardown from a GENUINE loss.
@@ -45,6 +52,11 @@ void DeviceLostThunk(WGPUDevice const*, WGPUDeviceLostReason reason,
     //
     // In the browser this same callback IS how a real TDR-style driver reset
     // arrives, which is exactly why the two cases must not be conflated.
+    // Flag EVERY reason. The intentional/genuine distinction below decides
+    // whether to RECOVER; it does not change the fact that this device can no
+    // longer accept work, and submitting to it would abort the process.
+    LostFlag() = true;
+
     switch (reason) {
         case WGPUDeviceLostReason_Destroyed:
         case WGPUDeviceLostReason_CallbackCancelled:
@@ -162,6 +174,7 @@ bool AcquireDevice(GpuContext& out) {
     }
     out.device = device_result.device;
     out.queue = wgpuDeviceGetQueue(out.device);
+    LostFlag() = false;
 
     return out.valid();
 }
@@ -202,6 +215,14 @@ bool WaitUntil(const GpuContext& ctx, const std::function<bool()>& done,
 
 void OnDeviceLost(std::function<void()> handler) {
     LostHandler() = std::move(handler);
+}
+
+bool DeviceIsLost() {
+    return LostFlag();
+}
+
+void MarkDeviceLost() {
+    LostFlag() = true;
 }
 
 void Yield() {

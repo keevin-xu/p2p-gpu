@@ -87,6 +87,16 @@ std::optional<std::vector<std::byte>> RunUnaryKernel(
         return std::nullopt;
     }
 
+    // GUARD, not tidiness (D-0022). On a lost device the create calls return
+    // non-null but INVALID objects, so the null checks below all pass, and then
+    // wgpuQueueSubmit panics inside wgpu-native and aborts the whole process. A
+    // Rust panic cannot be caught from C++, so the only defence is to not make
+    // the call. Device loss must degrade to a failed task, never a dead worker.
+    if (platform::DeviceIsLost()) {
+        Log("warn", "RunUnaryKernel: device is lost; refusing to submit");
+        return std::nullopt;
+    }
+
     // size_t, not uint64_t. webgpu.h descriptors take uint64_t sizes but the
     // *functions* (WriteBuffer, MapAsync, GetConstMappedRange) take size_t —
     // which is 32-bit on wasm32 and 64-bit natively. Holding this as size_t

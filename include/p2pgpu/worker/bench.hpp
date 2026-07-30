@@ -66,4 +66,33 @@ struct BenchSample {
                                              std::string_view wgsl,
                                              std::uint32_t repetitions);
 
+struct ChunkSample {
+    std::uint32_t chunks = 0;
+    std::uint32_t iterations_per_chunk = 0;
+    double wall_ms = 0.0;         ///< total for all chunks, including yields
+    double max_chunk_ms = 0.0;    ///< slowest single chunk — the R4 number
+    double overhead_pct = 0.0;    ///< vs. the 1-chunk baseline
+};
+
+/// Chunking spike (step 0.15) — the empirical test of rule R4.
+///
+/// R4 says no single dispatch may represent more than ~250 ms of work, because
+/// Windows kills GPU work that blocks ~2 s and resets the driver. So every long
+/// task MUST be many short dispatches. That is only viable if splitting is
+/// cheap, and this measures how cheap.
+///
+/// Holds total work constant and varies how many pieces it is cut into. Each
+/// chunk is submitted SEPARATELY with a Yield() between, which is the real R4
+/// pattern — batching them into one command buffer would leave no opportunity
+/// to yield, and on the browser a non-yielding worker freezes the tab.
+///
+/// So each chunk pays the full submit round trip, not the cheaper marginal
+/// dispatch cost. That is the honest cost of being interruptible.
+[[nodiscard]] std::vector<ChunkSample> RunChunkingSpike(
+    const platform::GpuContext& ctx,
+    std::string_view wgsl,
+    std::uint32_t invocations,
+    std::uint32_t total_iterations,
+    const std::vector<std::uint32_t>& chunk_counts);
+
 }  // namespace p2pgpu::worker

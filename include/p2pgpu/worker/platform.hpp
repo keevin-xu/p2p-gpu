@@ -133,6 +133,23 @@ void ReleaseDevice(GpuContext& ctx);
 /// The handler must release leases, re-acquire, and re-register.
 void OnDeviceLost(std::function<void()> handler);
 
+/// Has the current device been lost or destroyed?
+///
+/// MUST be checked before submitting GPU work. Discovered in step 0.14:
+/// `wgpuQueueSubmit` on a lost device does not return an error — it panics
+/// inside wgpu-native and **aborts the process**. A Rust panic cannot be caught
+/// from C++, so the only defence is not making the call. Worse, the create
+/// functions return non-null but *invalid* objects on a lost device, so
+/// ordinary null checks sail straight past (D-0022).
+///
+/// Cleared by a successful AcquireDevice. One device per process is assumed.
+[[nodiscard]] bool DeviceIsLost();
+
+/// Record that the device is gone. Called by the seam's own loss callback;
+/// also callable by anything that learns of the loss first — the callback is
+/// asynchronous and may not have run yet.
+void MarkDeviceLost();
+
 /// Yield control so the host stays responsive between dispatches (R4/K1).
 /// Native: a no-op or short sleep. WASM: returns to the Emscripten main loop.
 /// NEVER busy-wait — on WASM that freezes the tab.

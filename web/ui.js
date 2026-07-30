@@ -28,9 +28,29 @@
   "use strict";
 
   var startBtn = document.getElementById("start");
+  var chunkBtn = document.getElementById("chunk");
   var statusEl = document.getElementById("status");
   var logEl = document.getElementById("log");
+  var heartbeatEl = document.getElementById("heartbeat");
   var lines = [];
+
+  // Responsiveness probe for step 0.15. A plain main-thread timer: if the
+  // worker ever blocks rather than yielding, the browser cannot run this and
+  // the number stops. Objective evidence, not a subjective impression.
+  var ticks = 0;
+  var stalls = 0;
+  var lastTick = Date.now();
+  setInterval(function () {
+    var now = Date.now();
+    var gap = now - lastTick;
+    lastTick = now;
+    ticks++;
+    // Expected gap is 100 ms. Anything past 500 ms means the main thread was
+    // held hostage — exactly what yielding is supposed to prevent.
+    if (gap > 500) { stalls++; }
+    heartbeatEl.textContent =
+      "heartbeat: " + ticks + " ticks, " + stalls + " stalls (gap " + gap + "ms)";
+  }, 100);
 
   function setStatus(text, cls) {
     statusEl.textContent = text;
@@ -61,10 +81,46 @@
   createP2pgpuWorker().then(function (mod) {
     worker = mod;
     startBtn.disabled = false;
+    chunkBtn.disabled = false;
     startBtn.textContent = "Start contributing";
     setStatus("ready — click to start. No GPU work has run yet.");
   }).catch(function (err) {
     setStatus("failed to load worker module: " + err, "fail");
+  });
+
+  chunkBtn.addEventListener("click", function () {
+    if (worker === null) { return; }
+    // R7 applies here too: GPU work only ever starts from a user click.
+    chunkBtn.disabled = true;
+    startBtn.disabled = true;
+    chunkBtn.textContent = "Running…";
+    setStatus("● contributing — chunking spike running (watch the heartbeat)",
+              "running");
+    var stallsBefore = stalls;
+
+    worker
+      .ccall("p2pgpu_run_chunking", "number", [], [], { async: true })
+      .then(function (rc) {
+        var stalled = stalls - stallsBefore;
+        if (rc === 0 && stalled === 0) {
+          setStatus("✓ chunking done — tab stayed responsive (0 stalls)", "pass");
+        } else if (rc === 0) {
+          setStatus("⚠ chunking done but the main thread stalled " + stalled +
+                    "x — yielding is not working", "fail");
+        } else {
+          setStatus("✗ chunking spike failed — see output", "fail");
+        }
+        append("[dev] main-thread stalls during run: " + stalled);
+        chunkBtn.disabled = false;
+        startBtn.disabled = false;
+        chunkBtn.textContent = "Chunking spike (0.15)";
+
+        var report = worker.ccall("p2pgpu_report", "string", [], []);
+        fetch("/report?name=0.15-chunking-browser.txt",
+              { method: "POST", body: report })
+          .then(function () { append("[dev] posted results/0.15-chunking-browser.txt"); })
+          .catch(function () { append("[dev] POST failed — copy the text above"); });
+      });
   });
 
   startBtn.addEventListener("click", function () {

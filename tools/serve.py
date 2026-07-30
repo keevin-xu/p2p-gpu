@@ -40,9 +40,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         hand. It is unauthenticated and writes to a fixed filename, which is
         fine for a loopback-only dev server and would not be anywhere else.
         """
-        if self.path != "/report":
+        path, _, query = self.path.partition("?")
+        if path != "/report":
             self.send_error(404)
             return
+
+        # Optional ?name=... so different steps land in different files.
+        # Sanitized to a bare filename: a dev tool still must not let a request
+        # choose where on disk to write.
+        name = "0.9-browser.txt"
+        for part in query.split("&"):
+            key, _, value = part.partition("=")
+            if key == "name" and value:
+                candidate = os.path.basename(value)
+                if candidate and candidate not in (".", "..") and "/" not in candidate:
+                    name = candidate
 
         length = int(self.headers.get("Content-Length", 0))
         # Bound it. Even a dev tool should not let a stray request allocate
@@ -53,10 +65,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         body = self.rfile.read(length)
         os.makedirs(self.results_dir, exist_ok=True)
-        path = os.path.join(self.results_dir, "0.9-browser.txt")
-        with open(path, "wb") as f:
+        out_path = os.path.join(self.results_dir, name)
+        with open(out_path, "wb") as f:
             f.write(body)
-        print(f"  wrote {path} ({len(body)} bytes)")
+        print(f"  wrote {out_path} ({len(body)} bytes)")
 
         self.send_response(204)
         self.end_headers()

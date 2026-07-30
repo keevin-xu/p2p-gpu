@@ -24,6 +24,7 @@
 
 #include <emscripten/emscripten.h>
 
+#include "p2pgpu/worker/bench.hpp"
 #include "p2pgpu/worker/platform.hpp"
 #include "p2pgpu/worker/smoke.hpp"
 
@@ -88,6 +89,76 @@ extern "C" EMSCRIPTEN_KEEPALIVE int p2pgpu_run_smoke_test() {
 /// The canonical report text, for ui.js to POST back for cross-target diffing.
 extern "C" EMSCRIPTEN_KEEPALIVE const char* p2pgpu_report() {
     return g_report.c_str();
+}
+
+/// Step 0.15, browser half — the chunking spike, and the responsiveness test.
+///
+/// The native run (D-0020) measured a 0.469 ms fixed cost per chunk. The browser
+/// number should be HIGHER: every Yield() here unwinds and rewinds the whole
+/// call stack through ASYNCIFY, which has no native equivalent. Measuring that
+/// gap is the point.
+///
+/// The other half of the step is qualitative but not optional: the tab must
+/// stay responsive while this runs. ui.js drives a counter on a timer, which
+/// can only keep ticking if we are genuinely returning to the event loop
+/// between chunks rather than hogging the main thread.
+extern "C" EMSCRIPTEN_KEEPALIVE int p2pgpu_run_chunking() {
+    namespace platform = p2pgpu::worker::platform;
+
+    const std::string wgsl = ReadFile("/kernels/calibrate.wgsl");
+    if (wgsl.empty()) {
+        platform::Log("error", "could not read embedded calibrate.wgsl");
+        return 1;
+    }
+
+    platform::GpuContext ctx;
+    if (!platform::AcquireDevice(ctx)) {
+        platform::Log("error", "no WebGPU device available");
+        return 1;
+    }
+
+    // Same total work as the native run so the two are directly comparable.
+    constexpr std::uint32_t kInvocations = 1u << 21;
+    constexpr std::uint32_t kTotalIterations = 32768;
+    const std::vector<std::uint32_t> counts{1, 2, 4, 8, 16, 32, 64};
+
+    const auto samples = p2pgpu::worker::RunChunkingSpike(
+        ctx, wgsl, kInvocations, kTotalIterations, counts);
+    platform::ReleaseDevice(ctx);
+
+    if (samples.empty()) {
+        platform::Log("error", "chunking spike produced no samples");
+        return 1;
+    }
+
+    std::string csv =
+        "# p2pgpu step 0.15 - chunking spike (browser)\n"
+        "# total work held CONSTANT: 2097152 invocations x 32768 iterations\n"
+        "chunks,iterations_per_chunk,wall_ms,max_chunk_ms,overhead_pct\n";
+    for (const auto& s : samples) {
+        csv += std::to_string(s.chunks) + "," +
+               std::to_string(s.iterations_per_chunk) + "," +
+               std::to_string(s.wall_ms) + "," +
+               std::to_string(s.max_chunk_ms) + "," +
+               std::to_string(s.overhead_pct) + "\n";
+        platform::Log("info", "chunks=" + std::to_string(s.chunks) +
+                                  " wall_ms=" + std::to_string(s.wall_ms) +
+                                  " max_chunk_ms=" + std::to_string(s.max_chunk_ms) +
+                                  " overhead_pct=" + std::to_string(s.overhead_pct));
+    }
+
+    const auto& base = samples.front();
+    const auto& finest = samples.back();
+    if (finest.chunks > base.chunks) {
+        const double per_chunk_ms = (finest.wall_ms - base.wall_ms) /
+                                    static_cast<double>(finest.chunks - base.chunks);
+        csv += "# per_chunk_fixed_cost_ms=" + std::to_string(per_chunk_ms) + "\n";
+        platform::Log("info", "per_chunk_fixed_cost_ms=" + std::to_string(per_chunk_ms) +
+                                  "  (native was 0.469)");
+    }
+
+    g_report = csv;
+    return 0;
 }
 
 int main() {

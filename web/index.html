@@ -54,9 +54,23 @@
         <strong>Nothing runs until you click.</strong>
       </p>
 
-      <p><button id="start" disabled>Loading…</button></p>
+      <p>
+        <button id="start" disabled>Loading…</button>
+        <button id="chunk" disabled>Chunking spike (0.15)</button>
+      </p>
 
       <div id="status">idle — no GPU work has been started</div>
+
+      <!--
+        RESPONSIVENESS TEST (step 0.15).
+
+        This counter is driven by a plain setInterval on the main thread. If the
+        worker ever blocks instead of yielding, the browser cannot run the timer
+        and the counter FREEZES. So it is an objective check that we really are
+        returning to the event loop between chunks, rather than a subjective
+        "the tab felt fine". Watch it while the spike runs.
+      -->
+      <div id="heartbeat">heartbeat: — <span class="note">(must keep ticking during GPU work)</span></div>
 
       <pre id="log">(output appears here)</pre>
 

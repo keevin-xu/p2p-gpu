@@ -76,6 +76,13 @@ Prepared Prepare(const platform::GpuContext& ctx, std::string_view wgsl,
                  std::uint32_t workgroups) {
     Prepared p;
 
+    // Same guard as kernel_host: submitting to a lost device aborts the process
+    // rather than returning an error (D-0022).
+    if (platform::DeviceIsLost()) {
+        Log("warn", "calibrate: device is lost; refusing to submit");
+        return p;
+    }
+
     WGPUShaderSourceWGSL src{};
     src.chain.sType = WGPUSType_ShaderSourceWGSL;
     src.code = WGPUStringView{wgsl.data(), wgsl.size()};
@@ -257,6 +264,80 @@ double MeasureDispatchOverheadUs(const platform::GpuContext& ctx,
         if (best_us < 0.0 || us < best_us) { best_us = us; }
     }
     return best_us;
+}
+
+std::vector<ChunkSample> RunChunkingSpike(const platform::GpuContext& ctx,
+                                          std::string_view wgsl,
+                                          std::uint32_t invocations,
+                                          std::uint32_t total_iterations,
+                                          const std::vector<std::uint32_t>& chunk_counts) {
+    std::vector<ChunkSample> out;
+    if (!ctx.valid() || invocations == 0 || total_iterations == 0) { return out; }
+
+    const std::uint32_t workgroups = (invocations + kWorkgroupSize - 1) / kWorkgroupSize;
+    double baseline_ms = -1.0;
+
+    for (const std::uint32_t chunks : chunk_counts) {
+        if (chunks == 0 || total_iterations % chunks != 0) {
+            // Skip rather than round: unequal chunks would make the comparison
+            // dishonest, since total work would no longer be held constant.
+            Log("warn", "chunking: " + std::to_string(total_iterations) +
+                            " iterations does not divide into " +
+                            std::to_string(chunks) + " chunks; skipping");
+            continue;
+        }
+
+        Prepared p = Prepare(ctx, wgsl, workgroups);
+        if (!p.ok) { continue; }
+
+        const std::uint32_t per_chunk = total_iterations / chunks;
+        const CalibrateParams params{per_chunk, 0x9E3779B9U};
+        const auto raw = std::bit_cast<std::array<std::byte, sizeof(CalibrateParams)>>(params);
+        wgpuQueueWriteBuffer(ctx.queue, p.params_buf.get(), 0, raw.data(), raw.size());
+
+        (void)TimedSubmit(ctx, p, workgroups, 1);   // warm up
+
+        double best_total = -1.0;
+        double best_max_chunk = -1.0;
+        for (int trial = 0; trial < 3; ++trial) {
+            double total = 0.0;
+            double max_chunk = 0.0;
+            bool failed = false;
+
+            for (std::uint32_t c = 0; c < chunks; ++c) {
+                // One dispatch per submit — the real R4 pattern. Batching would
+                // be faster and would also make yielding impossible.
+                const double ms = TimedSubmit(ctx, p, workgroups, 1);
+                if (ms < 0.0) { failed = true; break; }
+                total += ms;
+                max_chunk = std::max(max_chunk, ms);
+
+                // The yield that makes chunking worth doing. A no-op natively;
+                // on the browser this returns to the event loop and is what
+                // keeps the tab responsive (R4/K1).
+                platform::Yield();
+            }
+            if (failed) { continue; }
+            if (best_total < 0.0 || total < best_total) {
+                best_total = total;
+                best_max_chunk = max_chunk;
+            }
+        }
+        if (best_total < 0.0) { continue; }
+
+        if (chunks == 1) { baseline_ms = best_total; }
+
+        ChunkSample s;
+        s.chunks = chunks;
+        s.iterations_per_chunk = per_chunk;
+        s.wall_ms = best_total;
+        s.max_chunk_ms = best_max_chunk;
+        s.overhead_pct = baseline_ms > 0.0
+                             ? 100.0 * (best_total - baseline_ms) / baseline_ms
+                             : 0.0;
+        out.push_back(s);
+    }
+    return out;
 }
 
 double MeasureSubmitOverheadUs(const platform::GpuContext& ctx,

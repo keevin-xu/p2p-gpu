@@ -134,6 +134,7 @@ add_library(p2pgpu-worker-core STATIC
     src/worker-core/smoke.cpp              # portable: shared 0.6/0.8/0.9 checks
     src/worker-core/gpu_info.cpp           # portable: adapter info, features, limits
     src/worker-core/bench.cpp              # portable: throughput + overhead (0.10-0.12)
+    src/worker-core/recovery.cpp           # portable: device-loss recovery (0.14)
     src/worker-core/transport.cpp          # portable: libdatachannel API on both
 )
 target_include_directories(p2pgpu-worker-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -241,8 +242,9 @@ else()
         # keeps each flag glued to its own argument.
         "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/kernels/smoke_double.wgsl@/kernels/smoke_double.wgsl"
         "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/kernels/smoke_hash.wgsl@/kernels/smoke_hash.wgsl"
+        "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/kernels/calibrate.wgsl@/kernels/calibrate.wgsl"
         # p2pgpu_run_smoke_test is called from ui.js on the R7 opt-in click.
-        -sEXPORTED_FUNCTIONS=_main,_p2pgpu_run_smoke_test,_p2pgpu_report
+        -sEXPORTED_FUNCTIONS=_main,_p2pgpu_run_smoke_test,_p2pgpu_run_chunking,_p2pgpu_report
         -sEXPORTED_RUNTIME_METHODS=ccall,cwrap
         # ASYNCIFY yields between dispatches (R4) without blocking. NOTE its
         # tension with step 1.24's -sPROXY_TO_PTHREAD: with the task loop on its
