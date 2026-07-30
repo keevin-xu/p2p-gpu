@@ -31,6 +31,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     # served directory.
     results_dir = "results"
 
+    def _browser_tag(self) -> str:
+        """Short browser name from the User-Agent.
+
+        Order matters: Chrome's UA contains "Safari", and Edge's contains both
+        "Chrome" and "Safari", so the most specific match has to win. Getting
+        this backwards would file every Chrome result under "safari".
+        """
+        ua = self.headers.get("User-Agent", "")
+        for needle, tag in (("Edg/", "edge"),
+                            ("OPR/", "opera"),
+                            ("Firefox/", "firefox"),
+                            ("Chrome/", "chrome"),
+                            ("Safari/", "safari")):
+            if needle in ua:
+                return tag
+        return "unknown"
+
     def do_POST(self):  # noqa: N802 - name fixed by BaseHTTPRequestHandler
         """Capture the browser's step-0.9 report so it can be diffed offline.
 
@@ -55,6 +72,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 candidate = os.path.basename(value)
                 if candidate and candidate not in (".", "..") and "/" not in candidate:
                     name = candidate
+
+        # Tag the filename with the browser, so running the same step in Safari
+        # does not silently overwrite the Chrome results. Derived server-side
+        # from the User-Agent rather than in ui.js, which stays logic-free (R1).
+        stem, ext = os.path.splitext(name)
+        name = f"{stem}-{self._browser_tag()}{ext or '.txt'}"
 
         length = int(self.headers.get("Content-Length", 0))
         # Bound it. Even a dev tool should not let a stray request allocate

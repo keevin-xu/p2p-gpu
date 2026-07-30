@@ -282,7 +282,7 @@ else()
         "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/kernels/smoke_hash.wgsl@/kernels/smoke_hash.wgsl"
         "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/kernels/calibrate.wgsl@/kernels/calibrate.wgsl"
         # p2pgpu_run_smoke_test is called from ui.js on the R7 opt-in click.
-        -sEXPORTED_FUNCTIONS=_main,_p2pgpu_run_smoke_test,_p2pgpu_run_chunking,_p2pgpu_report
+        -sEXPORTED_FUNCTIONS=_main,_p2pgpu_run_smoke_test,_p2pgpu_run_chunking,_p2pgpu_run_bench,_p2pgpu_report
         -sEXPORTED_RUNTIME_METHODS=ccall,cwrap
         # ASYNCIFY yields between dispatches (R4) without blocking. NOTE its
         # tension with step 1.24's -sPROXY_TO_PTHREAD: with the task loop on its

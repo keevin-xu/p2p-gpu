@@ -29,6 +29,7 @@
 
   var startBtn = document.getElementById("start");
   var chunkBtn = document.getElementById("chunk");
+  var benchBtn = document.getElementById("bench");
   var statusEl = document.getElementById("status");
   var logEl = document.getElementById("log");
   var heartbeatEl = document.getElementById("heartbeat");
@@ -82,10 +83,38 @@
     worker = mod;
     startBtn.disabled = false;
     chunkBtn.disabled = false;
+    benchBtn.disabled = false;
     startBtn.textContent = "Start contributing";
     setStatus("ready — click to start. No GPU work has run yet.");
   }).catch(function (err) {
     setStatus("failed to load worker module: " + err, "fail");
+  });
+
+  benchBtn.addEventListener("click", function () {
+    if (worker === null) { return; }
+    // R7: GPU work only ever starts from a user click.
+    benchBtn.disabled = true;
+    startBtn.disabled = true;
+    chunkBtn.disabled = true;
+    benchBtn.textContent = "Running…";
+    setStatus("● contributing — throughput benchmark running (~30s)", "running");
+
+    worker
+      .ccall("p2pgpu_run_bench", "number", [], [], { async: true })
+      .then(function (rc) {
+        setStatus(rc === 0 ? "✓ throughput measured — see output"
+                           : "✗ benchmark failed — see output",
+                  rc === 0 ? "pass" : "fail");
+        benchBtn.disabled = false;
+        startBtn.disabled = false;
+        chunkBtn.disabled = false;
+        benchBtn.textContent = "Throughput (0.11)";
+
+        var report = worker.ccall("p2pgpu_report", "string", [], []);
+        fetch("/report?name=0.11-throughput.csv", { method: "POST", body: report })
+          .then(function () { append("[dev] posted results/0.11-throughput-<browser>.csv"); })
+          .catch(function () { append("[dev] POST failed — copy the text above"); });
+      });
   });
 
   chunkBtn.addEventListener("click", function () {

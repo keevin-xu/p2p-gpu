@@ -161,6 +161,82 @@ extern "C" EMSCRIPTEN_KEEPALIVE int p2pgpu_run_chunking() {
     return 0;
 }
 
+/// Step 0.11 in the browser (reached via step 0.13's Safari run).
+///
+/// The native number is 1,874 GFLOP/s, and the browser measured *faster* than
+/// native on the chunking baseline (D-0021) — likely Dawn/Tint generating
+/// better Metal than wgpu-native's naga, but unconfirmed. This produces the
+/// browser's own GFLOP/s so that question can be settled with a number instead
+/// of a hypothesis, and so E7 can separate implementation from environment.
+extern "C" EMSCRIPTEN_KEEPALIVE int p2pgpu_run_bench() {
+    namespace platform = p2pgpu::worker::platform;
+
+    const std::string wgsl = ReadFile("/kernels/calibrate.wgsl");
+    if (wgsl.empty()) {
+        platform::Log("error", "could not read embedded calibrate.wgsl");
+        return 1;
+    }
+
+    platform::GpuContext ctx;
+    if (!platform::AcquireDevice(ctx)) {
+        platform::Log("error", "no WebGPU device available");
+        return 1;
+    }
+
+    const platform::AdapterDescription a = platform::DescribeAdapter(ctx);
+    const bool has_ts = platform::HasFeature(ctx, WGPUFeatureName_TimestampQuery);
+
+    std::string features;
+    for (std::size_t i = 0; i < a.features.size(); ++i) {
+        features += (i ? "," : "") + a.features[i];
+    }
+
+    // Same sizes and iteration count as the native run, so the two CSVs are
+    // directly comparable row for row.
+    const std::vector<std::uint32_t> sizes{
+        1u << 12, 1u << 14, 1u << 16, 1u << 18, 1u << 20, 1u << 22,
+    };
+    const auto samples = p2pgpu::worker::RunCalibration(ctx, wgsl, sizes, 2048);
+    const double dispatch_us =
+        p2pgpu::worker::MeasureDispatchOverheadUs(ctx, wgsl, 1000);
+    const double submit_us =
+        p2pgpu::worker::MeasureSubmitOverheadUs(ctx, wgsl, 200);
+    platform::ReleaseDevice(ctx);
+
+    if (samples.empty()) {
+        platform::Log("error", "calibration produced no samples");
+        return 1;
+    }
+
+    std::string csv = "# p2pgpu step 0.11 - calibrate_v1 throughput (browser)\n";
+    csv += "# adapter=" + a.vendor + "/" + a.architecture + "/" + a.device +
+           " backend=" + a.backend + "\n";
+    csv += "# features=" + features + " timestamp_query=" +
+           (has_ts ? "yes" : "no") + "\n";
+    csv += "invocations,iterations,dispatches,flops,wall_ms,gflops\n";
+
+    double best = 0.0;
+    for (const auto& s : samples) {
+        csv += std::to_string(s.invocations) + "," + std::to_string(s.iterations) +
+               "," + std::to_string(s.dispatches) + "," + std::to_string(s.flops) +
+               "," + std::to_string(s.wall_ms) + "," + std::to_string(s.gflops) + "\n";
+        if (s.gflops > best) { best = s.gflops; }
+    }
+    csv += "# per_dispatch_overhead_us=" + std::to_string(dispatch_us) + "\n";
+    csv += "# per_submit_overhead_us=" + std::to_string(submit_us) + "\n";
+
+    platform::Log("info", "adapter : " + a.vendor + " / " + a.architecture +
+                              " / " + a.device + "  backend=" + a.backend);
+    platform::Log("info", "features: " + features);
+    platform::Log("info", "peak GFLOP/s = " + std::to_string(best) +
+                              "   (native measured 1874)");
+    platform::Log("info", "dispatch_us = " + std::to_string(dispatch_us) +
+                              "  submit_us = " + std::to_string(submit_us));
+
+    g_report = csv;
+    return 0;
+}
+
 int main() {
     // Deliberately does NO GPU work — that is the whole point of R7. The
     // runtime stays alive after main returns (-sEXIT_RUNTIME=0), and the

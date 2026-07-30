@@ -2,7 +2,7 @@
 """Step 0.9 — compare native and browser kernel output bitwise.
 
     python3 tools/compare_targets.py [--native results/0.9-native.txt]
-                                     [--browser results/0.9-browser.txt]
+                                     [--browser results/0.9-browser-<browser>.txt]
 
 What this proves, and what it does not:
 
@@ -52,7 +52,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--native", default="results/0.9-native.txt")
-    ap.add_argument("--browser", default="results/0.9-browser.txt")
+    ap.add_argument("--browser", default="results/0.9-browser-chrome.txt")
     args = ap.parse_args()
 
     n_fp, n_body, n_order = parse(args.native)
