@@ -20,13 +20,6 @@ Distributed matmul is ~10². Distributed neural network training is ~10³. Naive
 
 Workloads here either clear 10⁶ naturally (brute-force search, Monte Carlo) or are restructured to clear it via **on-node accumulation** — workers refine a result locally and upload only the running average on a fixed cadence, making arithmetic intensity a tuning knob rather than a fixed property of the workload.
 
-Full derivation and prior art: [`RESEARCH.md`](RESEARCH.md).
-
-**New to GPU compute or distributed systems?** [`docs/PRIMER.md`](docs/PRIMER.md)
-explains the whole project from scratch — what a GPU kernel is, how the build
-works, where the 10⁶ number comes from, and why untrusted workers make result
-verification hard. Diagrams throughout.
-
 ---
 
 ## Stack
@@ -41,8 +34,6 @@ verification hard. Diagrams throughout.
 | Worker transport | libdatachannel / datachannel-wasm — same API on both targets |
 | WebGPU | wgpu-native (`webgpu.h`) natively, Emscripten bindings in the browser |
 | Kernels | WGSL, shared verbatim |
-
-The single-language architecture is possible because libdatachannel exposes one WebRTC API to both native and WASM — the gap that usually forces a JavaScript or TypeScript layer in the browser. Rationale: [`docs/DECISIONS.md`](docs/DECISIONS.md) D-0008.
 
 ## Security posture
 
