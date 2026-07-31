@@ -54,6 +54,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int p2pgpu_run_smoke_test() {
 
     const std::string double_src = ReadFile("/kernels/smoke_double.wgsl");
     const std::string hash_src   = ReadFile("/kernels/smoke_hash.wgsl");
+    const std::string probe_src  = ReadFile("/kernels/divergence_probe.wgsl");
     if (double_src.empty() || hash_src.empty()) {
         platform::Log("error", "could not read embedded kernels");
         return 1;
@@ -74,6 +75,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE int p2pgpu_run_smoke_test() {
     const std::vector<p2pgpu::worker::KernelSource> kernels{
         {"smoke_double", double_src},
         {"smoke_hash", hash_src},
+        // R6 evidence (step 0.16). Dumped, not verified — no CPU reference
+        // exists for transcendentals, which is the entire point.
+        {"divergence_probe", probe_src},
     };
     const auto report = p2pgpu::worker::RunSmokeSuite(ctx, kernels);
     platform::ReleaseDevice(ctx);

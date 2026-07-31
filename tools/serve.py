@@ -125,6 +125,10 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--results", default="results",
                         help="where POSTed reports land (default: results)")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="bind address. Default is loopback only. Use "
+                             "--host 0.0.0.0 to let ANOTHER MACHINE on your "
+                             "network reach it (step 0.16).")
     args = parser.parse_args()
 
     Handler.results_dir = os.path.abspath(args.results)
@@ -135,9 +139,16 @@ def main() -> int:
 
     handler = functools.partial(Handler, directory=args.dir)
     socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("127.0.0.1", args.port), handler) as httpd:
-        print(f"serving {args.dir} at http://localhost:{args.port}")
+    with socketserver.TCPServer((args.host, args.port), handler) as httpd:
+        print(f"serving {args.dir} at http://{args.host}:{args.port}")
         print("  COOP/COEP enabled (cross-origin isolated)")
+        if args.host not in ("127.0.0.1", "localhost"):
+            # Say this plainly. The POST handler writes files and does no
+            # authentication whatsoever — fine on loopback, a real exposure on
+            # a shared or public network.
+            print("  WARNING: reachable from the network. This server accepts "
+                  "unauthenticated POSTs that WRITE FILES.")
+            print("           Use only on a trusted network, and stop it when done.")
         print("  Ctrl-C to stop")
         try:
             httpd.serve_forever()

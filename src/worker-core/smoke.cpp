@@ -81,6 +81,16 @@ T LoadElement(std::span<const std::byte> bytes, std::uint32_t i) noexcept {
     return std::bit_cast<T>(raw);
 }
 
+/// The probe is dumped, not judged — `match=n/a` says so on the face of it.
+std::string ProbeLine(std::string_view kernel, std::uint64_t fp) {
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+                  "kernel=%.*s elements=%u fnv1a=%016llx match=n/a\n",
+                  static_cast<int>(kernel.size()), kernel.data(), kElementCount,
+                  static_cast<unsigned long long>(fp));
+    return std::string{buf};
+}
+
 std::string Line(std::string_view kernel, std::uint64_t fp, bool ok) {
     char buf[160];
     std::snprintf(buf, sizeof(buf), "kernel=%.*s elements=%u fnv1a=%016llx match=%s\n",
@@ -105,6 +115,12 @@ SmokeReport RunSmokeSuite(const platform::GpuContext& ctx,
         std::iota(u_in.begin(), u_in.end(), 1U);
 
         const bool is_hash = k.name.find("hash") != std::string_view::npos;
+        // The divergence probe has NO CPU reference: it is deliberately built
+        // from transcendentals that no two implementations compute identically
+        // (R6). Checking it against a CPU would just measure how far a CPU is
+        // from a GPU, which is not the question. It is dumped for cross-machine
+        // comparison instead — see tools/compare_ulp.py.
+        const bool is_probe = k.name.find("divergence") != std::string_view::npos;
         const std::span<const std::byte> input = is_hash ? AsBytes(u_in) : AsBytes(f_in);
 
         const auto result =
@@ -130,7 +146,7 @@ SmokeReport RunSmokeSuite(const platform::GpuContext& ctx,
         // need R6 tolerance handling instead.
         const std::span<const std::byte> out_bytes{*result};
         std::size_t mismatches = 0;
-        for (std::uint32_t i = 0; i < kElementCount; ++i) {
+        for (std::uint32_t i = 0; is_probe ? false : (i < kElementCount); ++i) {
             const bool ok_elem =
                 is_hash ? LoadElement<std::uint32_t>(out_bytes, i) == PcgHash(u_in[i])
                         : LoadElement<float>(out_bytes, i) == f_in[i] * 2.0F;
@@ -141,9 +157,14 @@ SmokeReport RunSmokeSuite(const platform::GpuContext& ctx,
 
         const std::uint64_t fp = Fingerprint(*result);
         const bool ok = (mismatches == 0);
-        out.passed = out.passed && ok;
+        // The probe has no reference to be right or wrong against, so it must
+        // not influence the suite verdict. Reporting it as "passing" would
+        // imply a check that never happened.
+        if (!is_probe) {
+            out.passed = out.passed && ok;
+        }
 
-        out.report += Line(k.name, fp, ok);
+        out.report += is_probe ? ProbeLine(k.name, fp) : Line(k.name, fp, ok);
         if (!ok) {
             out.report += "  mismatches=" + std::to_string(mismatches) + "\n";
         }

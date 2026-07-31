@@ -318,6 +318,7 @@ int RunRecovery(const std::string& dir) {
 int RunSmoke(const platform::GpuContext& ctx, const std::string& dir) {
     const std::string double_src = ReadFile(dir + "/smoke_double.wgsl");
     const std::string hash_src   = ReadFile(dir + "/smoke_hash.wgsl");
+    const std::string probe_src  = ReadFile(dir + "/divergence_probe.wgsl");
     if (double_src.empty() || hash_src.empty()) {
         std::fprintf(stderr, "could not read kernels from %s\n", dir.c_str());
         return 1;
@@ -332,6 +333,9 @@ int RunSmoke(const platform::GpuContext& ctx, const std::string& dir) {
     const std::vector<p2pgpu::worker::KernelSource> kernels{
         {"smoke_double", double_src},
         {"smoke_hash", hash_src},
+        // R6 evidence (step 0.16). Dumped, not verified — no CPU reference
+        // exists for transcendentals, which is the entire point.
+        {"divergence_probe", probe_src},
     };
     const auto report = p2pgpu::worker::RunSmokeSuite(ctx, kernels);
 

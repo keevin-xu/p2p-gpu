@@ -281,6 +281,7 @@ else()
         "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/kernels/smoke_double.wgsl@/kernels/smoke_double.wgsl"
         "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/kernels/smoke_hash.wgsl@/kernels/smoke_hash.wgsl"
         "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/kernels/calibrate.wgsl@/kernels/calibrate.wgsl"
+        "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/kernels/divergence_probe.wgsl@/kernels/divergence_probe.wgsl"
         # p2pgpu_run_smoke_test is called from ui.js on the R7 opt-in click.
         -sEXPORTED_FUNCTIONS=_main,_p2pgpu_run_smoke_test,_p2pgpu_run_chunking,_p2pgpu_run_bench,_p2pgpu_report
         -sEXPORTED_RUNTIME_METHODS=ccall,cwrap
