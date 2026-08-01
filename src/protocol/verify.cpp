@@ -41,17 +41,34 @@ namespace p2pgpu::protocol {
 // Checking the VERIFIER specifically is the point. It is the single sanctioned
 // bytes->fields path (R11), so a build where the type exists but the verifier
 // is missing would be useless — and would not be noticed until step 1.3.
-static_assert(sizeof(p2pgpu::wire::BuildProbe) > 0,
-              "flatc did not generate the expected root table");
+static_assert(sizeof(p2pgpu::wire::Envelope) > 0,
+              "flatc did not generate the root table");
 
 // The verifier is a template (VerifierTemplate<B>), not a plain function, so
 // this checks invocability with the concrete flatbuffers::Verifier rather than
 // matching an exact signature — which would break on a flatbuffers upgrade for
 // no good reason.
 static_assert(std::is_invocable_r_v<bool,
-                                    decltype(p2pgpu::wire::VerifyBuildProbeBuffer<false>),
+                                    decltype(p2pgpu::wire::VerifyEnvelopeBuffer<false>),
                                     ::flatbuffers::Verifier&>,
               "generated verifier is missing or not callable with a Verifier");
+
+// Structs are fixed-layout and inline, so their sizes are part of the wire
+// format. If flatc ever lays these out differently the frame decoder's
+// assumptions break silently, which is the expensive kind of protocol bug.
+static_assert(sizeof(p2pgpu::wire::Uuid) == 16, "Uuid must be two u64");
+static_assert(sizeof(p2pgpu::wire::Hash32) == 32, "Hash32 must be four u64");
+
+// The Body union is wire-numbered by declaration order (NONE = 0). Pinning the
+// first and last members catches an accidental reorder at COMPILE time rather
+// than as mysterious cross-version misrouting. Appending a member moves `Error`
+// and will trip this deliberately — when that happens, confirm the change was
+// an append, then update the expected value.
+static_assert(static_cast<int>(p2pgpu::wire::Body::NONE) == 0);
+static_assert(static_cast<int>(p2pgpu::wire::Body::Hello) == 1);
+static_assert(static_cast<int>(p2pgpu::wire::Body::Error) == 17,
+              "Body union member order changed — this is a WIRE BREAK unless "
+              "the change was a pure append (see p2pgpu.fbs)");
 
 // TODO(1.2) ParseHeader(std::span<const std::byte>) -> std::optional<Header>
 //

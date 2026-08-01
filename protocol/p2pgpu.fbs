@@ -16,7 +16,20 @@
 // Step 4 is not optional. Every new message shape is new attack surface,
 // and this schema is reachable by any anonymous worker on the internet.
 //
-// Implement in Phase 1, step 1.1. See docs/phases/PHASE_1.md.
+// ── WHAT FLATBUFFERS DOES AND DOES NOT GIVE US ───────────────────────────
+// It guarantees a verified buffer can be READ without memory corruption. It
+// does NOT enforce any semantic bound: nothing here stops a worker declaring
+// `output_spec.bytes = 4 GiB`. Every limit in docs/PROTOCOL.md §4 is enforced
+// in code (step 1.4) against the constants in include/p2pgpu/protocol/limits.hpp.
+// Treat this file as a shape, never as a validator.
+//
+// ── FIELD ORDER IS PART OF THE CONTRACT ──────────────────────────────────
+// FlatBuffers assigns vtable slots by declaration order. APPENDING a field to
+// the end of a table is free and backward-compatible. Reordering or removing
+// one silently changes how old peers read new buffers. Append only.
+// The same applies to enum and union members: append, never reorder.
+//
+// Written in Phase 1, step 1.1.
 
 namespace p2pgpu.wire;
 
@@ -24,27 +37,86 @@ namespace p2pgpu.wire;
 // Structs (not tables) for fixed-size values: inline, no vtable, no
 // nullability to reason about at the trust boundary.
 
-struct Uuid   { hi: ulong; lo: ulong; }
+struct Uuid   { hi: ulong; lo: ulong; }                     // WorkerId / TaskId / JobId
 struct Hash32 { a: ulong; b: ulong; c: ulong; d: ulong; }   // BLAKE3-256
+
+/// Kernel dispatch geometry. A struct so it cannot be null or partially set.
+struct WorkgroupSize { x: uint; y: uint; z: uint; }
 
 enum DType : byte { U32, I32, F32, F16, Bytes }
 enum WorkerKind : byte { Browser, Native, Mock }
 enum AssetSource : byte { None, Cached, Peer, Coordinator }
 
+// Enum values are wire values. APPEND only — renumbering silently reinterprets
+// old messages. See docs/PROTOCOL.md §3.
+
+enum ReleaseReason : byte {
+  UserStopped,        // R7 stop control
+  TabHidden,
+  DeviceLost,         // R4 / TDR; see D-0022
+  AssetUnavailable,
+  TooSlow,
+  Shutdown,
+}
+
+enum RevokeReason : byte {
+  SpeculativeLoser,      // another worker won the race (step 2.17)
+  JobCancelled,
+  LeaseExpired,
+  ValidationSuperseded,
+}
+
+enum ErrorCode : byte {
+  VersionMismatch,
+  UnknownKernel,
+  MalformedMessage,
+  OrphanPayload,        // payload_follows set with no payload, or vice versa
+  PayloadTooLarge,
+  ChecksumMismatch,
+  LeaseNotHeld,
+  RateLimited,          // connection-level, NOT reputation (step 3.11/3.12)
+  Blacklisted,
+  Internal,
+}
+
 // ── Determinism (rule R6) ────────────────────────────────────────────────
 // Honest GPUs from different vendors disagree in the last few ULPs. This
 // union decides how the validator compares replicas. Misdeclaring it causes
 // honest workers to be blacklisted — see docs/RISKS.md §2.
+//
+// Confirmed empirically in step 0.9: naga, Tint, and WebKit produce
+// bitwise-identical output for our integer kernels, so `Exact` is real and not
+// merely hoped for. The cross-VENDOR case is still unmeasured (step 0.16).
 
-table Exact       {}                                     // integer path; bitwise valid
-table Tolerant    { rel_eps: float; abs_eps: float; }    // float within stated bounds
-table Statistical { /* test parameters — Phase 5 */ }    // Monte Carlo, distributional
+table Exact {}                                        // integer path; bitwise valid
+
+table Tolerant {
+  rel_eps: float;      // |a-b| <= abs_eps + rel_eps*|b|
+  abs_eps: float;      // both justified by measurement, not guessed (step 4.7)
+}
+
+/// Which distributional consistency test the validator runs. Body lands in
+/// Phase 5 (step 5.14); the enum exists now so the shape is fixed.
+enum StatTest : byte {
+  None,
+  VarianceRatio,       // sample variance vs. expected for the sample count
+  ChiSquared,
+  KolmogorovSmirnov,
+}
+
+table Statistical {
+  test: StatTest;
+  // Phase 5 appends its parameters here. Appending is free.
+}
 
 union DeterminismClass { Exact, Tolerant, Statistical }
 
 // ── Task ─────────────────────────────────────────────────────────────────
 
-table OutputSpec { bytes: uint; dtype: DType; }          // bytes <= 8 MiB (invariant 2)
+table OutputSpec {
+  bytes: uint;         // <= kMaxOutputBytes (8 MiB), invariant 2
+  dtype: DType;
+}
 
 table AccumulationSpec {
   upload_interval_ms: uint;    // >= 500 (invariant 7) — more often defeats R5
@@ -55,10 +127,10 @@ table TaskEnvelope {
   task_id:     Uuid;
   job_id:      Uuid;
   kernel_id:   string;          // key into kernels/manifest.toml
-  seed:        ulong;
+  seed:        ulong;           // with the unit range, fixes the work (K2)
   params:      [ubyte];         // uniform buffer bytes; <= 4 KiB (invariant 1)
   work_units:  ulong;           // sizer output; meaning is kernel-defined
-  input_ref:   Hash32;          // optional
+  input_ref:   Hash32;          // optional; absent => no bulk input
   output_spec: OutputSpec;
   lease_ms:    uint;
   replica_of:  Uuid;            // optional; set => this is a verification replica
@@ -75,7 +147,19 @@ table GpuLimits {
   max_compute_workgroup_storage_size: uint;
 }
 
-table AdapterInfo { vendor: string; architecture: string; device: string; backend: string; }
+/// Identity strings are ADVISORY ONLY.
+///
+/// Measured in steps 0.6/0.8/0.13: the same physical GPU reports three
+/// different things depending on implementation — native gives
+/// `(empty)/(empty)/Apple M4 Pro`, Chromium `apple/metal-3/(empty)`, Safari
+/// `apple/apple/apple`. Never key scheduling or validation on these; never
+/// assume non-empty (docs/RISKS.md §1).
+table AdapterInfo {
+  vendor:       string;
+  architecture: string;
+  device:       string;
+  backend:      string;    // "metal" | "vulkan" | "d3d12" | "webgpu" | ...
+}
 
 table WorkerCapabilities {
   kind:            WorkerKind;
@@ -86,8 +170,9 @@ table WorkerCapabilities {
   supports_webrtc: bool;
 }
 
-// Telemetry only — never an input to correctness or credit (invariant 8).
-// Every field feeds EVALUATION.md E2, so populate all of them.
+/// Telemetry only — never an input to correctness or credit (invariant 8).
+/// A worker controls every number here and can lie about all of them.
+/// Every field feeds EVALUATION.md E2, so populate all of them.
 table TaskStats {
   gpu_ms:       double;
   transfer_ms:  double;
@@ -97,41 +182,212 @@ table TaskStats {
   asset_source: AssetSource;
 }
 
-// ── Messages ─────────────────────────────────────────────────────────────
-// Phase 1 step 1.1: define all of these, including ones unused until later
-// phases. Additive is cheap; reordering later is not.
-
-// TODO(1.1) worker -> coordinator:
-//   Hello, BenchmarkResult, LeaseRequest, Progress, ResultHeader,
-//   Release, Throttle, Signal, Goodbye
-//
-// TODO(1.1) coordinator -> worker:
-//   Welcome, BenchmarkRequest, TaskGrant, LeaseAck, Revoke,
-//   PeerList, Signal, Shutdown, Error
-
-// union Body { ... }
-// table Envelope { body: Body; }
-// root_type Envelope;
-
-// ── BUILD VERIFICATION (step 0.5) ────────────────────────────────────────
-// A root_type is required for flatc to emit VerifyXBuffer(), and the Verifier
-// is the single sanctioned bytes->fields path (R11) — so the build step cannot
-// be proven end to end without one.
-//
-// TEMPORARY. Step 1.1 replaces this with the real Body union and Envelope, at
-// which point `root_type` moves there. Nothing may depend on this shape, and it
-// is not part of the wire contract in docs/PROTOCOL.md.
-table BuildProbe {
-  schema_version: uint;
+/// What the coordinator tells a worker about a kernel it may be asked to run.
+/// Mirrors kernels/manifest.toml (docs/KERNELS.md §2); the WGSL itself is
+/// fetched separately by id over HTTP (step 1.12).
+table KernelDescriptor {
+  kernel_id:        string;
+  entry_point:      string;
+  workgroup_size:   WorkgroupSize;
+  determinism:      DeterminismClass;
+  output:           OutputSpec;
+  accumulates:      bool;
+  min_iterations:   ulong;
+  flop_per_unit:    ulong;      // for the sizer and the R5 audit trail
 }
-root_type BuildProbe;
+
+/// A peer the data plane may try to fetch from (Phase 6).
+table PeerInfo {
+  worker_id:  Uuid;
+  has_assets: [Hash32];   // content hashes this peer is believed to hold,
+                          // so PeerList selection can prefer useful peers (6.2)
+}
+
+// ── Messages: worker → coordinator ───────────────────────────────────────
+
+table Hello {
+  /// Also present in the fixed frame header, which is checked BEFORE the
+  /// Verifier runs (docs/PROTOCOL.md §1). Deliberate redundancy: the header
+  /// check is the cheap pre-parse gate, this one is inside the verified region.
+  protocol_version: uint;
+  resume_token:     string;     // a prior Welcome.session_token; optional
+  capabilities:     WorkerCapabilities;
+}
+
+table BenchmarkResult {
+  kernel_id: string;
+  score:     double;    // normalized work-units/sec
+  samples:   uint;
+}
+
+table LeaseRequest {
+  max_tasks: uint;      // pull-based (D-0005). The worker asks WHETHER,
+                        // never HOW MUCH — sizing is the coordinator's (R1).
+}
+
+table Progress {
+  task_id:       Uuid;
+  fraction_done: float;
+  request_renew: bool;   // doubles as the heartbeat for this lease
+}
+
+/// The bulk payload rides OUTSIDE the FlatBuffer, in the same frame
+/// (docs/PROTOCOL.md §1). Verifying 8 MiB of GPU output buys nothing, since
+/// its interpretation is fully determined by OutputSpec.
+table ResultHeader {
+  task_id:       Uuid;
+  payload_bytes: uint;    // <= kMaxOutputBytes; MUST equal the actual trailing
+                          // bytes (invariant 2, and the Heartbleed shape)
+  checksum:      ulong;   // BLAKE3-64 of the payload. Mismatch => requeue with
+                          // NO reputation penalty (invariant 9) — corruption is
+                          // not malice.
+  stats:         TaskStats;
+}
+
+table Release {
+  task_id: Uuid;
+  reason:  ReleaseReason;   // voluntary give-back; never a reputation penalty
+}
+
+table Throttle {
+  level: float;   // 0.0-1.0, user-set (R7). The coordinator adjusts sizing and
+                  // does not argue — the user's setting is authoritative.
+}
+
+table Goodbye {
+  reason: ReleaseReason;   // clean disconnect; all leases released
+}
+
+// ── Messages: coordinator → worker ───────────────────────────────────────
+
+table Welcome {
+  worker_id:     Uuid;
+  session_token: string;         // present later in Hello.resume_token.
+                                 // Resume restores reputation and benchmark
+                                 // score but NEVER leases — those expired when
+                                 // the connection dropped (R8).
+  heartbeat_ms:  uint;
+  kernels:       [KernelDescriptor];
+}
+
+table BenchmarkRequest {
+  kernel_id: string;
+  target_ms: uint;
+}
+
+/// One task per message. Granting fewer than requested means sending fewer
+/// messages, which keeps this shape simple and the lease bookkeeping 1:1.
+table TaskGrant {
+  envelope: TaskEnvelope;
+}
+
+table LeaseAck {
+  task_id:       Uuid;
+  expires_at_ms: ulong;   // ABSOLUTE, on the COORDINATOR's clock. Worker clocks
+                          // are never trusted; the worker treats this as "renew
+                          // before you have consumed (expires_at - now_at_receipt)
+                          // of local elapsed time" (docs/PROTOCOL.md §5).
+}
+
+table Revoke {
+  task_id: Uuid;
+  reason:  RevokeReason;
+}
+
+table PeerList {
+  peers: [PeerInfo];
+}
+
+table Shutdown {
+  reason: string;
+}
+
+table Error {
+  code:    ErrorCode;
+  message: string;
+  fatal:   bool;    // true => do not retry with the same state
+}
+
+// ── Bidirectional ────────────────────────────────────────────────────────
+
+/// WebRTC signaling, relayed by the coordinator (Phase 6).
+///
+/// `peer` is the DESTINATION when a worker sends it and the SOURCE when the
+/// coordinator forwards it — one shape, direction supplies the meaning.
+///
+/// `payload` is opaque relayed bytes from another participant. The coordinator
+/// MUST NOT parse SDP; it bounds the size and forwards (step 6.1).
+table Signal {
+  peer:    Uuid;
+  payload: [ubyte];
+}
+
+// ── Envelope ─────────────────────────────────────────────────────────────
+// Union member order is wire-visible: the generated `Body` enum numbers them
+// in declaration order, starting at NONE = 0. APPEND ONLY.
+
+union Body {
+  Hello,
+  Welcome,
+  BenchmarkRequest,
+  BenchmarkResult,
+  LeaseRequest,
+  TaskGrant,
+  LeaseAck,
+  Progress,
+  ResultHeader,
+  Release,
+  Revoke,
+  Throttle,
+  PeerList,
+  Signal,
+  Goodbye,
+  Shutdown,
+  Error,
+}
+
+table Envelope {
+  body: Body;
+}
+
+root_type Envelope;
+
+// No `file_identifier`. The fixed frame header already carries a 4-byte magic
+// ("P2GP") that is checked before the Verifier ever runs, so a FlatBuffers
+// identifier would be a second, weaker copy of a check we already do earlier
+// and cheaper (docs/PROTOCOL.md §1).
 
 // ── Data plane (Phase 6) ─────────────────────────────────────────────────
 // Peer-supplied bytes are the least trustworthy input in the system — no
 // coordinator mediation at all. Bound index/total and use checked arithmetic
 // on offsets before touching a buffer (invariant 10, docs/PROTOCOL.md §1).
+//
+// NOTE: flatc emits VerifyBuffer only for the declared root_type (Envelope).
+// The asset path verifies with `verifier.VerifyBuffer<AssetMsg>(nullptr)`,
+// which is exactly what the generated helper does internally — see
+// src/protocol/verify.cpp. A second root_type is not possible in one schema
+// file, and wrapping both in a shared root would put data-plane bytes inside
+// the control-plane parser for no benefit.
 
-// table AssetRequest { hash: Hash32; chunk_from: uint; chunk_to: uint; }
-// table AssetChunk   { hash: Hash32; index: uint; total: uint; bytes: [ubyte]; }
-// table AssetMiss    { hash: Hash32; }
-// union AssetBody { AssetRequest, AssetChunk, AssetMiss }
+table AssetRequest {
+  hash:       Hash32;
+  chunk_from: uint;
+  chunk_to:   uint;
+}
+
+table AssetChunk {
+  hash:  Hash32;
+  index: uint;      // MUST be < total, and total MUST equal the expected chunk
+  total: uint;      // count for this hash. `index * kChunkBytes` is the classic
+  bytes: [ubyte];   // integer-overflow site — checked arithmetic only.
+}
+
+table AssetMiss {
+  hash: Hash32;
+}
+
+union AssetBody { AssetRequest, AssetChunk, AssetMiss }
+
+table AssetMsg {
+  body: AssetBody;
+}
