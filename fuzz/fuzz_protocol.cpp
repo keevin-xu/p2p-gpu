@@ -184,9 +184,6 @@ void TouchBody(const wire::Envelope& env) {
                     for (std::uint32_t i = 0; i < ps->size(); ++i) {
                         const auto* p = ps->Get(i);
                         TouchUuid(p->worker_id());
-                        if (const auto* hs = p->has_assets()) {
-                            for (std::uint32_t j = 0; j < hs->size(); ++j) { TouchHash(hs->Get(j)); }
-                        }
                     }
                 }
             }

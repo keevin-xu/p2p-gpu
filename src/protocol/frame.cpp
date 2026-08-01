@@ -4,6 +4,8 @@
 
 #include "p2pgpu/protocol/frame.hpp"
 
+#include <bit>
+
 namespace p2pgpu::protocol {
 namespace {
 
@@ -71,12 +73,12 @@ Result<FrameRegions> SplitFrame(std::span<const std::byte> frame) noexcept {
     //    it must fail LOUDLY rather than produce silent UB inside FlatBuffers
     //    (D-0027). Hence Internal, not a peer-facing error code.
     //
-    //    Casting a pointer to uintptr_t to inspect alignment is not pointer
-    //    arithmetic on attacker data — no offset is computed and nothing is
-    //    dereferenced. It is the check that PREVENTS unsound access.
+    //    std::bit_cast, not reinterpret_cast: R11 bans the latter in boundary
+    //    code, and C++20 gives us a well-defined pointer->integer conversion
+    //    that needs no exception. Nothing is dereferenced and no offset is
+    //    computed — this is the check that PREVENTS unsound access.
     if (!frame.empty() &&
-        (static_cast<std::uintptr_t>(reinterpret_cast<std::uintptr_t>(frame.data())) %
-         kFrameAlignment) != 0) {
+        (std::bit_cast<std::uintptr_t>(frame.data()) % kFrameAlignment) != 0) {
         return MakeError(ErrorCode::Internal, "frame buffer is not 8-byte aligned");
     }
 

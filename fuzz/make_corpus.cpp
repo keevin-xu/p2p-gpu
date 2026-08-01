@@ -174,14 +174,11 @@ int main(int argc, char** argv) {
     })));
 
     Emit("valid_peer_list", Frame(Envelope(wire::Body::PeerList, [](auto& fbb) {
-        const wire::Hash32 h1{1, 1, 1, 1};
         std::vector<flatbuffers::Offset<wire::PeerInfo>> peers;
         for (std::uint64_t i = 0; i < 3; ++i) {
-            std::vector<wire::Hash32> assets{h1};
-            auto av = fbb.CreateVectorOfStructs(assets);
             const wire::Uuid w{i, i};
             wire::PeerInfoBuilder pb(fbb);
-            pb.add_worker_id(&w); pb.add_has_assets(av);
+            pb.add_worker_id(&w);
             peers.push_back(pb.Finish());
         }
         auto pv = fbb.CreateVector(peers);
@@ -251,12 +248,9 @@ int main(int argc, char** argv) {
         // implicitly, so kMaxVerifyDepth is the SECOND line of defence here,
         // not the first. This seed exists to exercise it anyway.
         for (std::uint64_t i = 0; i < 100; ++i) {
-            std::vector<wire::Hash32> assets;
-            for (std::uint64_t j = 0; j < 4; ++j) { assets.push_back(wire::Hash32{j, j, j, j}); }
-            auto av = fbb.CreateVectorOfStructs(assets);
             const wire::Uuid w{i, i};
             wire::PeerInfoBuilder pb(fbb);
-            pb.add_worker_id(&w); pb.add_has_assets(av);
+            pb.add_worker_id(&w);
             peers.push_back(pb.Finish());
         }
         auto pv = fbb.CreateVector(peers);
@@ -268,12 +262,9 @@ int main(int argc, char** argv) {
     Emit("deep_peer_list_over_cap", Frame(Envelope(wire::Body::PeerList, [](auto& fbb) {
         std::vector<flatbuffers::Offset<wire::PeerInfo>> peers;
         for (std::uint64_t i = 0; i < 200; ++i) {
-            std::vector<wire::Hash32> assets;
-            for (std::uint64_t j = 0; j < 10; ++j) { assets.push_back(wire::Hash32{j, j, j, j}); }
-            auto av = fbb.CreateVectorOfStructs(assets);
             const wire::Uuid w{i, i};
             wire::PeerInfoBuilder pb(fbb);
-            pb.add_worker_id(&w); pb.add_has_assets(av);
+            pb.add_worker_id(&w);
             peers.push_back(pb.Finish());
         }
         auto pv = fbb.CreateVector(peers);

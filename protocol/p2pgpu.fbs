@@ -197,10 +197,21 @@ table KernelDescriptor {
 }
 
 /// A peer the data plane may try to fetch from (Phase 6).
+///
+/// NO `has_assets: [Hash32]` — see D-0028. Two reasons, and they agree:
+///
+///  1. SAFETY. flatbuffers::Verifier does not check the alignment of
+///     vector-of-struct element data, so a crafted buffer could place a
+///     [Hash32] at a 4-aligned offset, pass verification, and hand us
+///     misaligned u64 reads. Found by the step 1.5 fuzzer, attacker-craftable.
+///
+///  2. LAYERING. The coordinator already tracks which peers hold which hashes
+///     (step 6.12) and is the only component allowed to make decisions (R1).
+///     It therefore sends a peer list ALREADY FILTERED to peers holding what
+///     this worker needs. Shipping raw hashes so the worker could filter would
+///     duplicate coordinator state onto an untrusted party to no benefit.
 table PeerInfo {
-  worker_id:  Uuid;
-  has_assets: [Hash32];   // content hashes this peer is believed to hold,
-                          // so PeerList selection can prefer useful peers (6.2)
+  worker_id: Uuid;
 }
 
 // ── Messages: worker → coordinator ───────────────────────────────────────
@@ -321,6 +332,17 @@ table Signal {
   peer:    Uuid;
   payload: [ubyte];
 }
+
+// ── STANDING RULE: NO VECTORS OF STRUCTS ─────────────────────────────────
+// `[SomeStruct]` is banned in this schema (D-0028). flatbuffers::Verifier
+// checks alignment for scalars and for structs inline in a table, but NOT for
+// vector-of-struct element data — so such a field is an attacker-craftable
+// misaligned read that passes verification.
+//
+// Vectors of TABLES are fine (tables are offset-addressed, not inline), and so
+// are inline struct fields in tables. If you need a packed array of fixed-size
+// values, use [ubyte] with an explicit length check — alignment 1 cannot be
+// wrong — and re-read D-0028 first.
 
 // ── Envelope ─────────────────────────────────────────────────────────────
 // Union member order is wire-visible: the generated `Body` enum numbers them
