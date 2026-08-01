@@ -19,23 +19,57 @@
 #   "tolerant"    → float; requires rel_eps / abs_eps, both justified
 #   "statistical" → Monte Carlo; distributional consistency check
 
-# ── Workload B — added in Phase 1, step 1.7 ──────────────────────────────
-# Integer-exact, tiny output, trivially clears R5. Deliberately the first
-# kernel: it lets the whole pipeline be debugged without the path tracer's
-# complexity confounding it.
+# ── Workload B — brute_search_v1 (steps 1.7-1.10) ────────────────────────
+# Integer-exact, fixed 32-byte output. Deliberately the first kernel: it lets
+# the whole pipeline be debugged without the path tracer's complexity
+# confounding it, and it is the clean `Exact` case the validator is built
+# against.
 #
-# [kernels.brute_search_v1]
-# file            = "brute_search.wgsl"
-# entry_point     = "main"
-# workgroup_size  = [256, 1, 1]
-# determinism     = "exact"
-# output_bytes    = 32
-# output_dtype    = "u32"
-# param_layout    = "BruteSearchParams"
-# accumulates     = false
-# flop_per_unit   = 128
-# r5_ratio        = 4.0e8
-# r5_note         = "..."
+# Design + full R5 derivation: DECISIONS.md D-0029 (written BEFORE the WGSL).
+#
+# NOT a useful scientific workload. It exists to debug the pipeline and to
+# exercise bitwise verification. Never present it as cryptanalysis or research.
+
+[kernels.brute_search_v1]
+file            = "brute_search.wgsl"
+entry_point     = "main"
+workgroup_size  = [256, 1, 1]
+determinism     = "exact"
+output_bytes    = 32           # 3 atomics + 5 reserved u32; INDEPENDENT of N
+output_dtype    = "u32"
+param_layout    = "BruteSearchParams"
+accumulates     = false
+rounds          = 8            # pcg_hash iterations per candidate
+flop_per_unit   = 80           # arithmetic ops per candidate; see r5_note (a)
+r5_ratio        = 3.1e10       # at the sizer's operating point
+r5_min_units    = 4.0e5        # BELOW THIS THE KERNEL VIOLATES R5
+r5_note = """
+(a) UNITS. R5 is written in FLOP/byte; this kernel does zero floating-point
+    work. The gate's real content is ARITHMETIC OPS per output byte — a proxy
+    for compute-time vs transfer-time balance, not a claim about floats.
+    Integer ALU ops count. Ruled once in D-0029(a); do not re-litigate.
+
+(b) THE RATIO GROWS WITH N, so a threshold is the honest statement:
+      ops/candidate = 9 (pcg_hash, counted from source) x 8 rounds
+                      + 8 (hi/lo mix + mask compare)          = 80
+      output_bytes  = 32                          (constant, independent of N)
+      ratio         = 80N / 32 = 2.5 N
+
+      R5 (>1e6) requires  N > 4.0e5    (~32 us of work)   <- r5_min_units
+      sizer targets       N ~ 1.25e10  (~1 s)
+      ratio there         ~ 3.1e10     -> ~31,000x over the gate
+
+    The sizer MUST NOT clamp below r5_min_units even for a very slow worker.
+
+(c) The ~1e12 int-ops/s used for the "1 s" figure is an ESTIMATE extrapolated
+    from D-0019's measured 1,874 GFLOP/s (~9.4e11 FMA-instructions/s), not a
+    measurement of integer throughput. It only sets a STARTING task size; step
+    2.11's join benchmark and 2.13's EWMA correct it per worker.
+
+(d) OUTPUT SIZE IS LOCKED by this calculation. Growing it weakens the ratio
+    proportionally. Returning per-match data breaks BOTH R5 and `exact` — see
+    D-0029's rejected alternatives.
+"""
 
 # ── Workload A — added in Phase 5, step 5.10 ─────────────────────────────
 # Fails R5 naively (~6.3e4, 16x short). Clears it only via accumulation.

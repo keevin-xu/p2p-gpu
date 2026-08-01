@@ -34,16 +34,16 @@ include(cmake/Hardening.cmake)
 # docs/CONVENTIONS.md §10 without a DECISIONS.md entry (DL5).
 # ─────────────────────────────────────────────────────────────────────────
 
-# find_package(Flatbuffers CONFIG REQUIRED)
-# find_package(spdlog      CONFIG REQUIRED)
-# find_package(CLI11       CONFIG REQUIRED)
-# find_package(unofficial-sqlite3 CONFIG REQUIRED)
+# find_package(unofficial-sqlite3 CONFIG REQUIRED)   # step 2.19
 # find_package(stduuid     CONFIG REQUIRED)
+
+# NOTE: the coordinator's dependencies (spdlog, CLI11, uWebSockets) are found
+# further down, inside the coordinator target block — NOT here. See the comment
+# there; the placement is load-bearing for the fuzz preset.
 
 # Native-only deps
 # if(NOT P2PGPU_WASM)
 #     find_package(LibDataChannel CONFIG REQUIRED)
-#     find_package(unofficial-uwebsockets CONFIG REQUIRED)
 # else()
 #     # datachannel-wasm: FetchContent. Exposes the same API as libdatachannel,
 #     # which is what lets src/worker-core/transport.cpp stay portable (R2).
@@ -200,6 +200,18 @@ p2pgpu_harden(p2pgpu-worker-core)
 # ─────────────────────────────────────────────────────────────────────────
 if(NOT P2PGPU_WASM)
 
+    # Coordinator dependencies (steps 1.11-1.12).
+    #
+    # Declared HERE rather than beside the other find_package calls at the top,
+    # and the placement is load-bearing: `uwebsockets` lives in the `native`
+    # vcpkg feature, which the fuzz preset deliberately does not enable
+    # (D-0015). A find_package above the P2PGPU_FUZZ_ONLY early-return breaks
+    # that preset outright — which it did, once. Anything only the coordinator
+    # needs belongs below the return.
+    find_package(spdlog CONFIG REQUIRED)
+    find_package(CLI11  CONFIG REQUIRED)
+    find_package(unofficial-uwebsockets CONFIG REQUIRED)
+
     add_executable(coordinator
         src/coordinator/main.cpp
         src/coordinator/job.cpp
@@ -213,7 +225,11 @@ if(NOT P2PGPU_WASM)
         src/coordinator/net.cpp
         src/coordinator/kernels.cpp
     )
-    target_link_libraries(coordinator PRIVATE p2pgpu-protocol)
+    target_link_libraries(coordinator PRIVATE
+        p2pgpu-protocol
+        spdlog::spdlog
+        CLI11::CLI11
+        unofficial::uwebsockets::uwebsockets)
     p2pgpu_harden(coordinator)
 
     # Thin main() over worker-core. If this grows past ~100 lines,
