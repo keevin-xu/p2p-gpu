@@ -12,8 +12,9 @@ add_executable(tests
     unit/test_invariants.cpp       # 1.4 — all ten, every failure case
     unit/test_verify.cpp           # 1.3 — the sanctioned bytes->typed path
 
+    unit/test_task_state.cpp       # 1.13 — all 54 pairs, incl. every ILLEGAL one
+
     # Still to come:
-    # unit/test_task_state.cpp     # 1.13 — exhaustive transitions, incl. ILLEGAL ones
     # unit/test_sizer.cpp          # 2.12
     # unit/test_reputation.cpp     # 3.7
     # unit/test_comparators.cpp    # 3.1
