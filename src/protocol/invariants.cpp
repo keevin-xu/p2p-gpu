@@ -9,15 +9,6 @@
 #include <limits>
 
 namespace p2pgpu::protocol {
-namespace {
-
-/// Uuid is a FlatBuffers struct and has no operator==.
-[[nodiscard]] bool SameUuid(const wire::Uuid& a, const wire::Uuid& b) noexcept {
-    return a.hi() == b.hi() && a.lo() == b.lo();
-}
-
-}  // namespace
-
 Status CheckParamsSize(std::size_t params_bytes) noexcept {
     if (params_bytes > kMaxParamsBytes) {
         return MakeError(ErrorCode::PayloadTooLarge, "params exceed kMaxParamsBytes");
@@ -47,20 +38,22 @@ Status CheckSingleInFlightResult(bool already_in_flight) noexcept {
     return {};
 }
 
-Status CheckLeaseHeld(std::span<const wire::Uuid> held_leases,
-                      const wire::Uuid& task_id) noexcept {
+Status CheckLeaseHeld(std::span<const TaskId> held_leases, TaskId task_id) noexcept {
+    // Id's operator== compares BOTH halves, so this cannot degenerate into the
+    // hi-only comparison that would let a worker claim any task sharing a high
+    // word (pinned by a failure-case test).
     const bool held = std::ranges::any_of(
-        held_leases, [&](const wire::Uuid& u) { return SameUuid(u, task_id); });
+        held_leases, [&](TaskId t) { return t == task_id; });
     if (!held) {
         return MakeError(ErrorCode::LeaseNotHeld, "worker does not hold a lease on this task");
     }
     return {};
 }
 
-Status CheckReplicaAssignment(std::span<const wire::Uuid> prior_workers,
-                              const wire::Uuid& candidate) noexcept {
+Status CheckReplicaAssignment(std::span<const WorkerId> prior_workers,
+                              WorkerId candidate) noexcept {
     const bool seen = std::ranges::any_of(
-        prior_workers, [&](const wire::Uuid& u) { return SameUuid(u, candidate); });
+        prior_workers, [&](WorkerId w) { return w == candidate; });
     if (seen) {
         return MakeError(ErrorCode::Internal,
                          "replica would go to a worker that computed a sibling");

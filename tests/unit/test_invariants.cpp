@@ -15,7 +15,8 @@ using namespace p2pgpu::protocol;
 namespace wire = p2pgpu::wire;   // sibling namespace, not nested
 
 namespace {
-wire::Uuid U(std::uint64_t hi, std::uint64_t lo) { return wire::Uuid{hi, lo}; }
+TaskId T(std::uint64_t hi, std::uint64_t lo) { return TaskId{hi, lo}; }
+WorkerId W(std::uint64_t hi, std::uint64_t lo) { return WorkerId{hi, lo}; }
 }  // namespace
 
 // ── 1 ───────────────────────────────────────────────────────────────────
@@ -51,36 +52,36 @@ TEST_CASE("invariant 4: one in-flight result header per task", "[invariants]") {
 
 // ── 5 ───────────────────────────────────────────────────────────────────
 TEST_CASE("invariant 5: lease must be held", "[invariants]") {
-    const std::array<wire::Uuid, 2> held{U(1, 2), U(3, 4)};
+    const std::array<TaskId, 2> held{T(1, 2), T(3, 4)};
 
     SECTION("held task is accepted") {
-        CHECK(CheckLeaseHeld(held, U(1, 2)));
-        CHECK(CheckLeaseHeld(held, U(3, 4)));
+        CHECK(CheckLeaseHeld(held, T(1, 2)));
+        CHECK(CheckLeaseHeld(held, T(3, 4)));
     }
     SECTION("unheld task is rejected as LeaseNotHeld") {
-        const auto s = CheckLeaseHeld(held, U(5, 6));
+        const auto s = CheckLeaseHeld(held, T(5, 6));
         REQUIRE_FALSE(s);
         CHECK(s.error().code == ErrorCode::LeaseNotHeld);
     }
     SECTION("a worker holding nothing may act on nothing") {
-        CHECK_FALSE(CheckLeaseHeld({}, U(1, 2)));
+        CHECK_FALSE(CheckLeaseHeld({}, T(1, 2)));
     }
     SECTION("both halves of the Uuid must match") {
         // Comparing only `hi` would let a worker claim any task sharing a high
         // word — a 2^64 shortcut to another worker's task.
-        CHECK_FALSE(CheckLeaseHeld(held, U(1, 99)));
-        CHECK_FALSE(CheckLeaseHeld(held, U(99, 2)));
+        CHECK_FALSE(CheckLeaseHeld(held, T(1, 99)));
+        CHECK_FALSE(CheckLeaseHeld(held, T(99, 2)));
     }
 }
 
 // ── 6 ───────────────────────────────────────────────────────────────────
 TEST_CASE("invariant 6: replicas never revisit a prior worker", "[invariants]") {
-    const std::array<wire::Uuid, 2> prior{U(10, 10), U(20, 20)};
-    CHECK(CheckReplicaAssignment(prior, U(30, 30)));
-    CHECK_FALSE(CheckReplicaAssignment(prior, U(10, 10)));
-    CHECK_FALSE(CheckReplicaAssignment(prior, U(20, 20)));
+    const std::array<WorkerId, 2> prior{W(10, 10), W(20, 20)};
+    CHECK(CheckReplicaAssignment(prior, W(30, 30)));
+    CHECK_FALSE(CheckReplicaAssignment(prior, W(10, 10)));
+    CHECK_FALSE(CheckReplicaAssignment(prior, W(20, 20)));
     // First replica of a fresh task: nobody has computed it yet.
-    CHECK(CheckReplicaAssignment({}, U(1, 1)));
+    CHECK(CheckReplicaAssignment({}, W(1, 1)));
 }
 
 // ── 7 ───────────────────────────────────────────────────────────────────

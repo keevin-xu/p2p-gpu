@@ -25,6 +25,7 @@
 
 #include "p2pgpu/p2pgpu_generated.h"
 #include "p2pgpu/protocol/error.hpp"
+#include "p2pgpu/protocol/ids.hpp"
 #include "p2pgpu/protocol/limits.hpp"
 
 namespace p2pgpu::protocol {
@@ -54,16 +55,20 @@ namespace p2pgpu::protocol {
 /// This is the authorization check of the whole protocol: without it any worker
 /// can submit results for another worker's task, which defeats replication,
 /// reputation, and speculation simultaneously.
-[[nodiscard]] Status CheckLeaseHeld(std::span<const wire::Uuid> held_leases,
-                                    const wire::Uuid& task_id) noexcept;
+/// Strongly typed on purpose (step 1.6): both arguments were `wire::Uuid`
+/// before, so a worker list could be passed where a task list belonged and it
+/// compiled. This is the protocol's authorization check — a crossed argument
+/// here is a security bug, not a typo.
+[[nodiscard]] Status CheckLeaseHeld(std::span<const TaskId> held_leases,
+                                    TaskId task_id) noexcept;
 
 // ── 6. Replicas never go to a worker that computed a sibling ────────────
 /// `prior_workers`: everyone who already computed this task or any replica of
 /// it. Granting a replica to one of them makes agreement meaningless — the same
 /// worker agreeing with itself is not evidence, and a liar would validate its
 /// own lie.
-[[nodiscard]] Status CheckReplicaAssignment(std::span<const wire::Uuid> prior_workers,
-                                            const wire::Uuid& candidate) noexcept;
+[[nodiscard]] Status CheckReplicaAssignment(std::span<const WorkerId> prior_workers,
+                                            WorkerId candidate) noexcept;
 
 // ── 7. accumulate.upload_interval_ms >= kMinUploadIntervalMs ────────────
 /// Uploading more often defeats the arithmetic-intensity design the whole

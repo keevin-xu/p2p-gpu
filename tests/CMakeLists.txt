@@ -8,6 +8,7 @@ find_package(Catch2 3 REQUIRED)
 add_executable(tests
     # T1 — unit: pure logic, no I/O.
     unit/test_frame.cpp            # 1.2 — frame header codec + the §1 sequence
+    unit/test_ids.cpp              # 1.6 — strong IDs; mostly static_assert by design
     unit/test_invariants.cpp       # 1.4 — all ten, every failure case
     unit/test_verify.cpp           # 1.3 — the sanctioned bytes->typed path
 
