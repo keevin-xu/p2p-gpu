@@ -23,7 +23,21 @@ inline constexpr std::uint16_t kProtocolVersion = 1;
 inline constexpr std::uint32_t kFrameMagic = 0x50324750u;
 
 /// Fixed frame header size in bytes. See docs/PROTOCOL.md §1.
-inline constexpr std::size_t kHeaderBytes = 12;
+///
+/// SIXTEEN, not twelve, and the four extra bytes are load-bearing (D-0027).
+/// The FlatBuffers Envelope begins immediately after this header, and our
+/// schema's minalign is 8 (`Uuid` is 2x u64, `Hash32` is 4x u64). A 12-byte
+/// header puts the Envelope on a 4-byte boundary even when the frame itself is
+/// perfectly aligned, making EVERY struct field access undefined behaviour.
+/// Found by the step 1.5 fuzzer on a valid seed, not a hostile one.
+///
+/// 16 % 8 == 0, so an 8-byte-aligned frame yields an 8-byte-aligned Envelope.
+/// Do not shrink this without re-reading D-0027.
+inline constexpr std::size_t kHeaderBytes = 16;
+
+/// Alignment the FlatBuffers Envelope requires, and therefore the alignment a
+/// caller must give the whole frame. Equals the schema's minalign.
+inline constexpr std::size_t kFrameAlignment = 8;
 
 /// Max FlatBuffers Envelope size. Checked BEFORE the Verifier runs.
 inline constexpr std::uint32_t kMaxEnvelopeBytes = 64u * 1024u;

@@ -226,6 +226,13 @@ if(NOT P2PGPU_WASM)
         P2PGPU_KERNEL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/kernels")
     p2pgpu_harden(worker-native)
 
+    # Corpus generator for fuzz_protocol (step 1.5). Lives here rather than in
+    # fuzz/ because that subdirectory is only added for the fuzz preset, and the
+    # seeds must be reproducible from an ordinary build.
+    add_executable(make_corpus fuzz/make_corpus.cpp)
+    target_link_libraries(make_corpus PRIVATE p2pgpu-protocol)
+    p2pgpu_harden(make_corpus)
+
     add_executable(mock-worker
         src/mock-worker/main.cpp
         src/mock-worker/virtual_worker.cpp
