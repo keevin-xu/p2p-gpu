@@ -41,19 +41,11 @@ include(cmake/Hardening.cmake)
 # further down, inside the coordinator target block — NOT here. See the comment
 # there; the placement is load-bearing for the fuzz preset.
 
-# ── Transport (step 1.18) ────────────────────────────────────────────────
-# libdatachannel natively, datachannel-wasm in the browser. They expose the SAME
-# `rtc::WebSocket`, which is what lets src/worker-core/transport.cpp stay
-# portable with no platform seam — the property D-0008's language choice rests
-# on. The shared subset is MEASURED, not assumed: D-0032 tabulates it.
-#
-# datachannel-wasm has no vcpkg port, so like wgpu-native it carries its own pin
-# rather than riding the vcpkg baseline (D-0013 / D-0016). Its CMakeLists
-# FATAL_ERRORs outside Emscripten, so it may only be fetched in the wasm branch
-# — declaring it unconditionally breaks every native preset.
-if(NOT P2PGPU_WASM)
-    find_package(LibDataChannel CONFIG REQUIRED)
-endif()
+# NOTE — libdatachannel and BLAKE3 are found FURTHER DOWN, below the
+# P2PGPU_FUZZ_ONLY early-return, alongside the coordinator's dependencies. Both
+# live in the vcpkg `native` feature, which the fuzz presets disable. See the
+# comment at that point; the placement is load-bearing and has broken the fuzz
+# build twice.
 
 # ── WebGPU ───────────────────────────────────────────────────────────────
 # Native: wgpu-native, prebuilt. Not a vcpkg port, so it carries its own pin
@@ -64,17 +56,6 @@ endif()
 # all 86 shared structs field-for-field identical, measured in D-0016. That is
 # what lets worker-core call webgpu.h directly and stay portable (R2), instead
 # of needing the platform seam widened to cover the whole compute API.
-# BLAKE3 — invariant 9's checksum. Needed by BOTH the coordinator (verifies it)
-# and worker-core (computes it), so it is found here rather than in the
-# coordinator block. Still below the P2PGPU_FUZZ_ONLY early-return, because
-# p2pgpu-protocol must link nothing vcpkg compiled (D-0015).
-#
-# The browser worker cannot use this port at all — it hardcodes x86 SIMD and
-# does not build for wasm32-emscripten. It fetches upstream instead (D-0034).
-if(NOT P2PGPU_WASM)
-    find_package(BLAKE3 CONFIG REQUIRED)
-endif()
-
 if(NOT P2PGPU_WASM)
     include(FetchContent)
     if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
@@ -181,6 +162,43 @@ if(P2PGPU_FUZZ_ONLY)
     # Everything below this point is deliberately skipped — see D-0015.
     add_subdirectory(fuzz)
     return()
+endif()
+
+# ─────────────────────────────────────────────────────────────────────────
+# vcpkg `native`-feature dependencies. EVERY ONE OF THEM BELONGS HERE.
+#
+# ┌─ THIS HAS BROKEN THE FUZZ BUILD TWICE. READ BEFORE ADDING ONE. ────────┐
+# │ The fuzz presets set VCPKG_MANIFEST_FEATURES="" (D-0015), so NOTHING   │
+# │ in the `native` feature is installed for them. A find_package for one  │
+# │ of those, placed above the early-return, fails the fuzz configure      │
+# │ outright — even though the fuzz build never uses the library.          │
+# │                                                                       │
+# │ It broke once with uwebsockets, and again with libdatachannel and      │
+# │ blake3 at step 1.18/1.20 — where a comment above the return literally  │
+# │ claimed to be below it. **A warm build directory hides this**: the     │
+# │ local preset kept configuring from a cached LibDataChannel_DIR, and    │
+# │ only CI's clean checkout surfaced it (D-0036). If you touch this,      │
+# │ verify in a FRESH build dir, not the one you have been using.          │
+# └───────────────────────────────────────────────────────────────────────┘
+#
+# The rule is NOT "coordinator-only deps go here" — libdatachannel is a
+# worker-core dep and still belongs here. The rule is: **anything from the
+# vcpkg `native` feature.**
+if(NOT P2PGPU_WASM)
+    # Transport, step 1.18. libdatachannel natively, datachannel-wasm in the
+    # browser — they expose the SAME `rtc::WebSocket`, which is what lets
+    # src/worker-core/transport.cpp stay portable with no platform seam. That
+    # is the property D-0008's language choice rests on, and D-0032 tabulates
+    # the shared subset rather than assuming it.
+    find_package(LibDataChannel CONFIG REQUIRED)
+
+    # BLAKE3 — invariant 9's checksum. Needed by BOTH the coordinator (which
+    # verifies it) and worker-core (which computes it), so it cannot live in
+    # the coordinator block below.
+    #
+    # The browser worker cannot use this port at all: it hardcodes x86 SIMD and
+    # does not build for wasm32-emscripten, so wasm fetches upstream (D-0034).
+    find_package(BLAKE3 CONFIG REQUIRED)
 endif()
 
 # ─────────────────────────────────────────────────────────────────────────
