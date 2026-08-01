@@ -7,6 +7,10 @@
 
 #include "p2pgpu/coordinator/net.hpp"
 
+#include <chrono>
+#include <memory>
+#include <vector>
+
 #include <spdlog/spdlog.h>
 #include <uwebsockets/App.h>
 
@@ -18,6 +22,9 @@ namespace {
 /// Per-connection state hung off the socket by uWebSockets.
 struct SocketData {
     std::uint64_t conn_id = 0;
+    /// Owned by the socket so it dies with the connection. unique_ptr because
+    /// uWebSockets moves its user-data around and Session is not movable.
+    std::unique_ptr<Session> session;
     /// Consecutive rejected frames. Phase 3 step 3.12 turns this into escalating
     /// backoff then disconnect. It is CONNECTION hygiene, deliberately separate
     /// from task reputation — conflating them is how honest-but-buggy clients
@@ -27,8 +34,8 @@ struct SocketData {
 
 }  // namespace
 
-Server::Server(Config config, const KernelRegistry& kernels)
-    : config_(std::move(config)), kernels_(kernels) {}
+Server::Server(Config config, const KernelRegistry& kernels, JobManager& jobs)
+    : config_(std::move(config)), kernels_(kernels), jobs_(jobs) {}
 
 void Server::Run() {
     std::uint64_t next_conn_id = 1;
@@ -70,9 +77,11 @@ void Server::Run() {
                 .idleTimeout = 120,
                 .maxBackpressure = 16 * 1024 * 1024,
 
-                .open = [&next_conn_id](auto* ws) {
+                .open = [this, &next_conn_id](auto* ws) {
                     auto* data = ws->getUserData();
                     data->conn_id = next_conn_id++;
+                    data->session = std::make_unique<Session>(this->jobs_, this->kernels_,
+                                                              data->conn_id);
                     // Correlation fields from CONVENTIONS.md §6. worker_id is
                     // unknown until Hello arrives, so conn_id carries the trace
                     // until then — without it, a frame rejected during the
@@ -91,10 +100,28 @@ void Server::Run() {
                                      data->conn_id);
                         return;
                     }
-                    this->OnFrame(data->conn_id, data->rejected_frames, msg);
+                    this->OnFrame(*data->session, data->conn_id,
+                                  data->rejected_frames, msg,
+                                  [ws](std::span<const std::byte> reply) {
+                                      // static_cast via void*, never
+                                      // reinterpret_cast (R11): uWebSockets
+                                      // takes a string_view and our frames are
+                                      // std::byte.
+                                      ws->send(std::string_view(
+                                                   static_cast<const char*>(
+                                                       static_cast<const void*>(reply.data())),
+                                                   reply.size()),
+                                               uWS::OpCode::BINARY);
+                                  },
+                                  [ws] { ws->end(1002, "fatal"); });
                 },
 
                 .close = [](auto* ws, int code, std::string_view /*message*/) {
+                    // Release held leases immediately (R8) rather than waiting
+                    // out the lease — we already know the worker is gone.
+                    if (ws->getUserData()->session) {
+                        ws->getUserData()->session->OnDisconnect();
+                    }
                     // A worker vanishing is the NORMAL case (R8), so this is
                     // info, not warn. Lease release on disconnect lands in 2.8.
                     spdlog::info("conn_close conn_id={} code={}",
@@ -114,14 +141,22 @@ void Server::Run() {
         .run();
 }
 
-void Server::OnFrame(std::uint64_t conn_id, std::uint32_t& rejected,
-                     std::string_view bytes) {
+void Server::OnFrame(Session& session, std::uint64_t conn_id, std::uint32_t& rejected,
+                     std::string_view bytes, const SendFn& send, const CloseFn& close) {
     // THE ONLY ROUTE FROM BYTES TO FIELDS (R11). Nothing above this line has
     // looked at the contents, and nothing below it may look at them any other
     // way.
-    const std::span<const std::byte> frame{
+    std::span<const std::byte> frame{
         static_cast<const std::byte*>(static_cast<const void*>(bytes.data())),
         bytes.size()};
+
+    // OUR precondition, not the peer's (D-0027): the Envelope begins at
+    // frame + 16 and needs 8-byte alignment, which only holds if the frame
+    // itself is aligned. uWebSockets makes no such promise about the view it
+    // hands us, so normalise before parsing. `scratch` is written to only on
+    // the unaligned path and must outlive `frame`.
+    std::vector<std::byte> scratch;
+    frame = protocol::AlignFrame(frame, scratch);
 
     const auto verified = protocol::VerifyFrame(frame);
     if (!verified) {
@@ -135,12 +170,21 @@ void Server::OnFrame(std::uint64_t conn_id, std::uint32_t& rejected,
         return;
     }
 
-    // Routing arrives with the handshake in step 1.15. Until then, verifying and
-    // counting is the whole job — and is already enough to satisfy Phase 2's
-    // `malformed_frames` chaos profile, which only requires that the coordinator
-    // reject every hostile frame and stay up.
-    spdlog::debug("frame conn_id={} body_type={}", conn_id,
-                  static_cast<int>(verified->body_type()));
+    const auto now_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+
+    const Reaction reaction = session.OnMessage(*verified, now_ms);
+    if (!reaction.reply.empty()) {
+        send(reaction.reply);
+    }
+    if (reaction.close) {
+        // Fatal errors close the connection. A peer that cannot succeed by
+        // retrying must be told to stop rather than left reconnecting forever
+        // (PROTOCOL.md §5).
+        close();
+    }
 }
 
 }  // namespace p2pgpu::coordinator

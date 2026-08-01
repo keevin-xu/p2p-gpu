@@ -151,4 +151,19 @@ Result<FrameRegions> SplitFrame(std::span<const std::byte> frame) noexcept {
     return out;
 }
 
+std::span<const std::byte> AlignFrame(std::span<const std::byte> frame,
+                                      std::vector<std::byte>& scratch) {
+    // std::bit_cast, not reinterpret_cast — R11 bans the latter anywhere near
+    // network bytes, and this is the same conversion the frame alignment check
+    // in SplitFrame uses.
+    if ((std::bit_cast<std::uintptr_t>(frame.data()) % kFrameAlignment) == 0) {
+        return frame;
+    }
+    // A std::vector's storage comes from operator new, which is aligned to at
+    // least __STDCPP_DEFAULT_NEW_ALIGNMENT__ (16 here) — comfortably more than
+    // the 8 the Envelope needs.
+    scratch.assign(frame.begin(), frame.end());
+    return scratch;
+}
+
 }  // namespace p2pgpu::protocol

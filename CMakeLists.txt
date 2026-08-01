@@ -101,6 +101,7 @@ add_library(p2pgpu-protocol STATIC
     src/protocol/frame.cpp
     src/protocol/verify.cpp
     src/protocol/invariants.cpp
+    src/protocol/encode.cpp
 )
 target_include_directories(p2pgpu-protocol PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -211,10 +212,16 @@ if(NOT P2PGPU_WASM)
     find_package(spdlog CONFIG REQUIRED)
     find_package(CLI11  CONFIG REQUIRED)
     find_package(unofficial-uwebsockets CONFIG REQUIRED)
+    find_package(BLAKE3 CONFIG REQUIRED)   # invariant 9 (step 1.16)
 
-    add_executable(coordinator
-        src/coordinator/main.cpp
+    # The coordinator's DECISION logic, split out from its transport so the
+    # tests can link it. Everything here is socket-free by construction — if a
+    # file in this list ever needs uWebSockets, it belongs on the other side of
+    # the line (session.hpp explains why that boundary is worth keeping).
+    add_library(p2pgpu-coordinator-core STATIC
         src/coordinator/job.cpp
+        src/coordinator/session.cpp
+        src/coordinator/kernels.cpp
         src/coordinator/queue.cpp
         src/coordinator/lease.cpp
         src/coordinator/sizer.cpp
@@ -222,12 +229,19 @@ if(NOT P2PGPU_WASM)
         src/coordinator/signaling.cpp
         src/coordinator/metrics.cpp
         src/coordinator/store.cpp
-        src/coordinator/net.cpp
-        src/coordinator/kernels.cpp
     )
-    target_link_libraries(coordinator PRIVATE
+    target_link_libraries(p2pgpu-coordinator-core PUBLIC
         p2pgpu-protocol
         spdlog::spdlog
+        BLAKE3::blake3)
+    p2pgpu_harden(p2pgpu-coordinator-core)
+
+    add_executable(coordinator
+        src/coordinator/main.cpp
+        src/coordinator/net.cpp
+    )
+    target_link_libraries(coordinator PRIVATE
+        p2pgpu-coordinator-core
         CLI11::CLI11
         unofficial::uwebsockets::uwebsockets)
     p2pgpu_harden(coordinator)

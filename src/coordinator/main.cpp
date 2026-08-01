@@ -55,7 +55,11 @@ int main(int argc, char** argv) {
                      spec->r5_ratio);
     }
 
-    p2pgpu::coordinator::Server server(cfg, *registry);
+    // One JobManager for the process, owned here and outliving the server.
+    // Empty at startup: jobs arrive over the control API in Phase 2 (2.16).
+    p2pgpu::coordinator::JobManager jobs;
+
+    p2pgpu::coordinator::Server server(cfg, *registry, jobs);
     server.Run();
     return 0;
 }

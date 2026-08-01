@@ -9,7 +9,12 @@
 #include <string>
 #include <string_view>
 
+#include <functional>
+#include <span>
+
+#include "p2pgpu/coordinator/job.hpp"
 #include "p2pgpu/coordinator/kernel_registry.hpp"
+#include "p2pgpu/coordinator/session.hpp"
 #include "p2pgpu/protocol/verify.hpp"
 
 namespace p2pgpu::coordinator {
@@ -29,7 +34,7 @@ struct Config {
 
 class Server {
 public:
-    Server(Config config, const KernelRegistry& kernels);
+    Server(Config config, const KernelRegistry& kernels, JobManager& jobs);
 
     /// Blocks, running the uWebSockets event loop.
     ///
@@ -37,11 +42,16 @@ public:
     /// thread pool later for CPU-bound validation. Nothing may block this loop.
     void Run();
 
+    using SendFn = std::function<void(std::span<const std::byte>)>;
+    using CloseFn = std::function<void()>;
+
 private:
-    void OnFrame(std::uint64_t conn_id, std::uint32_t& rejected, std::string_view bytes);
+    void OnFrame(Session& session, std::uint64_t conn_id, std::uint32_t& rejected,
+                 std::string_view bytes, const SendFn& send, const CloseFn& close);
 
     Config config_;
     const KernelRegistry& kernels_;
+    JobManager& jobs_;
 };
 
 }  // namespace p2pgpu::coordinator

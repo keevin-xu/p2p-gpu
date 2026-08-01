@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <vector>
 
 #include "p2pgpu/protocol/error.hpp"
 #include "p2pgpu/protocol/limits.hpp"
@@ -64,7 +65,7 @@ struct Header {
 /// input has a defined result — which is what makes it cheap to fuzz.
 [[nodiscard]] std::optional<Header> ParseHeader(std::span<const std::byte> bytes) noexcept;
 
-/// Write a header into a 12-byte destination. Used by the encoder and, more
+/// Write a header into a 16-byte destination. Used by the encoder and, more
 /// importantly, by the fuzz corpus generator — seeds built by the real encoder
 /// are what let the fuzzer reach past the header into the Verifier (step 1.5).
 void EncodeHeader(const Header& h, std::span<std::byte, kHeaderBytes> out) noexcept;
@@ -103,5 +104,22 @@ struct FrameRegions {
 /// it is ever added to anything, so the addition in check 6 cannot overflow.
 /// Reversing them reintroduces the classic wrap.
 [[nodiscard]] Result<FrameRegions> SplitFrame(std::span<const std::byte> frame) noexcept;
+
+/// Guarantee SplitFrame's alignment precondition, copying only if it is not
+/// already met.
+///
+/// Transports do not promise alignment. uWebSockets hands us a view into its
+/// own receive buffer, and whether that view happens to be 8-byte aligned
+/// depends on how much traffic preceded it — so it is aligned almost always,
+/// and then one day is not. SplitFrame rejects the unaligned case loudly rather
+/// than reading it (D-0027), which turns silent UB into a dropped frame; this
+/// turns the dropped frame into a correctly handled one.
+///
+/// `scratch` is the caller's buffer, resized and written to ONLY on the
+/// unaligned path. The returned span aliases either `frame` or `scratch`, so
+/// both must outlive it. Copying only when necessary keeps the zero-copy read
+/// that motivated FlatBuffers (D-0009) on the overwhelmingly common path.
+[[nodiscard]] std::span<const std::byte> AlignFrame(
+    std::span<const std::byte> frame, std::vector<std::byte>& scratch);
 
 }  // namespace p2pgpu::protocol

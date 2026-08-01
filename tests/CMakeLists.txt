@@ -13,6 +13,8 @@ add_executable(tests
     unit/test_verify.cpp           # 1.3 — the sanctioned bytes->typed path
 
     unit/test_task_state.cpp       # 1.13 — all 54 pairs, incl. every ILLEGAL one
+    unit/test_job.cpp              # 1.14 — job/task queue + lease bookkeeping
+    unit/test_session.cpp          # 1.15-1.16 — handshake + result ingestion
 
     # Still to come:
     # unit/test_sizer.cpp          # 2.12
@@ -29,7 +31,9 @@ add_executable(tests
     # integration/test_lease_not_held.cpp
     # integration/test_malformed_frame.cpp
 )
-target_link_libraries(tests PRIVATE Catch2::Catch2WithMain p2pgpu-protocol)
+# p2pgpu-coordinator-core, not the `coordinator` executable: the decision logic
+# is deliberately transport-free (session.hpp), so these tests need no socket.
+target_link_libraries(tests PRIVATE Catch2::Catch2WithMain p2pgpu-coordinator-core)
 p2pgpu_harden(tests)
 
 include(Catch)

@@ -7,8 +7,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_template_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
+#include <span>
 #include <vector>
 
 #include "p2pgpu/protocol/frame.hpp"
@@ -253,4 +256,44 @@ TEST_CASE("reserved round-trips through the codec", "[frame]") {
     const auto out = ParseHeader(buf);
     REQUIRE(out.has_value());
     CHECK(out->reserved == 0xABCD1234);
+}
+
+// ── AlignFrame ──────────────────────────────────────────────────────────
+// SplitFrame REJECTS an unaligned buffer rather than reading it (D-0027), so
+// something must guarantee the precondition before it. That something is
+// AlignFrame, and the case worth testing is the one a transport produces by
+// accident and almost never on a developer's machine.
+
+TEST_CASE("AlignFrame leaves an already-aligned frame alone", "[frame]") {
+    const auto frame = MakeFrame(Bytes(16));
+    REQUIRE((std::bit_cast<std::uintptr_t>(frame.data()) % kFrameAlignment) == 0);
+
+    std::vector<std::byte> scratch;
+    const auto out = AlignFrame(frame, scratch);
+
+    // Same bytes, and no copy was made — the zero-copy read that motivated
+    // FlatBuffers survives on the common path.
+    CHECK(out.data() == frame.data());
+    CHECK(scratch.empty());
+}
+
+TEST_CASE("AlignFrame rescues a misaligned frame", "[frame]") {
+    const auto frame = MakeFrame(Bytes(16));
+
+    // Deliberately offset by one byte inside a larger buffer, which is exactly
+    // what a transport handing back a view into its own receive buffer does.
+    std::vector<std::byte> backing(frame.size() + 1);
+    std::ranges::copy(frame, backing.begin() + 1);
+    const std::span<const std::byte> misaligned{backing.data() + 1, frame.size()};
+    REQUIRE((std::bit_cast<std::uintptr_t>(misaligned.data()) % kFrameAlignment) != 0);
+
+    // Without AlignFrame this is a hard rejection, not a parse.
+    CHECK_FALSE(SplitFrame(misaligned).has_value());
+
+    std::vector<std::byte> scratch;
+    const auto out = AlignFrame(misaligned, scratch);
+    REQUIRE((std::bit_cast<std::uintptr_t>(out.data()) % kFrameAlignment) == 0);
+    CHECK(out.size() == frame.size());
+    CHECK(std::ranges::equal(out, frame));
+    CHECK(SplitFrame(out).has_value());
 }
