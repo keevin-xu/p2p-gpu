@@ -7,6 +7,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <filesystem>
 #include <vector>
 
 #include "p2pgpu/coordinator/job.hpp"
@@ -19,6 +20,9 @@ using namespace p2pgpu;
 using namespace p2pgpu::coordinator;
 
 namespace {
+
+/// A kernel that is actually in the shipped manifest.
+constexpr const char* kKernel = "brute_search_v1";
 
 std::vector<std::byte> HelloFrame(std::uint32_t version) {
     return protocol::EncodeMessage(wire::Body::Hello,
@@ -73,10 +77,25 @@ const wire::Envelope* ParseReply(std::span<const std::byte> reply) {
     return verified->envelope();
 }
 
+/// The REAL manifest, not a stub.
+///
+/// Granting a task now requires the job's kernel to be in the registry and its
+/// params to be buildable (R1 — the coordinator owns both), so a fake registry
+/// would test a path production never takes. Loading the shipped manifest also
+/// means a manifest that stops parsing fails here rather than at startup on a
+/// server.
+const KernelRegistry& Registry() {
+    static const auto reg = KernelRegistry::Load(
+        std::filesystem::path(P2PGPU_KERNEL_DIR) / "manifest.toml",
+        std::filesystem::path(P2PGPU_KERNEL_DIR));
+    REQUIRE(reg);
+    return *reg;
+}
+
 /// One coordinator plus a handshaked session, which most cases need.
 struct Fixture {
     JobManager jobs;
-    KernelRegistry kernels;  ///< empty: Welcome's kernel list is not what these test
+    const KernelRegistry& kernels = Registry();
     Session session{jobs, kernels, /*conn_id=*/7};
 
     void Handshake() {
@@ -167,7 +186,7 @@ TEST_CASE("Coordinator-to-worker messages are rejected inbound", "[session]") {
 
 TEST_CASE("LeaseRequest grants at most what is queued and clamps the ask", "[session]") {
     Fixture f;
-    (void)f.jobs.CreateJob("k", 1000, 2, 7);
+    (void)f.jobs.CreateJob(kKernel, 1000, 2, 7);
     f.Handshake();
 
     // The worker asks WHETHER, never HOW MUCH (R1/D-0005): a request for 10000
@@ -188,7 +207,7 @@ TEST_CASE("LeaseRequest grants at most what is queued and clamps the ask", "[ses
 
 TEST_CASE("A checksum-clean result is accepted end to end", "[session]") {
     Fixture f;
-    const JobId job = f.jobs.CreateJob("k", 1000, 1, 7);
+    const JobId job = f.jobs.CreateJob(kKernel, 1000, 1, 7);
     f.Handshake();
     {
         const auto req = LeaseRequestFrame(1);
@@ -210,7 +229,7 @@ TEST_CASE("A checksum-clean result is accepted end to end", "[session]") {
 
 TEST_CASE("Checksum mismatch requeues WITHOUT a penalty", "[session]") {
     Fixture f;
-    (void)f.jobs.CreateJob("k", 1000, 1, 7);
+    (void)f.jobs.CreateJob(kKernel, 1000, 1, 7);
     f.Handshake();
     {
         const auto req = LeaseRequestFrame(1);
@@ -236,7 +255,7 @@ TEST_CASE("Checksum mismatch requeues WITHOUT a penalty", "[session]") {
 
 TEST_CASE("A lied-about payload length is rejected before the state changes", "[session]") {
     Fixture f;
-    (void)f.jobs.CreateJob("k", 1000, 1, 7);
+    (void)f.jobs.CreateJob(kKernel, 1000, 1, 7);
     f.Handshake();
     {
         const auto req = LeaseRequestFrame(1);
@@ -259,7 +278,7 @@ TEST_CASE("A lied-about payload length is rejected before the state changes", "[
 
 TEST_CASE("A result for an unleased task is refused", "[session]") {
     Fixture f;
-    (void)f.jobs.CreateJob("k", 1000, 1, 7);
+    (void)f.jobs.CreateJob(kKernel, 1000, 1, 7);
     f.Handshake();
 
     // Never requested a lease. The task exists and is Queued; submitting for it
@@ -278,7 +297,7 @@ TEST_CASE("A result for an unleased task is refused", "[session]") {
 
 TEST_CASE("Disconnect releases every held lease immediately", "[session]") {
     Fixture f;
-    (void)f.jobs.CreateJob("k", 1000, 3, 7);
+    (void)f.jobs.CreateJob(kKernel, 1000, 3, 7);
     f.Handshake();
     {
         const auto req = LeaseRequestFrame(3);
@@ -297,7 +316,7 @@ TEST_CASE("Disconnect releases every held lease immediately", "[session]") {
 
 TEST_CASE("Disconnect before the handshake is harmless", "[session]") {
     Fixture f;
-    (void)f.jobs.CreateJob("k", 1000, 1, 7);
+    (void)f.jobs.CreateJob(kKernel, 1000, 1, 7);
     f.session.OnDisconnect();
     CHECK(f.jobs.queued() == 1);
 }

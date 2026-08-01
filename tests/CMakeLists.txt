@@ -15,6 +15,7 @@ add_executable(tests
     unit/test_task_state.cpp       # 1.13 — all 54 pairs, incl. every ILLEGAL one
     unit/test_job.cpp              # 1.14 — job/task queue + lease bookkeeping
     unit/test_session.cpp          # 1.15-1.16 — handshake + result ingestion
+    unit/test_checksum.cpp         # 1.20 — invariant 9, pinned to BLAKE3's vectors
 
     # Still to come:
     # unit/test_sizer.cpp          # 2.12
@@ -33,20 +34,48 @@ add_executable(tests
 )
 # p2pgpu-coordinator-core, not the `coordinator` executable: the decision logic
 # is deliberately transport-free (session.hpp), so these tests need no socket.
-target_link_libraries(tests PRIVATE Catch2::Catch2WithMain p2pgpu-coordinator-core)
+#
+# worker-core is here for ONE reason — test_checksum.cpp asserts that the
+# worker's BLAKE3 and the coordinator's produce the same number (D-0034). It
+# links GPU and transport libraries but calls neither; nothing in this binary
+# touches a device, which is what keeps `tests` runnable on a machine with no
+# GPU. GPU tests live in `kernel_tests`.
+target_link_libraries(tests PRIVATE Catch2::Catch2WithMain
+    p2pgpu-coordinator-core p2pgpu-worker-core)
+# test_session.cpp loads the REAL kernel manifest — granting a task now needs
+# the job's kernel to be in the registry, so a stub registry would exercise a
+# path production never takes.
+target_compile_definitions(tests PRIVATE
+    P2PGPU_KERNEL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../kernels")
 p2pgpu_harden(tests)
 
 include(Catch)
 catch_discover_tests(tests)
 
-# T3 — kernel tests. Headless via worker-native, because CI has no browser.
-# Golden · chunk-invariance · cross-implementation · limits (KERNELS.md §5).
-# add_executable(kernel_tests
-#     kernels/test_golden.cpp
-#     kernels/test_chunk_invariance.cpp
-#     kernels/test_limits.cpp
-# )
-# target_link_libraries(kernel_tests PRIVATE Catch2::Catch2WithMain p2pgpu-worker-core)
+# R2 as a TEST rather than a review note (step 1.17). Nothing breaks the day a
+# portable file grows an `#ifdef __EMSCRIPTEN__` — it compiles and runs, and the
+# two targets quietly stop being the same program. A rule enforced by
+# remembering to look is a rule that holds until the session that forgets.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME r2_platform_seam
+         COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_seam.py)
+
+# T3 — kernel tests on a REAL GPU. Headless via worker-core, because CI has no
+# browser. Golden · chunk-invariance · cross-implementation · limits
+# (KERNELS.md §5).
+#
+# A SEPARATE BINARY from `tests` on purpose: these need a working adapter, and a
+# unit suite that silently skips itself on a machine without one is worse than
+# no suite. Keeping them apart means `tests` stays a pure T1 tier that runs
+# anywhere, and a missing GPU fails loudly here instead of quietly there.
+add_executable(kernel_tests
+    kernels/test_brute_search.cpp        # 1.19 — chunk invariance + the D-0033 window
+)
+target_link_libraries(kernel_tests PRIVATE Catch2::Catch2WithMain p2pgpu-worker-core)
+target_compile_definitions(kernel_tests PRIVATE
+    P2PGPU_KERNEL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../kernels")
+p2pgpu_harden(kernel_tests)
+catch_discover_tests(kernel_tests TEST_PREFIX "kernel_")
 
 # Sanitizer self-check (step 0.4). OFF by default so the deliberate bugs can
 # never ship. Turn on in a throwaway build dir to prove the sanitizers are

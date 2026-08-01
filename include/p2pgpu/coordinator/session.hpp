@@ -52,6 +52,7 @@ public:
 private:
     [[nodiscard]] Reaction OnHello(const wire::Hello& hello);
     [[nodiscard]] Reaction OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t now_ms);
+    [[nodiscard]] Reaction OnRelease(const wire::Release& release);
     [[nodiscard]] Reaction OnResultHeader(const wire::ResultHeader& header,
                                           std::span<const std::byte> payload);
 

@@ -41,13 +41,19 @@ include(cmake/Hardening.cmake)
 # further down, inside the coordinator target block — NOT here. See the comment
 # there; the placement is load-bearing for the fuzz preset.
 
-# Native-only deps
-# if(NOT P2PGPU_WASM)
-#     find_package(LibDataChannel CONFIG REQUIRED)
-# else()
-#     # datachannel-wasm: FetchContent. Exposes the same API as libdatachannel,
-#     # which is what lets src/worker-core/transport.cpp stay portable (R2).
-# endif()
+# ── Transport (step 1.18) ────────────────────────────────────────────────
+# libdatachannel natively, datachannel-wasm in the browser. They expose the SAME
+# `rtc::WebSocket`, which is what lets src/worker-core/transport.cpp stay
+# portable with no platform seam — the property D-0008's language choice rests
+# on. The shared subset is MEASURED, not assumed: D-0032 tabulates it.
+#
+# datachannel-wasm has no vcpkg port, so like wgpu-native it carries its own pin
+# rather than riding the vcpkg baseline (D-0013 / D-0016). Its CMakeLists
+# FATAL_ERRORs outside Emscripten, so it may only be fetched in the wasm branch
+# — declaring it unconditionally breaks every native preset.
+if(NOT P2PGPU_WASM)
+    find_package(LibDataChannel CONFIG REQUIRED)
+endif()
 
 # ── WebGPU ───────────────────────────────────────────────────────────────
 # Native: wgpu-native, prebuilt. Not a vcpkg port, so it carries its own pin
@@ -58,6 +64,17 @@ include(cmake/Hardening.cmake)
 # all 86 shared structs field-for-field identical, measured in D-0016. That is
 # what lets worker-core call webgpu.h directly and stay portable (R2), instead
 # of needing the platform seam widened to cover the whole compute API.
+# BLAKE3 — invariant 9's checksum. Needed by BOTH the coordinator (verifies it)
+# and worker-core (computes it), so it is found here rather than in the
+# coordinator block. Still below the P2PGPU_FUZZ_ONLY early-return, because
+# p2pgpu-protocol must link nothing vcpkg compiled (D-0015).
+#
+# The browser worker cannot use this port at all — it hardcodes x86 SIMD and
+# does not build for wasm32-emscripten. It fetches upstream instead (D-0034).
+if(NOT P2PGPU_WASM)
+    find_package(BLAKE3 CONFIG REQUIRED)
+endif()
+
 if(NOT P2PGPU_WASM)
     include(FetchContent)
     if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
@@ -167,7 +184,7 @@ endif()
 # in this target is a defect.
 # ─────────────────────────────────────────────────────────────────────────
 add_library(p2pgpu-worker-core STATIC
-    src/worker-core/task_loop.cpp
+    src/worker-core/task_loop.cpp         # 1.20 lease->execute->report; 1.21 loss
     src/worker-core/kernel_host.cpp
     src/worker-core/accumulator.cpp
     src/worker-core/smoke.cpp              # portable: shared 0.6/0.8/0.9 checks
@@ -175,6 +192,7 @@ add_library(p2pgpu-worker-core STATIC
     src/worker-core/bench.cpp              # portable: throughput + overhead (0.10-0.12)
     src/worker-core/recovery.cpp           # portable: device-loss recovery (0.14)
     src/worker-core/transport.cpp          # portable: libdatachannel API on both
+    src/worker-core/checksum.cpp           # portable: BLAKE3-64, invariant 9
 )
 target_include_directories(p2pgpu-worker-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(p2pgpu-worker-core PUBLIC p2pgpu-protocol)
@@ -183,11 +201,36 @@ if(P2PGPU_WASM)
     target_sources(p2pgpu-worker-core PRIVATE
         src/worker-core/platform/gpu_wasm.cpp
         src/worker-core/platform/timer_wasm.cpp)
+
+    # datachannel-wasm — the browser twin of libdatachannel (D-0032). Pinned by
+    # SHA, not by tag: a tag can be moved, and "reproducible" has to mean the
+    # bytes, not the name.
+    # BLAKE3 for the browser worker. vcpkg's port hardcodes x86 SIMD and does
+    # NOT build for wasm32-emscripten — measured, not assumed (D-0034). Native
+    # keeps the vcpkg port; only this target fetches upstream, with the SIMD
+    # path forced to the portable one.
+    include(FetchContent)
+    set(BLAKE3_SIMD_TYPE "none" CACHE STRING "" FORCE)
+    FetchContent_Declare(blake3_upstream
+        GIT_REPOSITORY https://github.com/BLAKE3-team/BLAKE3.git
+        GIT_TAG        df610ddc3b93841ffc59a87e3da659a15910eb46  # 1.8.2
+        SOURCE_SUBDIR  c
+        GIT_SHALLOW    FALSE)
+    FetchContent_MakeAvailable(blake3_upstream)
+    target_link_libraries(p2pgpu-worker-core PUBLIC blake3)
+
+    FetchContent_Declare(datachannel_wasm
+        GIT_REPOSITORY https://github.com/paullouisageneau/datachannel-wasm.git
+        GIT_TAG        3d88eb88fb7d6729e498079477dd3ae46d30ac38  # v0.4.0, 2025-09-13
+        GIT_SHALLOW    FALSE)
+    FetchContent_MakeAvailable(datachannel_wasm)
+    target_link_libraries(p2pgpu-worker-core PUBLIC datachannel-wasm)
 else()
     target_sources(p2pgpu-worker-core PRIVATE
         src/worker-core/platform/gpu_native.cpp
         src/worker-core/platform/timer_native.cpp)
-    target_link_libraries(p2pgpu-worker-core PUBLIC wgpu-native)
+    target_link_libraries(p2pgpu-worker-core PUBLIC
+        wgpu-native LibDataChannel::LibDataChannel BLAKE3::blake3)
 endif()
 
 # NOTE: worker-core deliberately does NOT know where kernels live. Native reads
@@ -212,7 +255,6 @@ if(NOT P2PGPU_WASM)
     find_package(spdlog CONFIG REQUIRED)
     find_package(CLI11  CONFIG REQUIRED)
     find_package(unofficial-uwebsockets CONFIG REQUIRED)
-    find_package(BLAKE3 CONFIG REQUIRED)   # invariant 9 (step 1.16)
 
     # The coordinator's DECISION logic, split out from its transport so the
     # tests can link it. Everything here is socket-free by construction — if a
@@ -222,6 +264,7 @@ if(NOT P2PGPU_WASM)
         src/coordinator/job.cpp
         src/coordinator/session.cpp
         src/coordinator/kernels.cpp
+        src/coordinator/params.cpp
         src/coordinator/queue.cpp
         src/coordinator/lease.cpp
         src/coordinator/sizer.cpp
@@ -249,7 +292,7 @@ if(NOT P2PGPU_WASM)
     # Thin main() over worker-core. If this grows past ~100 lines,
     # logic is leaking out of worker-core (R1).
     add_executable(worker-native src/worker-native/main.cpp)
-    target_link_libraries(worker-native PRIVATE p2pgpu-worker-core)
+    target_link_libraries(worker-native PRIVATE p2pgpu-worker-core CLI11::CLI11)
     # Dev convenience so the binary finds kernels/ without an argument. The
     # deployed worker gets its WGSL from the coordinator, not from a build path.
     target_compile_definitions(worker-native PRIVATE

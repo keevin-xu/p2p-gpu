@@ -25,10 +25,16 @@
 // are each commutative and associative, so the result is identical regardless
 // of execution order, workgroup count, or how the range was partitioned.
 
+// K1 / D-0033: `start_lo` and `unit_count` are the CHUNK WINDOW and MUST be the
+// first two fields, at bytes 0 and 4. The kernel host is kernel-agnostic — it
+// rewrites exactly those 8 bytes before every dispatch and copies the rest
+// verbatim. Moving them makes the host write chunk bounds over another field,
+// which produces a well-formed result computed over a garbage keyspace and no
+// runtime check can catch it.
 struct BruteSearchParams {
-    base_hi    : u32,   // high half of the 64-bit keyspace cursor
     start_lo   : u32,   // K1's (start_unit, unit_count) — the chunkable range
     unit_count : u32,
+    base_hi    : u32,   // high half of the 64-bit keyspace cursor
     seed       : u32,
     target_bits: u32,   // match iff (H(x) & mask) == target_bits
                         //   NOT `target` — that is a RESERVED KEYWORD in WGSL

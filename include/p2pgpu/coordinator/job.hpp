@@ -94,6 +94,7 @@ public:
     [[nodiscard]] protocol::Status Requeue(TaskId task, TaskEvent why);
 
     [[nodiscard]] const Task* Find(TaskId id) const noexcept;
+    [[nodiscard]] const Job* FindJob(JobId id) const noexcept;
     [[nodiscard]] std::vector<TaskId> HeldBy(WorkerId worker) const;
     [[nodiscard]] std::size_t queued() const noexcept { return queue_.size(); }
     [[nodiscard]] std::size_t total_tasks() const noexcept { return tasks_.size(); }

@@ -47,4 +47,73 @@ namespace p2pgpu::worker {
     std::uint32_t element_count,
     std::uint32_t workgroup_size);
 
+// ─────────────────────────────────────────────────────────────────────────
+// Task execution — step 1.19
+// ─────────────────────────────────────────────────────────────────────────
+
+/// One task, as the coordinator described it. Everything here comes off the
+/// wire in `TaskEnvelope`; nothing is chosen locally (R1).
+struct TaskRequest {
+    std::string_view wgsl;
+    std::string_view entry_point;
+
+    /// Uniform buffer bytes, built by the COORDINATOR (it owns sizing).
+    ///
+    /// Bytes 0..7 are the chunk window and are OVERWRITTEN per dispatch with
+    /// `(start_unit, unit_count)` — K1 / D-0033. Whatever the coordinator put
+    /// there is ignored; everything past byte 8 is copied verbatim and never
+    /// interpreted.
+    std::span<const std::byte> params;
+
+    std::uint64_t start_unit = 0;
+    std::uint64_t unit_count = 0;
+    std::uint32_t output_bytes = 0;
+    std::uint32_t workgroup_size = 64;
+
+    /// Initial bytes of the result buffer, written ONCE PER TASK.
+    ///
+    /// Not once per chunk. `brute_search_v1` needs `min_match = 0xFFFFFFFF` as
+    /// the identity for `atomicMin`, and re-initialising between chunks is the
+    /// "state leaks between chunks" bug — it would present as scheduling
+    /// nondeterminism, which is the most expensive thing to misdiagnose in a
+    /// system whose whole verification story is determinism (R6).
+    ///
+    /// Empty means zero-filled.
+    std::span<const std::byte> output_init;
+};
+
+/// Facts about an execution. Reported to the coordinator; NEVER used to decide
+/// anything locally, and the coordinator treats them as untrusted telemetry
+/// (invariant 8) because a worker can lie about every field.
+struct TaskStats {
+    double gpu_ms = 0.0;
+    double transfer_ms = 0.0;
+    double idle_ms = 0.0;
+    std::uint32_t dispatches = 0;
+    std::uint64_t iterations = 0;
+};
+
+struct TaskOutcome {
+    std::vector<std::byte> output;
+    TaskStats stats;
+};
+
+/// Compile once, then dispatch the range in chunks of <=250 ms expected work
+/// with a yield between each (R4/K1), accumulating into one result buffer.
+///
+/// `units_per_chunk` bounds a single dispatch. It is a LOCAL EXECUTION DETAIL,
+/// not scheduling: R4 is a hardware-safety property (Windows TDR resets the
+/// driver at ~2 s), so the worker must satisfy it whatever it was told. What
+/// work to do, and how much of it, remains entirely the coordinator's (R1) —
+/// and because every chunkable kernel's reductions are partition-independent,
+/// the subdivision cannot change the answer.
+///
+/// Zero means "one dispatch", which is what the golden tests want.
+///
+/// Returns nullopt on any failure, including device loss mid-task. Failures are
+/// logged through the seam; the caller reports them and moves on (R8).
+[[nodiscard]] std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
+                                                 const TaskRequest& req,
+                                                 std::uint64_t units_per_chunk = 0);
+
 }  // namespace p2pgpu::worker

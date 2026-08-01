@@ -54,9 +54,14 @@ enum ReleaseReason : byte {
   UserStopped,        // R7 stop control
   TabHidden,
   DeviceLost,         // R4 / TDR; see D-0022
-  AssetUnavailable,
+  AssetUnavailable,   // the task's bulk INPUT asset (Phase 6), not its kernel
   TooSlow,
   Shutdown,
+  // Appended in D-0035, and appended is the only safe position: reordering or
+  // inserting silently remaps every existing value.
+  KernelUnavailable,  // the granted kernel's WGSL could not be obtained
+  ExecutionFailed,    // local failure that is NOT device loss: compile, limits,
+                      // allocation, readback timeout
 }
 
 enum RevokeReason : byte {

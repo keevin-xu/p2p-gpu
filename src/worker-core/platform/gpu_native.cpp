@@ -15,7 +15,6 @@
 // by definition, which is why it may be included HERE and nowhere else (R2).
 #include <webgpu/wgpu.h>
 
-#include <cstdio>
 #include <string>
 #include <thread>
 #include <utility>
@@ -240,23 +239,6 @@ bool DeviceIsLost() {
 
 void MarkDeviceLost() {
     LostFlag() = true;
-}
-
-void Yield() {
-    // Native has no event loop to return to, and dispatch pacing is the
-    // caller's business. Deliberately NOT a sleep — that would inflate the
-    // idle_ms/gpu_ms split that EVALUATION.md E2 depends on.
-}
-
-std::chrono::steady_clock::time_point Now() {
-    return std::chrono::steady_clock::now();
-}
-
-void Log(std::string_view level, std::string_view message) {
-    // spdlog with the CONVENTIONS.md §6 correlation fields arrives in step
-    // 1.11; until the coordinator exists there are no IDs to correlate.
-    std::fprintf(stderr, "[%.*s] %.*s\n", static_cast<int>(level.size()), level.data(),
-                 static_cast<int>(message.size()), message.data());
 }
 
 }  // namespace p2pgpu::worker::platform

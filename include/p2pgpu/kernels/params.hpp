@@ -28,9 +28,12 @@ namespace p2pgpu::kernels {
 /// the whole struct is 16-byte aligned for a uniform buffer — 32 bytes here, so
 /// no tail padding is needed.
 struct BruteSearchParams {
-    std::uint32_t base_hi = 0;      ///< high half of the 64-bit keyspace cursor
-    std::uint32_t start_lo = 0;     ///< K1's (start_unit, unit_count) window
+    /// THE CHUNK WINDOW. Must be the first two fields (K1 / D-0033): the kernel
+    /// host rewrites bytes 0..7 before every dispatch and knows nothing else
+    /// about this struct.
+    std::uint32_t start_lo = 0;     ///< first candidate in THIS chunk
     std::uint32_t unit_count = 0;   ///< candidates in THIS chunk
+    std::uint32_t base_hi = 0;      ///< high half of the 64-bit keyspace cursor
     std::uint32_t seed = 0;
     /// NOT named `target`: that is a RESERVED KEYWORD in WGSL and the shader
     /// fails to parse. Caught by a compile check, not by review.
@@ -44,9 +47,13 @@ static_assert(sizeof(BruteSearchParams) == 32, "must match WGSL BruteSearchParam
 static_assert(alignof(BruteSearchParams) == 4);
 // Field-by-field. A swapped pair keeps sizeof correct and silently searches the
 // wrong keyspace, so the size check alone is not enough.
-static_assert(offsetof(BruteSearchParams, base_hi) == 0);
-static_assert(offsetof(BruteSearchParams, start_lo) == 4);
-static_assert(offsetof(BruteSearchParams, unit_count) == 8);
+// The first two are not merely documented — they are what D-0033 relies on, so
+// this pair may never be relaxed to a bare sizeof check.
+static_assert(offsetof(BruteSearchParams, start_lo) == 0,
+              "chunk window must be at byte 0 (K1 / D-0033)");
+static_assert(offsetof(BruteSearchParams, unit_count) == 4,
+              "chunk window must be at byte 4 (K1 / D-0033)");
+static_assert(offsetof(BruteSearchParams, base_hi) == 8);
 static_assert(offsetof(BruteSearchParams, seed) == 12);
 static_assert(offsetof(BruteSearchParams, target_bits) == 16);
 static_assert(offsetof(BruteSearchParams, mask) == 20);

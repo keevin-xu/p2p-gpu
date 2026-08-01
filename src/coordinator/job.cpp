@@ -145,6 +145,11 @@ const Task* JobManager::Find(TaskId id) const noexcept {
     return it == tasks_.end() ? nullptr : &it->second;
 }
 
+const Job* JobManager::FindJob(JobId id) const noexcept {
+    const auto it = jobs_.find(id);
+    return it == jobs_.end() ? nullptr : &it->second;
+}
+
 std::vector<TaskId> JobManager::HeldBy(WorkerId worker) const {
     std::vector<TaskId> out;
     for (const auto& [id, task] : tasks_) {

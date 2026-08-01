@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 
+#include "p2pgpu/coordinator/params.hpp"
 #include "p2pgpu/protocol/encode.hpp"
 #include "p2pgpu/protocol/invariants.hpp"
 
@@ -122,11 +123,16 @@ Reaction Session::OnMessage(const protocol::VerifiedFrame& frame, std::uint64_t 
             }
             break;
 
+        case wire::Body::Release:
+            if (const auto* m = env.body_as_Release()) {
+                return OnRelease(*m);
+            }
+            break;
+
         // Not yet implemented, but explicitly listed so that adding a Body
         // variant breaks THIS switch too (-Werror=switch). A silent default
         // would let a new message type be ignored without anyone noticing.
         case wire::Body::Progress:
-        case wire::Body::Release:
         case wire::Body::Throttle:
         case wire::Body::Goodbye:
         case wire::Body::BenchmarkResult:
@@ -234,16 +240,47 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
         if (!task) {
             break;
         }
+        // The JOB says which kernel; do not reach for "the first one in the
+        // registry", which happens to be right with one job and silently wrong
+        // with two.
+        const Job* job = jobs_.FindJob(task->job);
+        const KernelSpec* spec =
+            job != nullptr ? kernels_.Find(job->kernel_id) : nullptr;
+        if (spec == nullptr) {
+            spdlog::error("granted a task whose kernel is not in the registry");
+            (void)jobs_.Requeue(task->id, TaskEvent::Release);
+            break;
+        }
+
+        // R1: the COORDINATOR builds the params. What keyspace, what seed, what
+        // difficulty — all of it is "what work to do", and the worker must never
+        // invent any of it.
+        auto params = BuildParams(*spec, *job, *task);
+        if (!params) {
+            spdlog::error("could not build params: {}", params.error().message);
+            if (const auto r = jobs_.Requeue(task->id, TaskEvent::Release); !r) {
+                spdlog::error("requeue_failed task={} detail=\"{}\"", task->id.lo(),
+                              r.error().message);
+            }
+            break;
+        }
+
         // One task per TaskGrant message; granting fewer than requested means
         // sending fewer messages, which keeps lease bookkeeping 1:1.
         auto frame = protocol::EncodeMessage(
             wire::Body::TaskGrant, [&](flatbuffers::FlatBufferBuilder& fbb) {
-                auto kid = fbb.CreateString(
-                    kernels_.All().empty() ? "" : kernels_.All().front()->id);
+                auto kid = fbb.CreateString(spec->id);
+                auto pv = fbb.CreateVector(
+                    reinterpret_cast<const std::uint8_t*>(params->data()),
+                    params->size());
                 const wire::Uuid tid = task->id.to_wire();
                 const wire::Uuid jid = task->job.to_wire();
                 wire::OutputSpecBuilder ob(fbb);
-                ob.add_bytes(32);
+                // From the MANIFEST, not a literal. The worker allocates against
+                // this number, so a hardcoded 32 would break the first kernel
+                // whose output is not 32 bytes — and break it as a garbage
+                // result rather than an error.
+                ob.add_bytes(spec->output_bytes);
                 ob.add_dtype(wire::DType::U32);
                 auto os = ob.Finish();
 
@@ -251,6 +288,8 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
                 tb.add_task_id(&tid);
                 tb.add_job_id(&jid);
                 tb.add_kernel_id(kid);
+                tb.add_seed(job->seed);
+                tb.add_params(pv);
                 tb.add_work_units(task->unit_count);
                 tb.add_output_spec(os);
                 tb.add_lease_ms(kLeaseMs);
@@ -267,6 +306,35 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
     spdlog::debug("lease conn_id={} asked={} granted={} queued={}", conn_id_,
                   req.max_tasks(), granted, jobs_.queued());
     return Reaction{std::move(out)};
+}
+
+Reaction Session::OnRelease(const wire::Release& release) {
+    if (release.task_id() == nullptr) {
+        return NonFatal(wire::ErrorCode::MalformedMessage, "Release has no task_id");
+    }
+    const TaskId task_id{*release.task_id()};
+
+    // INVARIANT 5 — a worker may only release what it holds. Without this, any
+    // connected peer could hand back another worker's task and stall the job by
+    // forcing it to be re-granted repeatedly.
+    if (const auto s = jobs_.CheckLease(worker_id_, task_id); !s) {
+        spdlog::warn("reject conn_id={} task={} reason=release_without_lease", conn_id_,
+                     task_id.lo());
+        return NonFatal(wire::ErrorCode::LeaseNotHeld, "no lease on that task");
+    }
+
+    // NO REPUTATION PENALTY (R8). A worker giving work back — because the user
+    // stopped it, its device died, or it cannot run that kernel — is the normal
+    // case, and the whole point of leasing is that it costs nothing.
+    if (const auto s = jobs_.Requeue(task_id, TaskEvent::Release); !s) {
+        spdlog::error("requeue_failed conn_id={} task={} detail=\"{}\"", conn_id_,
+                      task_id.lo(), s.error().message);
+        return NonFatal(wire::ErrorCode::Internal, "could not requeue");
+    }
+
+    spdlog::info("release conn_id={} task={} reason={} penalty=none", conn_id_,
+                 task_id.lo(), static_cast<int>(release.reason()));
+    return {};
 }
 
 Reaction Session::OnResultHeader(const wire::ResultHeader& header,

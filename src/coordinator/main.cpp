@@ -27,6 +27,20 @@ int main(int argc, char** argv) {
     app.add_option("--kernel-dir", cfg.kernel_dir, "WGSL directory")->capture_default_str();
     app.add_option("--log-level", cfg.log_level,
                    "trace|debug|info|warn|error")->capture_default_str();
+
+    // DEVELOPMENT AFFORDANCE, replaced by the job submission API in step 2.16.
+    // Phase 1's objective is "one worker completes a real job end to end", and
+    // without this there is no way to put a job in the queue at all. Kept
+    // deliberately crude so nobody mistakes it for the real interface.
+    std::string seed_kernel;
+    std::uint64_t seed_units = 4'000'000;
+    std::uint32_t seed_tasks = 4;
+    app.add_option("--seed-job", seed_kernel,
+                   "DEV ONLY: queue one job for this kernel id at startup");
+    app.add_option("--seed-units", seed_units, "units in the seeded job")
+        ->capture_default_str();
+    app.add_option("--seed-tasks", seed_tasks, "tasks to split the seeded job into")
+        ->capture_default_str();
     // Exceptions are permitted in startup/config code, before serving begins
     // (CONVENTIONS.md §1). CLI11 throws for --help and parse errors.
     CLI11_PARSE(app, argc, argv);
@@ -56,8 +70,22 @@ int main(int argc, char** argv) {
     }
 
     // One JobManager for the process, owned here and outliving the server.
-    // Empty at startup: jobs arrive over the control API in Phase 2 (2.16).
+    // Empty at startup unless --seed-job is given; the real submission API is
+    // step 2.16.
     p2pgpu::coordinator::JobManager jobs;
+
+    if (!seed_kernel.empty()) {
+        if (registry->Find(seed_kernel) == nullptr) {
+            // Refuse rather than queue work no worker can run — the failure
+            // would otherwise surface as every worker releasing every task with
+            // KernelUnavailable, nowhere near the cause.
+            spdlog::error("--seed-job names an unknown kernel: {}", seed_kernel);
+            return 1;
+        }
+        const auto job = jobs.CreateJob(seed_kernel, seed_units, seed_tasks, /*seed=*/42);
+        spdlog::warn("DEV: seeded job kernel={} units={} tasks={} job_lo={}",
+                     seed_kernel, seed_units, seed_tasks, job.lo());
+    }
 
     p2pgpu::coordinator::Server server(cfg, *registry, jobs);
     server.Run();

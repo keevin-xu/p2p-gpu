@@ -20,10 +20,13 @@
     "Adding anything not in the CONVENTIONS.md §10 baseline requires a",
     "DECISIONS.md entry and human sign-off (DL5).",
     "",
-    "NOT here, by necessity — both come via FetchContent and need their own",
+    "NOT here, by necessity — these come via FetchContent and need their own",
     "pins, as the baseline does not cover them:",
     "  wgpu-native      : no vcpkg port; use the prebuilt release binaries",
-    "  datachannel-wasm : browser-side twin of libdatachannel"
+    "  datachannel-wasm : browser-side twin of libdatachannel (D-0032)",
+    "  blake3 (wasm ONLY): the vcpkg port hardcodes x86 SIMD and does not build",
+    "                      for wasm32-emscripten. Native still uses the port;",
+    "                      only the browser worker fetches upstream (D-0034)."
   ],
 
   "dependencies": [

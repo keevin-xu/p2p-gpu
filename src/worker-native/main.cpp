@@ -11,12 +11,17 @@
 // lives in worker-core/smoke.cpp so the browser runs byte-identical checking
 // code. That is what makes step 0.9's cross-target comparison meaningful.
 
+#include <CLI/CLI.hpp>
+
+#include <chrono>
 #include <cstdio>
 #include <cstring>
-#include <span>
 #include <fstream>
+#include <optional>
+#include <span>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "p2pgpu/worker/bench.hpp"
@@ -24,6 +29,7 @@
 #include "p2pgpu/worker/recovery.hpp"
 #include "p2pgpu/worker/platform.hpp"
 #include "p2pgpu/worker/smoke.hpp"
+#include "p2pgpu/worker/task_loop.hpp"
 
 namespace {
 
@@ -46,6 +52,65 @@ std::string Escape(const std::string& s) {
         out.push_back(c);
     }
     return out;
+}
+
+// ── The real thing: join the grid (step 1.22) ────────────────────────────
+//
+// Everything below is nine lines of glue over worker-core. That is the point —
+// worker-native and worker-browser differ ONLY in how they get WGSL and how
+// they drive the loop, and both of those are two lines each. If this function
+// starts growing, logic is leaking out of worker-core (R1).
+int RunGrid(const std::string& url, const std::string& dir, std::uint64_t chunk) {
+    p2pgpu::worker::DeviceSession device;
+    if (!device.Start()) {
+        std::fprintf(stderr, "no WebGPU device available; declining to join\n");
+        return 1;
+    }
+
+    p2pgpu::worker::TaskLoopConfig cfg;
+    cfg.coordinator_url = url;
+    cfg.units_per_chunk = chunk;
+
+    // THE ONLY THING THE NATIVE TARGET DOES DIFFERENTLY: read WGSL from disk.
+    // The browser fetches the same text over HTTP from the coordinator (1.12).
+    // Keeping acquisition out here rather than inside worker-core is what stops
+    // an `#ifdef __EMSCRIPTEN__` appearing in portable code (R2).
+    p2pgpu::worker::TaskLoop loop(cfg, device, [dir](std::string_view id) {
+        // Kernel ids come off the wire. Refuse anything that could escape the
+        // directory before it reaches the filesystem — the coordinator is not
+        // more trusted than any other peer (R11), and "../.." is the cheapest
+        // possible attack on a worker that reads files by name.
+        if (id.empty() || id.find('/') != std::string_view::npos ||
+            id.find('\\') != std::string_view::npos ||
+            id.find("..") != std::string_view::npos) {
+            return std::optional<std::string>{};
+        }
+        // Manifest ids map to `<id minus version suffix>.wgsl`; brute_search_v1
+        // lives in brute_search.wgsl.
+        std::string base{id};
+        const auto us = base.rfind("_v");
+        if (us != std::string::npos) {
+            base = base.substr(0, us);
+        }
+        auto text = ReadFile(dir + "/" + base + ".wgsl");
+        if (text.empty()) {
+            return std::optional<std::string>{};
+        }
+        return std::optional<std::string>{std::move(text)};
+    });
+
+    loop.Start();
+
+    // Native's event loop. The browser's is emscripten_set_main_loop over the
+    // same Poll() — one loop body, two hosts, which is why Poll() exists rather
+    // than a blocking Run().
+    while (loop.status().connected || loop.status().last_message == "connecting") {
+        loop.Poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    loop.Stop();
+    device.Stop();
+    return 0;
 }
 
 /// Step 0.7 — adapter capability dump, the first row of the E7 table.
@@ -349,9 +414,31 @@ int RunSmoke(const platform::GpuContext& ctx, const std::string& dir) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    // CLI11 argument handling arrives with the real task loop in step 1.22.
-    const std::string mode = argc > 1 ? argv[1] : "smoke";
-    const std::string dir = P2PGPU_KERNEL_DIR;
+    std::string dir = P2PGPU_KERNEL_DIR;
+    std::string url = "ws://localhost:8080/ws";
+    std::uint64_t chunk = 1u << 20;
+
+    CLI::App app{"p2pgpu native worker"};
+    // `run` is the product; the rest are the Phase 0 measurement harnesses that
+    // produced the EVALUATION.md numbers and stay because the evidence has to
+    // be reproducible.
+    std::string mode = "run";
+    app.add_option("mode", mode,
+                   "run | smoke | bench | chunking | recovery | adapter")
+        ->capture_default_str();
+    app.add_option("--coordinator", url, "coordinator WebSocket URL")
+        ->capture_default_str();
+    app.add_option("--kernel-dir", dir, "WGSL directory")->capture_default_str();
+    app.add_option("--units-per-chunk", chunk,
+                   "bounds ONE dispatch so it stays far under the ~2s TDR limit (R4)")
+        ->capture_default_str();
+    // Exceptions are fine here: this is startup/config, before any work begins
+    // (CONVENTIONS.md §1).
+    CLI11_PARSE(app, argc, argv);
+
+    if (mode == "run") {
+        return RunGrid(url, dir, chunk);
+    }
 
     if (mode == "recovery") {
         // Runs before the shared acquisition below: DeviceSession owns its own
@@ -377,7 +464,9 @@ int main(int argc, char** argv) {
         rc = RunSmoke(ctx, dir);
     } else {
         std::fprintf(stderr,
-                     "usage: worker-native [smoke|bench|chunking|recovery|adapter]\n");
+                     "unknown mode: %s\n"
+                     "usage: worker-native [run|smoke|bench|chunking|recovery|adapter]\n",
+                     mode.c_str());
         rc = 2;
     }
 
