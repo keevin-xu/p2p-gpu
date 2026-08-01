@@ -80,6 +80,13 @@ if(NOT P2PGPU_WASM)
     if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
         set(P2PGPU_WGPU_ARCHIVE "wgpu-macos-aarch64-release.zip")
         set(P2PGPU_WGPU_SHA256  "a5797a37b1adf720bcd5dcffb291edbbd5b7b14be0a3874c28e6393a655a7a3e")
+    elseif(UNIX AND NOT APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        # Added for CI (step 1.29 / D-0036). Note this only makes the build
+        # CONFIGURE and LINK on Linux — CI runners have no GPU, so nothing that
+        # acquires a device runs there. It also unblocks step 4.5's run on
+        # non-Apple hardware, which does have one.
+        set(P2PGPU_WGPU_ARCHIVE "wgpu-linux-x86_64-release.zip")
+        set(P2PGPU_WGPU_SHA256  "95a4d90c071005a98d03eab348beaa6b07e16eb00d1dcdb9f8348f75eb97ec5a")
     else()
         # Add the platform's archive + hash from the v29.0.1.1 release page.
         message(FATAL_ERROR

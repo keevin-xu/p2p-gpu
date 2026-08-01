@@ -50,6 +50,22 @@
       }
     },
     {
+      "name": "linux-fuzz",
+      "inherits": "base",
+      "displayName": "libFuzzer harnesses  (Linux / CI)",
+      "description": "The CI twin of native-fuzz (step 1.29, D-0036). Same P2PGPU_FUZZ_ONLY build, same harnesses, same corpus — but none of native-fuzz's toolchain workarounds, because every one of them exists for a macOS reason that does not apply here: Linux clang ships libFuzzer (so no Homebrew LLVM), and there is no Apple ld to reject a GNU-format archive (so no pinned ar/ranlib). Keeping these as two presets rather than one conditional preset means neither can quietly acquire the other's constraints.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "P2PGPU_BUILD_TESTS": "OFF",
+        "P2PGPU_BUILD_FUZZ": "ON",
+        "P2PGPU_FUZZ_ONLY": "ON",
+        "VCPKG_MANIFEST_FEATURES": "",
+        "CMAKE_CXX_FLAGS": "-fno-omit-frame-pointer -fno-sanitize-recover=all"
+      }
+    },
+    {
       "name": "native-tsan",
       "inherits": "base",
       "displayName": "Native + ThreadSanitizer",
@@ -93,6 +109,7 @@
   "buildPresets": [
     { "name": "native-debug",   "configurePreset": "native-debug" },
     { "name": "native-fuzz",    "configurePreset": "native-fuzz" },
+    { "name": "linux-fuzz",     "configurePreset": "linux-fuzz" },
     { "name": "native-tsan",    "configurePreset": "native-tsan" },
     { "name": "native-release", "configurePreset": "native-release" },
     { "name": "wasm",           "configurePreset": "wasm" }

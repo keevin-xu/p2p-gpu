@@ -1,0 +1,186 @@
+# p2pgpu CI — step 1.29, D-0036.
+#
+# ┌─ WHAT THIS DOES NOT COVER ──────────────────────────────────────────────┐
+# │ GitHub runners have NO GPU. `kernel_tests` is excluded here, and with it │
+# │ every claim about kernel correctness, chunk invariance on real hardware, │
+# │ cross-vendor determinism, and all timing.                               │
+# │                                                                         │
+# │ A green run on this workflow means the PROTOCOL layer is memory-safe and │
+# │ the coordinator's logic holds. It does NOT mean the kernels work. Never  │
+# │ read it as more than that — getting a GPU (or a software adapter honest  │
+# │ enough to substitute for one) into CI is step 4.4, and D-0036 explains   │
+# │ why that stayed in Phase 4.                                             │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# ubuntu-latest, deliberately, not macOS. Matching the dev machine is the
+# OPPOSITE of what is wanted: two of the three worst bugs found so far (D-0027,
+# D-0028) were alignment defects that ran correctly on arm64 and x86 for weeks,
+# and a second architecture replaying the corpus is how the next one surfaces.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # MANDATORY, not an optimisation. Without it every job rebuilds OpenSSL,
+  # libdatachannel and uWebSockets from source and takes 20+ minutes.
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+jobs:
+  # ── Tier 1 ──────────────────────────────────────────────────────────────
+  # The regression net R11 asks for, and the cheapest thing here by far.
+  #
+  # Needs no GPU and no vcpkg `native` feature: P2PGPU_FUZZ_ONLY returns before
+  # any of that.
+  #
+  # Uses the `linux-fuzz` preset, not `native-fuzz`. Same build, same harnesses,
+  # same corpus — but every toolchain workaround in `native-fuzz` exists for a
+  # macOS reason that does not apply here: Linux clang ships libFuzzer, and
+  # there is no Apple ld to reject a GNU-format archive.
+  fuzz:
+    name: fuzz (corpus replay + mutation)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Export GitHub Actions cache environment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang lld
+
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 827a2e1203bc19941126c657166da44f2623acc4  # matches vcpkg.json baseline
+
+      - name: Configure
+        run: cmake --preset linux-fuzz
+        env:
+          CC: clang
+          CXX: clang++
+
+      - name: Build
+        run: cmake --build build/linux-fuzz
+
+      # THE REGRESSION NET. -runs=0 replays every committed seed through the
+      # frame codec, the Verifier and the invariants under ASan, without
+      # mutating anything. Seconds, and it is what makes a committed corpus
+      # worth committing (R11: "the corpus is committed").
+      - name: Replay the committed corpus
+        run: ./build/linux-fuzz/fuzz_protocol fuzz/corpus/protocol/ -runs=0
+
+      # ...and keep looking. Short on PRs so it does not gate a merge for long;
+      # the long campaigns stay manual until there is a nightly worth the
+      # minutes.
+      - name: Fuzz for 60s
+        run: |
+          ./build/linux-fuzz/fuzz_protocol fuzz/corpus/protocol/ \
+            -max_total_time=60 -print_final_stats=1
+
+      # A crash here is the whole point of the job, so keep the input. Per
+      # CONVENTIONS.md §7 T4 it then gets committed as a regression seed — by a
+      # human, deliberately, not by this workflow.
+      - name: Upload any crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: |
+            crash-*
+            leak-*
+            timeout-*
+          if-no-files-found: ignore
+
+  # ── Tier 2 ──────────────────────────────────────────────────────────────
+  # ASan + UBSan on every commit, which is the sentence R11 actually ends with.
+  sanitizers:
+    name: native-debug (asan+ubsan) + ctest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Export GitHub Actions cache environment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang lld pkg-config
+
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 827a2e1203bc19941126c657166da44f2623acc4
+
+      - name: Configure
+        run: cmake --preset native-debug
+        env:
+          CC: clang
+          CXX: clang++
+
+      - name: Build
+        run: cmake --build build/native-debug
+
+      # -E kernel_ EXCLUDES the GPU tests. They are not skipped for being slow
+      # or flaky — this runner has no adapter at all, and a suite that silently
+      # passes because it never ran is worse than one that is honestly absent.
+      # See the banner at the top of this file.
+      - name: Test (GPU tests excluded — no adapter on CI runners)
+        run: ctest --preset native-debug --output-on-failure -E '^kernel_'
+
+      - name: R2 seam check
+        run: python3 tools/check_seam.py
+
+  # Optimiser-only breakage is real and the sanitizer build will not show it:
+  # different inlining, different UB exploitation, no sanitizer runtime.
+  release:
+    name: native-release (build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Export GitHub Actions cache environment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang lld pkg-config
+
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 827a2e1203bc19941126c657166da44f2623acc4
+
+      - name: Configure
+        run: cmake --preset native-release
+        env:
+          CC: clang
+          CXX: clang++
+
+      - name: Build
+        run: cmake --build build/native-release
+
+# Tier 3 — the wasm build — is step 1.30 and lands with the browser worker.
+# Until that target changes regularly there is little for it to catch, and it
+# is the slowest job here to set up (mymindstorm/setup-emsdk).
