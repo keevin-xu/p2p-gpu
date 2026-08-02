@@ -84,9 +84,14 @@ std::map<std::string, Table, std::less<>> ParseToml(std::string_view text) {
                 acc = std::string(first);
                 while (auto more = next_line()) {
                     std::string_view l = *more;
-                    if (const std::size_t end = l.find("\"\"\""); end != std::string_view::npos) {
+                    // `close`, not `end` — the outer scope already has an `end`
+                    // for the same delimiter on the FIRST line, and shadowing it
+                    // here means a reader has to work out which one a given
+                    // `end` refers to. Harmless today; -Wshadow exists because
+                    // it is not always.
+                    if (const std::size_t close = l.find("\"\"\""); close != std::string_view::npos) {
                         acc += "\n";
-                        acc += l.substr(0, end);
+                        acc += l.substr(0, close);
                         break;
                     }
                     acc += "\n";

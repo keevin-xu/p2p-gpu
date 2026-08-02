@@ -130,6 +130,25 @@ jobs:
       - name: Build
         run: cmake --build build/linux-fuzz
 
+      # DIAGNOSTIC. The cache has been the wrong size twice and both guesses at
+      # why were wrong, so measure instead of reasoning. Prints what is actually
+      # on disk immediately before actions/cache saves it.
+      - name: What is actually being cached
+        if: always()
+        run: |
+          echo "== VCPKG_DEFAULT_BINARY_CACHE = $VCPKG_DEFAULT_BINARY_CACHE"
+          du -sh "$VCPKG_DEFAULT_BINARY_CACHE" 2>/dev/null || echo "   MISSING"
+          ls "$VCPKG_DEFAULT_BINARY_CACHE" 2>/dev/null | head -5
+          echo "== $GITHUB_WORKSPACE/vcpkg_installed"
+          du -sh "$GITHUB_WORKSPACE/vcpkg_installed" 2>/dev/null || echo "   MISSING"
+          ls "$GITHUB_WORKSPACE/vcpkg_installed" 2>/dev/null | head -5
+          echo "== any other vcpkg_installed trees the build made"
+          find "$GITHUB_WORKSPACE" -maxdepth 3 -type d -name vcpkg_installed \
+            -exec du -sh {} \; 2>/dev/null
+          echo "== vcpkg env actually in effect"
+          env | grep -i '^VCPKG' | sort
+
+
       # THE REGRESSION NET. -runs=0 replays every committed seed through the
       # frame codec, the Verifier and the invariants under ASan, mutating
       # nothing. Seconds, deterministic, and it is what makes committing a
@@ -239,6 +258,25 @@ jobs:
 
       - name: Build (release)
         run: cmake --build build/native-release
+
+      # DIAGNOSTIC. The cache has been the wrong size twice and both guesses at
+      # why were wrong, so measure instead of reasoning. Prints what is actually
+      # on disk immediately before actions/cache saves it.
+      - name: What is actually being cached
+        if: always()
+        run: |
+          echo "== VCPKG_DEFAULT_BINARY_CACHE = $VCPKG_DEFAULT_BINARY_CACHE"
+          du -sh "$VCPKG_DEFAULT_BINARY_CACHE" 2>/dev/null || echo "   MISSING"
+          ls "$VCPKG_DEFAULT_BINARY_CACHE" 2>/dev/null | head -5
+          echo "== $GITHUB_WORKSPACE/vcpkg_installed"
+          du -sh "$GITHUB_WORKSPACE/vcpkg_installed" 2>/dev/null || echo "   MISSING"
+          ls "$GITHUB_WORKSPACE/vcpkg_installed" 2>/dev/null | head -5
+          echo "== any other vcpkg_installed trees the build made"
+          find "$GITHUB_WORKSPACE" -maxdepth 3 -type d -name vcpkg_installed \
+            -exec du -sh {} \; 2>/dev/null
+          echo "== vcpkg env actually in effect"
+          env | grep -i '^VCPKG' | sort
+
 
 # The wasm build is step 1.30, landing with the browser worker. It is the
 # slowest job to set up (mymindstorm/setup-emsdk) and until that target changes
