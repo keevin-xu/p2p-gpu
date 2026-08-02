@@ -247,7 +247,18 @@ if(P2PGPU_WASM)
     FetchContent_Declare(datachannel_wasm
         GIT_REPOSITORY https://github.com/paullouisageneau/datachannel-wasm.git
         GIT_TAG        3d88eb88fb7d6729e498079477dd3ae46d30ac38  # v0.4.0, 2025-09-13
-        GIT_SHALLOW    FALSE)
+        GIT_SHALLOW    FALSE
+        # Two `window.X` feature guards prevent the library working on a Web
+        # Worker, which is where the task loop lives as of step 1.24 (D-0038).
+        # A Worker has no `window`, so the WebSocket throws before it is ever
+        # created — although `new WebSocket(url)` right below the guard would
+        # have worked fine. Two words, patched to `globalThis.`.
+        #
+        # RE-CHECK THIS ON EVERY PIN BUMP. The patch script fails loudly rather
+        # than silently no-op'ing if the upstream text moves.
+        PATCH_COMMAND ${CMAKE_COMMAND}
+                      -DSOURCE_DIR=<SOURCE_DIR>
+                      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_datachannel_wasm.cmake)
     FetchContent_MakeAvailable(datachannel_wasm)
     target_link_libraries(p2pgpu-worker-core PUBLIC datachannel-wasm)
 else()
