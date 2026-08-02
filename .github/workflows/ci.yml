@@ -5,24 +5,57 @@
 # │ every claim about kernel correctness, chunk invariance on real hardware, │
 # │ cross-vendor determinism, and all timing.                               │
 # │                                                                         │
-# │ A green run on this workflow means the PROTOCOL layer is memory-safe and │
-# │ the coordinator's logic holds. It does NOT mean the kernels work. Never  │
-# │ read it as more than that — getting a GPU (or a software adapter honest  │
-# │ enough to substitute for one) into CI is step 4.4, and D-0036 explains   │
-# │ why that stayed in Phase 4.                                             │
+# │ A green run means the PROTOCOL layer is memory-safe and the             │
+# │ coordinator's logic holds. It does NOT mean the kernels work. Getting a  │
+# │ GPU (or an honest substitute) into CI is step 4.4.                      │
 # └─────────────────────────────────────────────────────────────────────────┘
 #
 # ubuntu-latest, deliberately, not macOS. Matching the dev machine is the
 # OPPOSITE of what is wanted: two of the three worst bugs found so far (D-0027,
 # D-0028) were alignment defects that ran correctly on arm64 and x86 for weeks,
 # and a second architecture replaying the corpus is how the next one surfaces.
+# macOS runners also bill at 10x.
+#
+# ── BILLED MINUTES ───────────────────────────────────────────────────────
+# Billing is the SUM of all job durations, so parallel jobs are not free —
+# splitting work across jobs only helps if the work differs. The first version
+# of this file had three jobs, two of which installed the identical vcpkg
+# dependency set, and it cost ~34 min per push.
+#
+# Two things fix that, and only the second is about job layout:
+#
+#   1. THE BINARY CACHE MUST ACTUALLY WORK. The first version used
+#      `x-gha`, which needs ACTIONS_CACHE_URL / ACTIONS_RUNTIME_TOKEN — recent
+#      runners renamed the former, so the variable was empty and caching
+#      silently did nothing while looking configured. Every run rebuilt
+#      OpenSSL, libdatachannel and uWebSockets from source. This version uses a
+#      plain directory binary cache with `actions/cache`: dumber, visible in
+#      the run log, and verifiable.
+#
+#   2. ONE JOB FOR BOTH NATIVE BUILDS. `native-debug` and `native-release`
+#      need the same `native;tests` dependencies. As separate jobs that set is
+#      installed or restored twice; as one job the release build costs only its
+#      own compile time.
+#
+# The fuzz job stays separate because it genuinely differs: it installs NO
+# `native` feature at all (D-0015), so it shares almost nothing with the others.
 
 name: ci
 
 on:
   push:
     branches: [main]
+    # Docs-only pushes cannot break a build. This project is documentation-heavy
+    # by design, so this skips a real fraction of runs.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'results/**'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'results/**'
   workflow_dispatch:
 
 concurrency:
@@ -30,42 +63,50 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # MANDATORY, not an optimisation. Without it every job rebuilds OpenSSL,
-  # libdatachannel and uWebSockets from source and takes 20+ minutes.
-  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  # A plain directory binary cache, restored by actions/cache below. vcpkg uses
+  # this by default when VCPKG_BINARY_SOURCES is unset, so there is nothing else
+  # to configure and nothing to silently misconfigure.
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+  VCPKG_COMMIT: 827a2e1203bc19941126c657166da44f2623acc4  # matches vcpkg.json baseline
 
 jobs:
-  # ── Tier 1 ──────────────────────────────────────────────────────────────
-  # The regression net R11 asks for, and the cheapest thing here by far.
+  # ── The regression net R11 asks for, and the cheapest thing here ────────
   #
-  # Needs no GPU and no vcpkg `native` feature: P2PGPU_FUZZ_ONLY returns before
-  # any of that.
+  # Separate job because it genuinely differs from the others: P2PGPU_FUZZ_ONLY
+  # returns before any GPU dependency and installs NO vcpkg `native` feature
+  # (D-0015), so it shares almost no build with them.
   #
   # Uses the `linux-fuzz` preset, not `native-fuzz`. Same build, same harnesses,
   # same corpus — but every toolchain workaround in `native-fuzz` exists for a
-  # macOS reason that does not apply here: Linux clang ships libFuzzer, and
-  # there is no Apple ld to reject a GNU-format archive.
+  # macOS reason that does not apply: Linux clang ships libFuzzer, and there is
+  # no Apple ld to reject a GNU-format archive.
   fuzz:
     name: fuzz (corpus replay + mutation)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Export GitHub Actions cache environment
-        uses: actions/github-script@v7
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
       - name: Install toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build clang lld
 
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          # Keyed on the manifest AND the baseline: either one changing means
+          # different package versions, so a stale hit would be wrong rather
+          # than merely slow.
+          key: vcpkg-fuzz-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-fuzz-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
+
+      - name: Create binary cache dir
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+
       - uses: lukka/run-vcpkg@v11
         with:
-          vcpkgGitCommitId: 827a2e1203bc19941126c657166da44f2623acc4  # matches vcpkg.json baseline
+          vcpkgGitCommitId: 827a2e1203bc19941126c657166da44f2623acc4
 
       - name: Configure
         run: cmake --preset linux-fuzz
@@ -77,15 +118,14 @@ jobs:
         run: cmake --build build/linux-fuzz
 
       # THE REGRESSION NET. -runs=0 replays every committed seed through the
-      # frame codec, the Verifier and the invariants under ASan, without
-      # mutating anything. Seconds, and it is what makes a committed corpus
-      # worth committing (R11: "the corpus is committed").
+      # frame codec, the Verifier and the invariants under ASan, mutating
+      # nothing. Seconds, deterministic, and it is what makes committing a
+      # corpus worth doing (R11: "the corpus is committed").
       - name: Replay the committed corpus
         run: ./build/linux-fuzz/fuzz_protocol fuzz/corpus/protocol/ -runs=0
 
-      # ...and keep looking. Short on PRs so it does not gate a merge for long;
-      # the long campaigns stay manual until there is a nightly worth the
-      # minutes.
+      # ...and keep looking. Short, so it does not gate a push for long; long
+      # campaigns stay manual until there are minutes to spare for a nightly.
       - name: Fuzz for 60s
         run: |
           ./build/linux-fuzz/fuzz_protocol fuzz/corpus/protocol/ \
@@ -105,82 +145,69 @@ jobs:
             timeout-*
           if-no-files-found: ignore
 
-  # ── Tier 2 ──────────────────────────────────────────────────────────────
-  # ASan + UBSan on every commit, which is the sentence R11 actually ends with.
-  sanitizers:
-    name: native-debug (asan+ubsan) + ctest
+  # ── ASan + UBSan + tests, then the optimized build ─────────────────────
+  #
+  # ONE job for both. They need the identical `native;tests` dependency set, so
+  # as two jobs that set gets installed or restored twice for no benefit. The
+  # release step reuses everything and costs only its own compile time.
+  native:
+    name: native (asan+ubsan + ctest, then release build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Export GitHub Actions cache environment
-        uses: actions/github-script@v7
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Install toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build clang lld pkg-config
 
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-native-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-native-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
+
+      - name: Create binary cache dir
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+
       - uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: 827a2e1203bc19941126c657166da44f2623acc4
 
-      - name: Configure
+      - name: Configure (debug + sanitizers)
         run: cmake --preset native-debug
         env:
           CC: clang
           CXX: clang++
 
-      - name: Build
+      - name: Build (debug + sanitizers)
         run: cmake --build build/native-debug
 
       # -E kernel_ EXCLUDES the GPU tests. They are not skipped for being slow
       # or flaky — this runner has no adapter at all, and a suite that silently
-      # passes because it never ran is worse than one that is honestly absent.
-      # See the banner at the top of this file.
+      # passes because it never ran is worse than one honestly absent. See the
+      # banner at the top of this file.
       - name: Test (GPU tests excluded — no adapter on CI runners)
         run: ctest --preset native-debug --output-on-failure -E '^kernel_'
 
       - name: R2 seam check
         run: python3 tools/check_seam.py
 
-  # Optimiser-only breakage is real and the sanitizer build will not show it:
-  # different inlining, different UB exploitation, no sanitizer runtime.
-  release:
-    name: native-release (build)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Export GitHub Actions cache environment
-        uses: actions/github-script@v7
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
-      - name: Install toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build clang lld pkg-config
-
-      - uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: 827a2e1203bc19941126c657166da44f2623acc4
-
-      - name: Configure
+      # Optimizer-only breakage is real and the sanitizer build will not show
+      # it: different inlining, different UB exploitation, no sanitizer runtime.
+      # Build only — the tests already ran above, and running them twice buys
+      # little for the minutes.
+      - name: Configure (release)
         run: cmake --preset native-release
         env:
           CC: clang
           CXX: clang++
 
-      - name: Build
+      - name: Build (release)
         run: cmake --build build/native-release
 
-# Tier 3 — the wasm build — is step 1.30 and lands with the browser worker.
-# Until that target changes regularly there is little for it to catch, and it
-# is the slowest job here to set up (mymindstorm/setup-emsdk).
+# The wasm build is step 1.30, landing with the browser worker. It is the
+# slowest job to set up (mymindstorm/setup-emsdk) and until that target changes
+# regularly there is little for it to catch — though after 1.23/1.24 that is
+# now close to false, so 1.30 is due.
