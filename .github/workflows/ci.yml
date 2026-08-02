@@ -32,10 +32,14 @@
 #      plain directory binary cache with `actions/cache`: dumber, visible in
 #      the run log, and verifiable.
 #
-#   2. ONE JOB FOR BOTH NATIVE BUILDS. `native-debug` and `native-release`
-#      need the same `native;tests` dependencies. As separate jobs that set is
-#      installed or restored twice; as one job the release build costs only its
-#      own compile time.
+#   2. ONE JOB, AND ONE INSTALL TREE, FOR BOTH NATIVE BUILDS. `native-debug`
+#      and `native-release` need the same `native;tests` dependencies. Merging
+#      the jobs was NOT sufficient: every CMake preset has its own binaryDir, so
+#      each still got its own vcpkg_installed/ and ran its own install — the
+#      release configure was observed rebuilding libdatachannel from source on a
+#      runner that had just built it. Both configures now pass
+#      VCPKG_INSTALLED_DIR pointing at one shared tree, so the second installs
+#      nothing at all.
 #
 # The fuzz job stays separate because it genuinely differs: it installs NO
 # `native` feature at all (D-0015), so it shares almost nothing with the others.
@@ -164,7 +168,12 @@ jobs:
       - name: Restore vcpkg binary cache
         uses: actions/cache@v4
         with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          # BOTH the finished install tree and the binary cache. The tree is the
+          # fast path — on a hit, vcpkg checks its status file and installs
+          # nothing. The binary cache is the fallback for a partial miss.
+          path: |
+            ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+            ${{ github.workspace }}/vcpkg_installed
           key: vcpkg-native-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-native-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
 
@@ -175,8 +184,22 @@ jobs:
         with:
           vcpkgGitCommitId: 827a2e1203bc19941126c657166da44f2623acc4
 
+      # ── ONE INSTALL TREE FOR BOTH CONFIGURES ────────────────────────
+      #
+      # Each CMake preset has its own binaryDir, so by DEFAULT each gets its own
+      # vcpkg_installed/ and runs its own install. Merging the two jobs did not
+      # fix that — the release configure was observed rebuilding libdatachannel
+      # from source, on a runner that had just built it.
+      #
+      # VCPKG_INSTALLED_DIR points both at one tree, so the second configure
+      # finds every package already present and installs nothing. This
+      # ELIMINATES the duplicate rather than trying to make it fast, which is
+      # why it is preferred over leaning harder on the binary cache.
+      #
+      # Safe across build types: vcpkg installs debug and release variants of
+      # every port into the same tree regardless of our CMAKE_BUILD_TYPE.
       - name: Configure (debug + sanitizers)
-        run: cmake --preset native-debug
+        run: cmake --preset native-debug -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/vcpkg_installed"
         env:
           CC: clang
           CXX: clang++
@@ -198,8 +221,9 @@ jobs:
       # it: different inlining, different UB exploitation, no sanitizer runtime.
       # Build only — the tests already ran above, and running them twice buys
       # little for the minutes.
+      # Same tree as above — this configure should install NOTHING.
       - name: Configure (release)
-        run: cmake --preset native-release
+        run: cmake --preset native-release -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/vcpkg_installed"
         env:
           CC: clang
           CXX: clang++
