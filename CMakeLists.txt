@@ -358,12 +358,26 @@ else()
 
     # Copy the static R7 opt-in surface next to the module. No build step, no
     # bundler — web/ is plain files by design (ARCHITECTURE.md §4).
-    add_custom_command(TARGET worker-browser POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${CMAKE_CURRENT_SOURCE_DIR}/web/index.html"
-                "${CMAKE_CURRENT_SOURCE_DIR}/web/ui.js"
-                "${CMAKE_BINARY_DIR}/web/"
-        COMMENT "Copying web/ static assets")
+    #
+    # A real OUTPUT rule with DEPENDS, not a POST_BUILD hook. POST_BUILD only
+    # fires when the executable RELINKS, so editing index.html or ui.js alone
+    # left the served copies stale — you then test the previous version and
+    # conclude the fix did not work. Painful enough once with browser caching
+    # on top; not worth risking twice.
+    set(P2PGPU_WEB_ASSETS index.html ui.js)
+    set(P2PGPU_WEB_COPIED)
+    foreach(asset IN LISTS P2PGPU_WEB_ASSETS)
+        add_custom_command(
+            OUTPUT  "${CMAKE_BINARY_DIR}/web/${asset}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/web/${asset}"
+                    "${CMAKE_BINARY_DIR}/web/${asset}"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/web/${asset}"
+            COMMENT "Copying web/${asset}")
+        list(APPEND P2PGPU_WEB_COPIED "${CMAKE_BINARY_DIR}/web/${asset}")
+    endforeach()
+    add_custom_target(worker-browser-assets ALL DEPENDS ${P2PGPU_WEB_COPIED})
+    add_dependencies(worker-browser worker-browser-assets)
 
     # WebGPU in the browser (D-0014). -sUSE_WEBGPU=1 was REMOVED in Emscripten
     # 6.0.5 — it is a hard configure error, not a warning. The replacement is
@@ -416,10 +430,43 @@ else()
         -sEXIT_RUNTIME=0
         -sMODULARIZE=1
         -sEXPORT_NAME=createP2pgpuWorker
-        # Phase 1 step 1.24: move the task loop off the browser main thread.
-        #   -sPROXY_TO_PTHREAD -sPTHREAD_POOL_SIZE=2
-        # Requires COOP/COEP headers in dev and prod (docs/RISKS.md §1).
+
+        # ── Step 1.24: the task loop runs on a Web Worker ────────────────
+        #
+        # -pthread, NOT -sPROXY_TO_PTHREAD (D-0037). Proxying main() would also
+        # move the five Phase 0 diagnostic entry points, which JS calls by
+        # ccall and which currently produce the EVALUATION.md numbers — a
+        # whole-module blast radius for a benefit confined to one loop. An
+        # explicit std::thread inside p2pgpu_start moves exactly the loop.
+        #
+        # The pool is sized 1: the loop is the only thread we ever spawn.
+        # Sizing it here rather than letting the thread be created on demand
+        # matters, because creating a pthread on demand needs the MAIN THREAD
+        # to service the request — and blocking the main thread to start the
+        # thread that exists to escape the main thread is a deadlock waiting
+        # for a slow frame.
+        #
+        # -pthread requires SharedArrayBuffer, which requires the COOP/COEP
+        # headers RISKS.md §1 already mandates and tools/serve.py already
+        # sets. Deployment MUST set them: without them the worker does not
+        # start at all, rather than merely running slower.
+        #
+        # emcc warns: "-pthread + ALLOW_MEMORY_GROWTH may run non-wasm code
+        # slowly". Accepted knowingly. With a growable SharedArrayBuffer the
+        # JS-side heap views must be refreshed after growth, which taxes JS
+        # that reads wasm memory — for us that is datachannel-wasm's send path
+        # (Module['HEAPU8'], see above) and nothing else hot. Dropping
+        # ALLOW_MEMORY_GROWTH instead would mean choosing a fixed heap large
+        # enough for an 8 MiB payload on every device, which is worse.
+        # Revisit if E2 ever shows send cost mattering.
+        -pthread
+        -sPTHREAD_POOL_SIZE=1
     )
+    # -pthread has to be on the COMPILE line too, and on worker-core rather
+    # than just the executable: atomics and TLS codegen differ, and mixing
+    # objects built with and without it is an ODR violation the linker will not
+    # catch.
+    target_compile_options(p2pgpu-worker-core PUBLIC -pthread)
 
 endif()
 

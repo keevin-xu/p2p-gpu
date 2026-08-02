@@ -89,7 +89,7 @@ void TaskLoop::Stop() {
 }
 
 void TaskLoop::SetThrottle(float fraction) {
-    throttle_ = std::clamp(fraction, 0.0F, 1.0F);
+    throttle_.store(std::clamp(fraction, 0.0F, 1.0F));
 }
 
 void TaskLoop::Poll() {
@@ -132,7 +132,7 @@ void TaskLoop::Poll() {
     // Throttle 0 means "stay connected but stop taking work" (R7). Not a
     // disconnect: the user asked to pause, and dropping the socket would look
     // to the coordinator like a worker that vanished.
-    if (throttle_ <= 0.0F) {
+    if (throttle_.load() <= 0.0F) {
         return;
     }
     if (!lease_outstanding_ && held_.empty()) {

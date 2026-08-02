@@ -20,6 +20,7 @@
 // drift R2 exists to prevent. So callbacks only ENQUEUE, and all work happens
 // in Poll(), which the host calls from its own loop. One story, both targets.
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -104,8 +105,13 @@ public:
     /// Implemented as duty cycle between tasks rather than by shrinking tasks:
     /// task size is the coordinator's (R1), and a worker that silently returned
     /// less work than it was granted would look like a slow liar.
+    ///
+    /// The ONLY method safe to call from a thread other than the one running
+    /// Poll(). The browser sets it from a slider on the main thread while the
+    /// loop runs on a Web Worker (D-0037); `throttle_` is atomic for that
+    /// reason, and nothing else here is.
     void SetThrottle(float fraction);
-    [[nodiscard]] float throttle() const noexcept { return throttle_; }
+    [[nodiscard]] float throttle() const noexcept { return throttle_.load(); }
 
     [[nodiscard]] const WorkerStatus& status() const noexcept { return status_; }
 
@@ -165,7 +171,7 @@ private:
     bool running_ = false;
     bool handshaked_ = false;
     bool lease_outstanding_ = false;
-    float throttle_ = 1.0F;
+    std::atomic<float> throttle_{1.0F};
     WorkerStatus status_;
 
     /// Kernel descriptors from Welcome, keyed by id. The coordinator is the

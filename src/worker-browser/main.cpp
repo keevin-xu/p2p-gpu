@@ -17,16 +17,20 @@
 // (Coinhive, RESEARCH.md §4). The rest of the R7 surface — contributing
 // indicator, throttle, instant stop — lands in step 1.23.
 
+#include <atomic>
 #include <cstdlib>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <emscripten/emscripten.h>
+#include <emscripten/eventloop.h>   // emscripten_set_interval (step 1.24)
 
 #include "p2pgpu/worker/bench.hpp"
 #include "p2pgpu/worker/platform.hpp"
@@ -119,23 +123,83 @@ std::string HttpBaseFromWs(std::string_view ws_url) {
     return s;
 }
 
-/// Set by p2pgpu_stop to break the loop below.
-bool g_running = false;
+// ── Step 1.24: the loop runs on its own thread ───────────────────────────
+//
+// Browsers throttle backgrounded tabs hard — timers clamp to ~1 Hz and
+// requestAnimationFrame stops entirely. For a volunteer grid, "the user
+// switched tabs" is the normal case, so a main-thread loop means most
+// volunteers stop contributing while still holding leases. See D-0037.
 
-/// Push the loop's state to the DOM. Called once per iteration.
-void PublishStatus() {
+std::atomic<bool> g_running{false};
+std::thread g_thread;
+
+/// THE ONLY THING SHARED BETWEEN THE TWO THREADS.
+///
+/// The worker thread cannot touch the DOM — `document` does not exist on a
+/// pthread — and it must not block on the main thread either, because in a
+/// backgrounded tab the main thread is exactly what is throttled. So the loop
+/// publishes here, and a MAIN-THREAD interval reads it and draws (D-0037).
+///
+/// Plain mutex rather than atomics: `message` is a std::string, and the fields
+/// must be read as one consistent set or the badge can disagree with the
+/// counters. It is contended twice a second over a handful of words.
+struct Snapshot {
+    std::mutex mutex;
+    bool connected = false;
+    bool contributing = false;
+    std::uint32_t completed = 0;
+    std::uint32_t failed = 0;
+    std::uint32_t recoveries = 0;
+    std::string message = "idle";
+};
+Snapshot g_snapshot;
+
+/// Worker thread -> snapshot. Never touches the DOM.
+void PublishSnapshot() {
     if (!g_loop) {
         return;
     }
     const auto& st = g_loop->status();
+    const std::lock_guard<std::mutex> lock(g_snapshot.mutex);
+    g_snapshot.connected = st.connected;
     // R7: the indicator reflects the loop's own record of whether it is
-    // executing, every frame. Not a guess by the page, and not sticky.
-    p2pgpu::worker::ui::SetContributing(st.contributing);
-    p2pgpu::worker::ui::SetConnected(st.connected);
-    p2pgpu::worker::ui::SetCounters(static_cast<int>(st.tasks_completed),
-                                    static_cast<int>(st.tasks_failed),
-                                    static_cast<int>(st.device_recoveries));
-    p2pgpu::worker::ui::SetStatus(st.last_message.c_str());
+    // executing. Not a guess by the page, and not sticky.
+    g_snapshot.contributing = st.contributing;
+    g_snapshot.completed = st.tasks_completed;
+    g_snapshot.failed = st.tasks_failed;
+    g_snapshot.recoveries = st.device_recoveries;
+    g_snapshot.message = st.last_message;
+}
+
+/// Snapshot -> DOM. **Runs on the MAIN thread**, driven by an interval.
+///
+/// emscripten_set_interval, deliberately NOT requestAnimationFrame: a
+/// backgrounded tab stops delivering rAF entirely, and 1.24 forbids depending
+/// on it. A throttled interval only makes the READOUT stale — the work carries
+/// on regardless, which is the whole point of moving it.
+void DrawStatus(void*) {
+    bool connected = false;
+    bool contributing = false;
+    std::uint32_t completed = 0;
+    std::uint32_t failed = 0;
+    std::uint32_t recoveries = 0;
+    std::string message;
+    {
+        const std::lock_guard<std::mutex> lock(g_snapshot.mutex);
+        connected = g_snapshot.connected;
+        contributing = g_snapshot.contributing;
+        completed = g_snapshot.completed;
+        failed = g_snapshot.failed;
+        recoveries = g_snapshot.recoveries;
+        message = g_snapshot.message;   // copied, so the DOM call sees a stable
+    }                                   // buffer even if the loop moves on
+
+    p2pgpu::worker::ui::SetContributing(contributing);
+    p2pgpu::worker::ui::SetConnected(connected);
+    p2pgpu::worker::ui::SetCounters(static_cast<int>(completed),
+                                    static_cast<int>(failed),
+                                    static_cast<int>(recoveries));
+    p2pgpu::worker::ui::SetStatus(message.c_str());
 }
 
 }  // namespace
@@ -157,53 +221,70 @@ extern "C" EMSCRIPTEN_KEEPALIVE int p2pgpu_start(const char* coordinator_url) {
         return 0;  // already running; the button is disabled but be safe
     }
 
-    g_device = std::make_unique<worker::DeviceSession>();
-    if (!g_device->Start()) {
-        // Not a crash — no WebGPU is a CAPABILITY we report, and the page must
-        // say so plainly rather than appearing to work (docs/RISKS.md §1).
-        worker::ui::SetStatus("no WebGPU device available on this browser");
-        g_device.reset();
-        return 1;
-    }
-
     const std::string url = coordinator_url != nullptr ? coordinator_url : "";
-    const std::string http_base = HttpBaseFromWs(url);
-
-    worker::TaskLoopConfig cfg;
-    cfg.coordinator_url = url;
-
-    g_loop = std::make_unique<worker::TaskLoop>(
-        cfg, *g_device,
-        [http_base](std::string_view id) { return FetchKernel(http_base, id); });
-    g_loop->Start();
     worker::ui::SetRunning(true);
 
-    // ── THE LOOP ─────────────────────────────────────────────────────────
+    // ── THE LOOP, ON ITS OWN THREAD (step 1.24) ──────────────────────────
     //
-    // A plain while + emscripten_sleep, which is EXACTLY the shape of the
-    // native worker's loop — same Poll(), same cadence, two hosts. That is the
-    // whole reason TaskLoop exposes Poll() rather than a blocking Run().
+    // EVERYTHING that touches the device, the socket, or the task loop happens
+    // on this thread — acquisition included. Splitting ownership (device here,
+    // work there) is how you get objects used from a thread that does not own
+    // them, and WebGPU objects are not documented as thread-safe.
     //
-    // NOT emscripten_set_main_loop, which the first draft used. Its callback
-    // would suspend through ASYNCIFY (Poll -> Execute -> RunTask -> WaitUntil),
-    // and a main-loop callback that unwinds the stack out from under the
-    // main-loop machinery is not something that machinery expects. ASYNCIFY
-    // handles a sleeping while-loop natively; that is what it is for.
+    // The body is the same `while { Poll(); sleep }` the native worker runs.
+    // One loop shape, two hosts, which is why TaskLoop exposes Poll() rather
+    // than a blocking Run().
     //
-    // This does NOT block the tab: emscripten_sleep returns control to the
-    // browser's event loop and resumes here when the timer fires. The 0.15
-    // heartbeat on the page is the objective check that it really does.
-    //
-    // Step 1.24 moves all of this to a Web Worker, at which point real blocking
-    // becomes legal and ASYNCIFY can probably go — see the note in CMakeLists.
+    // The thread is a REAL Web Worker (-pthread), so a backgrounded tab
+    // throttling the main thread does not throttle this. That is the entire
+    // point of the step (D-0037).
     g_running = true;
-    while (g_running) {
-        g_loop->Poll();
-        PublishStatus();
-        emscripten_sleep(5);
-    }
+    g_thread = std::thread([url] {
+        namespace worker = p2pgpu::worker;
 
-    // Reached only via p2pgpu_stop, which has already torn everything down.
+        g_device = std::make_unique<worker::DeviceSession>();
+        if (!g_device->Start()) {
+            // Not a crash — no WebGPU is a CAPABILITY we report, and the page
+            // must say so plainly rather than appearing to work (RISKS.md §1).
+            {
+                const std::lock_guard<std::mutex> lock(g_snapshot.mutex);
+                g_snapshot.message = "no WebGPU device available on this browser";
+            }
+            g_device.reset();
+            g_running = false;
+            return;
+        }
+
+        const std::string http_base = HttpBaseFromWs(url);
+        worker::TaskLoopConfig cfg;
+        cfg.coordinator_url = url;
+
+        g_loop = std::make_unique<worker::TaskLoop>(
+            cfg, *g_device,
+            [http_base](std::string_view id) { return FetchKernel(http_base, id); });
+        g_loop->Start();
+
+        while (g_running) {
+            g_loop->Poll();
+            PublishSnapshot();
+            // Still emscripten_sleep rather than std::this_thread::sleep_for:
+            // ASYNCIFY stays on for now, and mixing a real blocking sleep into
+            // a stack that ASYNCIFY may unwind is not a combination worth
+            // discovering the hard way. Removing ASYNCIFY is its own measurable
+            // change — D-0037(c).
+            emscripten_sleep(5);
+        }
+
+        // Torn down HERE, on the owning thread, rather than in p2pgpu_stop.
+        // The stop handler runs on the main thread and must not destroy a
+        // device this thread may still be inside.
+        g_loop->Stop();          // releases every held lease first (R8)
+        g_loop.reset();
+        g_device->Stop();
+        g_device.reset();
+        PublishSnapshot();
+    });
+
     return 0;
 }
 
@@ -215,20 +296,20 @@ extern "C" EMSCRIPTEN_KEEPALIVE int p2pgpu_start(const char* coordinator_url) {
 extern "C" EMSCRIPTEN_KEEPALIVE void p2pgpu_stop() {
     namespace worker = p2pgpu::worker;
 
-    // Breaks the while-loop in p2pgpu_start. Setting the flag before the
-    // teardown below is deliberate: the loop is suspended inside
-    // emscripten_sleep right now, and it must not take another turn against
-    // objects we are about to destroy.
+    // ASKS the loop to stop; it tears itself down on its own thread. This
+    // handler runs on the MAIN thread and deliberately destroys nothing —
+    // reaching across to free a device the loop thread may be inside is a
+    // use-after-free with a plausible-looking call site (D-0037).
     g_running = false;
 
-    if (g_loop) {
-        g_loop->Stop();     // releases every held lease before closing (R8)
-        g_loop.reset();
+    if (g_thread.joinable()) {
+        // Bounded by one loop iteration (~5 ms) plus, at worst, one in-flight
+        // chunk. That the wait is short at all is another thing R4's chunking
+        // buys: "instant stop" is a promise to the user, and an unchunked task
+        // would make it a lie.
+        g_thread.join();
     }
-    if (g_device) {
-        g_device->Stop();
-        g_device.reset();
-    }
+
     worker::ui::SetRunning(false);
     worker::ui::SetContributing(false);
     worker::ui::SetConnected(false);
@@ -238,6 +319,11 @@ extern "C" EMSCRIPTEN_KEEPALIVE void p2pgpu_stop() {
 /// User throttle, 0.0-1.0 (R7). 0 stops taking new work WITHOUT disconnecting —
 /// the user asked to pause, and dropping the socket would look to the
 /// coordinator like a worker that vanished.
+///
+/// Called from the main thread while the loop runs on another. `SetThrottle`
+/// writes one float that the loop only reads, so this is a benign race in
+/// practice and a real one in the standard — `throttle_` is atomic for that
+/// reason, not for ordering.
 extern "C" EMSCRIPTEN_KEEPALIVE void p2pgpu_set_throttle(float fraction) {
     if (g_loop) {
         g_loop->SetThrottle(fraction);
@@ -442,5 +528,21 @@ int main() {
     // runtime stays alive after main returns (-sEXIT_RUNTIME=0), and the
     // module factory's promise resolving is what tells the page we are ready.
     p2pgpu::worker::platform::Log("info", "worker ready — waiting for opt-in click");
+
+    // The only thing main() sets up: a MAIN-THREAD interval that copies the
+    // loop's snapshot into the DOM (step 1.24 / D-0037). It runs from here
+    // rather than from the loop thread because `document` does not exist on a
+    // pthread, and because a worker that blocked on the main thread to draw
+    // would re-acquire the dependency this whole step exists to remove.
+    //
+    // emscripten_set_interval, NOT requestAnimationFrame — a backgrounded tab
+    // stops delivering rAF entirely, and 1.24 forbids depending on it. If the
+    // browser throttles this interval, only the READOUT goes stale; the work
+    // carries on.
+    //
+    // 250 ms: fast enough that the R7 contributing indicator tracks reality,
+    // slow enough to be free. It is registered before any loop exists and
+    // DrawStatus is a no-op until one does.
+    emscripten_set_interval(DrawStatus, 250, nullptr);
     return 0;
 }

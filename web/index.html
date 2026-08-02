@@ -57,6 +57,12 @@
       compute is how Coinhive got every antivirus vendor to blacklist it and
       the term "cryptojacking" invented (RESEARCH.md §4).
 
+      STEP 1.24: the task loop now runs on a Web Worker, so it survives the tab
+      being backgrounded. Nothing about the R7 surface changes — the readouts
+      below are drawn by a MAIN-THREAD interval reading a snapshot the loop
+      publishes, because a pthread has no `document` and must never block on
+      the main thread to draw (D-0037).
+
       STEP 1.23 STATUS: the full surface is live. main() does no GPU work at
       all — it only signals readiness. The task loop is constructed on the
       Start click and nowhere else; the indicator is written every frame from
@@ -121,9 +127,13 @@
         counter FREEZES — an objective check that we really do return to the
         event loop between chunks, rather than a subjective "the tab felt fine".
 
-        It gets more interesting at step 1.24: once the task loop moves off the
-        main thread, this should keep ticking smoothly even in a backgrounded
-        tab, where requestAnimationFrame does not.
+        SINCE STEP 1.24 the task loop runs on a Web Worker, so this counter is
+        no longer measuring the loop at all — it measures whether the MAIN
+        thread is free, which it now always should be.
+
+        The real 1.24 test is not on this page: background the tab for a minute
+        and watch the COORDINATOR keep logging accepted results. A main-thread
+        loop stops there; a Web Worker does not.
       -->
       <div id="heartbeat">heartbeat: — <span class="note">(must keep ticking during GPU work)</span></div>
 
