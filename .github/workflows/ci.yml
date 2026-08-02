@@ -72,6 +72,15 @@ env:
   # to configure and nothing to silently misconfigure.
   VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
   VCPKG_COMMIT: 827a2e1203bc19941126c657166da44f2623acc4  # matches vcpkg.json baseline
+  # BUMP THIS whenever the cache's `path:` list changes.
+  #
+  # actions/cache does not save when it hits, and the key is derived from
+  # vcpkg.json and the baseline — neither of which changes when the *paths*
+  # do. So adding vcpkg_installed to the path list without bumping this means
+  # every run restores the old, incomplete entry and never stores the new one.
+  # Caught exactly that way: a 35 MB cache, about right for the binary-cache
+  # directory alone and far too small for a real install tree.
+  CACHE_VERSION: v2
 
 jobs:
   # ── The regression net R11 asks for, and the cheapest thing here ────────
@@ -102,8 +111,8 @@ jobs:
           # Keyed on the manifest AND the baseline: either one changing means
           # different package versions, so a stale hit would be wrong rather
           # than merely slow.
-          key: vcpkg-fuzz-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-fuzz-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
+          key: ${{ env.CACHE_VERSION }}-vcpkg-fuzz-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: ${{ env.CACHE_VERSION }}-vcpkg-fuzz-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
 
       - name: Create binary cache dir
         run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
@@ -174,8 +183,8 @@ jobs:
           path: |
             ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
             ${{ github.workspace }}/vcpkg_installed
-          key: vcpkg-native-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-native-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
+          key: ${{ env.CACHE_VERSION }}-vcpkg-native-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: ${{ env.CACHE_VERSION }}-vcpkg-native-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
 
       - name: Create binary cache dir
         run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
