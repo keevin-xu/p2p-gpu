@@ -62,7 +62,26 @@ void Server::Run() {
                      res->writeStatus("404 Not Found")->end("unknown kernel");
                      return;
                  }
+                 // CORS + CORP, and both are REQUIRED for the browser worker
+                 // to fetch this at all (step 1.23).
+                 //
+                 // The worker page is cross-origin isolated — it must be, for
+                 // SharedArrayBuffer — which means it is served with
+                 // `Cross-Origin-Embedder-Policy: require-corp`. Under that
+                 // policy the browser BLOCKS any cross-origin subresource that
+                 // does not explicitly opt in, and the page (a CDN, or
+                 // localhost:8000 in development) is a different origin from
+                 // this coordinator. Without these two headers the fetch fails
+                 // with a console CORS error, the worker reports the kernel
+                 // unavailable, and it looks like a registry problem.
+                 //
+                 // `*` is correct here rather than lax: WGSL source is public,
+                 // non-secret, and the entire system depends on arbitrary
+                 // browsers being able to read it. Nothing behind this endpoint
+                 // is privileged, and it carries no credentials.
                  res->writeHeader("Content-Type", "text/plain; charset=utf-8")
+                     ->writeHeader("Access-Control-Allow-Origin", "*")
+                     ->writeHeader("Cross-Origin-Resource-Policy", "cross-origin")
                      ->end(spec->wgsl);
              })
 

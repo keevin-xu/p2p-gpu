@@ -13,9 +13,16 @@
              max-width: 44rem; margin: 3rem auto; padding: 0 1rem;
              background: #111; color: #ddd; line-height: 1.5; }
       h1 { font-size: 1.3rem; }
+      h2 { font-size: .95rem; color: #888; margin-top: 2.5rem;
+           border-top: 1px solid #333; padding-top: 1rem; }
       button { font: inherit; padding: .6rem 1.2rem; cursor: pointer;
                background: #2d6; color: #000; border: 0; border-radius: 4px; }
       button:disabled { background: #444; color: #888; cursor: default; }
+      button.stop { background: #e44; color: #fff; }
+      button.stop:disabled { background: #444; color: #888; }
+      input[type=text] { font: inherit; background: #1a1a1a; color: #ddd;
+                         border: 1px solid #444; border-radius: 4px;
+                         padding: .45rem; width: 20rem; }
       #status { margin: 1rem 0; padding: .6rem 1rem; border-left: 3px solid #555; }
       #status.running { border-color: #fc0; color: #fc0; }
       #status.pass    { border-color: #2d6; color: #2d6; }
@@ -23,6 +30,19 @@
       pre { background: #1a1a1a; padding: 1rem; overflow-x: auto;
             border-radius: 4px; font-size: .85rem; white-space: pre-wrap; }
       .note { color: #888; font-size: .85rem; }
+      .panel { background: #181818; border: 1px solid #333; border-radius: 6px;
+               padding: .8rem 1.2rem; margin: 1rem 0; }
+      .row { display: flex; align-items: center; gap: 1rem;
+             flex-wrap: wrap; margin: .7rem 0; }
+      /* The R7 contributing indicator. Deliberately prominent and deliberately
+         adjacent to Stop — a user who wants to stop must not have to hunt for
+         the control. */
+      #contributing { font-size: 1.05rem; color: #666; }
+      #contributing.on { color: #fc0; font-weight: bold; }
+      #conn { color: #666; font-size: .9rem; }
+      #conn.on { color: #2d6; }
+      #counters { color: #888; font-size: .85rem; }
+      label { color: #aaa; }
     </style>
   </head>
   <body>
@@ -37,49 +57,89 @@
       compute is how Coinhive got every antivirus vendor to blacklist it and
       the term "cryptojacking" invented (RESEARCH.md §4).
 
-      STEP 0.6 STATUS: the opt-in gate below is real — main() does no GPU work,
-      it only signals readiness, and the kernel runs solely on the click. The
-      throttle slider and instant-stop control arrive with the task loop in
-      step 1.23, because there is nothing continuous to throttle or stop yet.
+      STEP 1.23 STATUS: the full surface is live. main() does no GPU work at
+      all — it only signals readiness. The task loop is constructed on the
+      Start click and nowhere else; the indicator is written every frame from
+      the loop's own record of whether it is executing; the slider maps
+      straight to TaskLoop::SetThrottle; Stop releases every held lease before
+      closing the socket.
+
+      NOTHING ON THIS PAGE DECIDES ANYTHING. Every control calls into C++ and
+      every readout is written by C++ (R1/R2). If you are tempted to compute
+      something in ui.js, it belongs in worker-core or the coordinator.
 
       DEPLOYMENT: this page must be served with COOP/COEP headers for
       cross-origin isolation. Set them at first deploy, not at the end
       (docs/RISKS.md §1). tools/serve.py sets them locally.
     -->
     <main id="app">
-      <h1>p2pgpu — step 0.6 browser smoke test</h1>
+      <h1>p2pgpu — contribute GPU time</h1>
 
       <p>
-        Runs one WGSL compute kernel on your GPU and verifies the result.
-        <strong>Nothing runs until you click.</strong>
+        Your browser runs compute work for a research grid and returns the
+        results. <strong>Nothing runs until you click Start</strong>, you can
+        stop instantly, and the indicator below is lit whenever the GPU is
+        busy on our behalf.
       </p>
 
-      <p>
-        <button id="start" disabled>Loading…</button>
-        <button id="chunk" disabled>Chunking spike (0.15)</button>
-        <button id="bench" disabled>Throughput (0.11)</button>
-      </p>
+      <div class="panel">
+        <div class="row">
+          <label for="url">coordinator</label>
+          <input id="url" type="text" value="ws://localhost:8080/ws" />
+        </div>
+
+        <div class="row">
+          <button id="start" disabled>Loading…</button>
+          <button id="stop" class="stop" disabled>Stop</button>
+          <span id="contributing">○ idle</span>
+          <span id="conn">disconnected</span>
+        </div>
+
+        <!--
+          THROTTLE (R7). 0 does NOT disconnect — it stops taking new work while
+          staying connected, because the user asked to pause and a dropped
+          socket would look to the coordinator like a worker that vanished.
+        -->
+        <div class="row">
+          <label for="throttle">throttle</label>
+          <input id="throttle" type="range" min="0" max="100" value="100" />
+          <span id="throttleVal" class="note">100%</span>
+        </div>
+
+        <div class="row">
+          <span id="counters">0 completed · 0 failed · 0 device recoveries</span>
+        </div>
+      </div>
 
       <div id="status">idle — no GPU work has been started</div>
 
       <!--
         RESPONSIVENESS TEST (step 0.15).
 
-        This counter is driven by a plain setInterval on the main thread. If the
-        worker ever blocks instead of yielding, the browser cannot run the timer
-        and the counter FREEZES. So it is an objective check that we really are
-        returning to the event loop between chunks, rather than a subjective
-        "the tab felt fine". Watch it while the spike runs.
+        Driven by a plain setInterval on the main thread. If the worker ever
+        blocks instead of yielding, the browser cannot run the timer and the
+        counter FREEZES — an objective check that we really do return to the
+        event loop between chunks, rather than a subjective "the tab felt fine".
+
+        It gets more interesting at step 1.24: once the task loop moves off the
+        main thread, this should keep ticking smoothly even in a backgrounded
+        tab, where requestAnimationFrame does not.
       -->
       <div id="heartbeat">heartbeat: — <span class="note">(must keep ticking during GPU work)</span></div>
 
-      <pre id="log">(output appears here)</pre>
-
+      <h2>Phase 0 diagnostics</h2>
       <p class="note">
-        Same <code>worker-core</code> and the same
-        <code>kernels/smoke_double.wgsl</code> bytes as the native worker.
-        Expect <code>PASS: 1000/1000 elements correct</code>.
+        Measurement harnesses, not the product. They produce the numbers in
+        <code>docs/EVALUATION.md</code> and stay because that evidence has to
+        remain reproducible.
       </p>
+      <p>
+        <button id="smoke" disabled>Smoke test (0.6)</button>
+        <button id="chunk" disabled>Chunking spike (0.15)</button>
+        <button id="bench" disabled>Throughput (0.11)</button>
+      </p>
+
+      <pre id="log">(output appears here)</pre>
     </main>
 
     <!-- Order matters: the module defines createP2pgpuWorker(), which ui.js

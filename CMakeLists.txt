@@ -387,9 +387,26 @@ else()
         "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/kernels/smoke_hash.wgsl@/kernels/smoke_hash.wgsl"
         "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/kernels/calibrate.wgsl@/kernels/calibrate.wgsl"
         "SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/kernels/divergence_probe.wgsl@/kernels/divergence_probe.wgsl"
-        # p2pgpu_run_smoke_test is called from ui.js on the R7 opt-in click.
-        -sEXPORTED_FUNCTIONS=_main,_p2pgpu_run_smoke_test,_p2pgpu_run_chunking,_p2pgpu_run_bench,_p2pgpu_report
-        -sEXPORTED_RUNTIME_METHODS=ccall,cwrap
+        # Everything ui.js may call. _p2pgpu_start / _stop / _set_throttle are
+        # the R7 surface added in step 1.23 — the only three things a user can
+        # do, and every one reachable ONLY from a click or a slider. The rest
+        # are the Phase 0 diagnostic buttons.
+        -sEXPORTED_FUNCTIONS=_main,_p2pgpu_start,_p2pgpu_stop,_p2pgpu_set_throttle,_p2pgpu_run_smoke_test,_p2pgpu_run_chunking,_p2pgpu_run_bench,_p2pgpu_report
+        # HEAPU8 is REQUIRED BY datachannel-wasm, not by us (step 1.23).
+        #
+        # Its websocket.js does `new Uint8Array(Module['HEAPU8'].buffer, ...)`
+        # to read the bytes we hand to rtc::WebSocket::send. Emscripten stopped
+        # attaching the heap views to `Module` automatically, so without this
+        # the library throws
+        #     Cannot read properties of undefined (reading 'buffer')
+        # from inside _wsSendMessage — a JS TypeError with a C++ stack above it,
+        # on the very first Hello.
+        #
+        # The library is v0.4.0 (D-0032) and predates that change. Exactly the
+        # class of mismatch D-0032 warned about: the two libdatachannel APIs
+        # agree, but their RUNTIME INTEGRATION with the host does not, and only
+        # the browser build can tell you.
+        -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8
         # ASYNCIFY yields between dispatches (R4) without blocking. NOTE its
         # tension with step 1.24's -sPROXY_TO_PTHREAD: with the task loop on its
         # own thread, blocking is fine and ASYNCIFY's size/speed cost buys
