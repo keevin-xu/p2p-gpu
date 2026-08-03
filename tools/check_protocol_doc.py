@@ -43,11 +43,21 @@ SCHEMA = ROOT / "protocol" / "p2pgpu.fbs"
 DOC = ROOT / "docs" / "PROTOCOL.md"
 
 
+def strip_comments(text: str) -> str:
+    """Remove `//` and `///` comments.
+
+    REQUIRED, not tidiness. Prose contains colons, and the field pattern below
+    happily matches them: a comment reading "...survive review: every task..."
+    was parsed as a field named `review` and reported as schema/doc drift. A
+    checker that cries wolf gets ignored, which is worse than not having one.
+    """
+    return re.sub(r"//[^\n]*", "", text)
+
+
 def tables_of(text: str) -> dict[str, list[str]]:
     """table Name { field: type; ... } -> {Name: [field, ...]}"""
     out: dict[str, list[str]] = {}
-    for m in re.finditer(r"table (\w+)\s*\{(.*?)\}", text, re.S):
-        # `\w+\s*:\s*\[?\w` matches a field declaration and not a comment line.
+    for m in re.finditer(r"table (\w+)\s*\{(.*?)\}", strip_comments(text), re.S):
         out[m.group(1)] = re.findall(r"(\w+)\s*:\s*\[?\w", m.group(2))
     return out
 

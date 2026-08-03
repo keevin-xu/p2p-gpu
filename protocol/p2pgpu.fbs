@@ -145,6 +145,19 @@ table TaskEnvelope {
   kernel_id:   string;          // key into kernels/manifest.toml
   seed:        ulong;           // with the unit range, fixes the work (K2)
   params:      [ubyte];         // uniform buffer bytes; <= 4 KiB (invariant 1)
+  /// First unit of this task's range. THE AUTHORITY (D-0041).
+  ///
+  /// The params blob also carries a (start, count) chunk window at bytes 0-7
+  /// per D-0033 — but the host OVERWRITES those every dispatch, so they are
+  /// scratch space, not a source of truth. Before this field existed the worker
+  /// decoded the base from them, and `start_unit = 0` looked plausible enough
+  /// to survive review: every task in a 1000-task job searched the same range
+  /// while the coordinator recorded full coverage (D-0040).
+  ///
+  /// 64-bit deliberately. Task starts are 64-bit internally while the chunk
+  /// window is u32, so the wire could not previously express a range the
+  /// coordinator can represent.
+  start_unit:  ulong;
   work_units:  ulong;           // sizer output; meaning is kernel-defined
   input_ref:   Hash32;          // optional; absent => no bulk input
   output_spec: OutputSpec;

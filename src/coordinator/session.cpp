@@ -304,6 +304,13 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
                 tb.add_kernel_id(kid);
                 tb.add_seed(job->seed);
                 tb.add_params(pv);
+                // The authority for this task's range (D-0041). BuildParams
+                // also wrote it into the params chunk window, and that copy is
+                // still meaningful: the CPU reference recomputes from
+                // BuildParams' output, so the two are derived independently
+                // from one Task and a divergence surfaces as a reference
+                // mismatch rather than as silence.
+                tb.add_start_unit(task->start_unit);
                 tb.add_work_units(task->unit_count);
                 tb.add_output_spec(os);
                 tb.add_lease_ms(kLeaseMs);

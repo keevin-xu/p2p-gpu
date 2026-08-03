@@ -142,6 +142,7 @@ private:
         protocol::JobId job;
         std::string kernel_id;
         std::vector<std::byte> params;
+        std::uint64_t start_unit = 0;
         std::uint64_t work_units = 0;
         std::uint32_t output_bytes = 0;
         std::uint32_t workgroup_size = 64;

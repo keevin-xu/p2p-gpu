@@ -21,22 +21,6 @@ namespace {
 
 using platform::Log;
 
-/// Read `start_unit` back out of the chunk window at params bytes 0..3
-/// (D-0033), little-endian, matching what the coordinator wrote there.
-///
-/// Returns 0 for a params blob too short to hold a window; RunTask rejects that
-/// case anyway, and guessing a start would be worse than searching from zero.
-[[nodiscard]] std::uint64_t ChunkWindowStart(std::span<const std::byte> params) noexcept {
-    if (params.size() < 4) {
-        return 0;
-    }
-    std::uint32_t v = 0;
-    for (std::size_t i = 0; i < 4; ++i) {
-        v |= static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(params[i])) << (8U * i);
-    }
-    return v;
-}
-
 }  // namespace
 
 TaskLoop::TaskLoop(TaskLoopConfig config, DeviceSession& device, KernelFetcher kernels)
@@ -279,6 +263,7 @@ void TaskLoop::HandleTaskGrant(const wire::TaskGrant& grant) {
     task.id = protocol::TaskId{*env->task_id()};
     task.job = protocol::JobId{*env->job_id()};
     task.kernel_id = env->kernel_id() != nullptr ? env->kernel_id()->str() : "";
+    task.start_unit = env->start_unit();
     task.work_units = env->work_units();
 
     if (const auto* params = env->params()) {
@@ -490,13 +475,12 @@ bool TaskLoop::Execute(const PendingTask& task) {
     req.wgsl = *wgsl;
     req.entry_point = info->entry_point;
     req.params = task.params;
-    // THE TASK'S REAL START, read back out of the chunk window the coordinator
-    // wrote at params bytes 0..3 (D-0033). Hardcoding 0 here meant every task
-    // searched the same range and reported it as its own — 1000 tasks
-    // recomputing the first one while the coordinator recorded full coverage
-    // (D-0040). Reading it back is what makes D-0033's convention load-bearing
-    // in both directions rather than only on the write side.
-    req.start_unit = ChunkWindowStart(task.params);
+    // The task's range, from the wire field that is its authority (D-0041).
+    // This used to be decoded out of the params chunk window, and hardcoding 0
+    // there meant every task searched the same range while the coordinator
+    // recorded full coverage (D-0040). A named field makes that mistake look
+    // wrong on sight.
+    req.start_unit = task.start_unit;
     req.unit_count = task.work_units;
     req.output_bytes = task.output_bytes;
     req.workgroup_size = task.workgroup_size;
