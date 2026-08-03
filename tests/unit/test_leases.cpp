@@ -88,7 +88,10 @@ TEST_CASE("the sweep expires only what is actually overdue", "[lease]") {
 
     const auto expired = jobs.SweepExpiredLeases(kNow + 1000);
     REQUIRE(expired.size() == 1);
-    CHECK(expired[0] == a->id);
+    CHECK(expired[0].task == a->id);
+    // The HOLDER comes back too: an expiry is evidence about that worker's
+    // speed, and the sizer's correction needs to know whose it was (D-0044).
+    CHECK(expired[0].holder == kAlice);
     CHECK(jobs.Find(a->id)->state == TaskState::Queued);
     CHECK(jobs.Find(a->id)->holder == WorkerId{});
     // Bob's is untouched.

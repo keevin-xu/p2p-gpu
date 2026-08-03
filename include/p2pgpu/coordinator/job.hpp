@@ -138,7 +138,17 @@ public:
     ///
     /// Returns the expired ids so the caller can log and count them; 2.9's
     /// metrics need expiry and voluntary release to be tellable apart.
-    [[nodiscard]] std::vector<TaskId> SweepExpiredLeases(std::uint64_t now_ms);
+    /// Returns the expired ids AND who held them. The holder matters: an
+    /// expiry is EVIDENCE about that worker's speed — the task took at least a
+    /// full lease — and 2.13's correction factor would otherwise only ever
+    /// learn from tasks that completed, which is precisely the set that
+    /// excludes "we sized this far too large" (D-0044).
+    struct Expiry {
+        TaskId task;
+        WorkerId holder;
+        std::uint64_t unit_count = 0;
+    };
+    [[nodiscard]] std::vector<Expiry> SweepExpiredLeases(std::uint64_t now_ms);
 
     /// Release every lease held by `worker` — step 2.8/2.9. Disconnect, missed
     /// heartbeat, `Goodbye`, and user-stop all route here.

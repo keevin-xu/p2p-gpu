@@ -243,6 +243,7 @@ void TaskLoop::HandleWelcome(const wire::Welcome& welcome) {
             if (const auto* wg = k->workgroup_size()) {
                 info.workgroup_size = wg->x() != 0 ? wg->x() : 64;
             }
+            info.flop_per_unit = k->flop_per_unit();
             if (const auto* out = k->output()) {
                 info.output_bytes = out->bytes();
                 if (const auto* init = out->init()) {
@@ -319,6 +320,34 @@ void TaskLoop::HandleRevoke(const wire::Revoke& revoke) {
     Log("info", "task revoked");
 }
 
+std::uint64_t TaskLoop::ChunkUnitsFor(const KernelInfo& info) const {
+    // ── WHY THIS IS MEASURED AND NOT A CONSTANT (D-0044) ─────────────────
+    // R4 caps a dispatch at ~250 ms of expected work; D-0021 measured that
+    // browser chunks below ~50 ms collapse into submission overhead, because
+    // browsers clamp nested timers to >=4 ms and each submit costs ~5 ms.
+    //
+    // A single constant cannot satisfy both. The old fixed 2^20 was ~0.03 ms of
+    // work on an M4 Pro, so a two-second task became ~70,000 chunks of almost
+    // pure overhead and expired before it could finish — the worker then never
+    // completed anything, so the coordinator's correction factor never got a
+    // sample to learn from.
+    //
+    // 100 ms sits between D-0021's floor and R4's ceiling with room on both
+    // sides for an estimate that is wrong by 2x in either direction.
+    constexpr double kTargetChunkMs = 100.0;
+
+    if (!(measured_ops_per_sec_ > 0.0) || info.flop_per_unit == 0) {
+        return config_.units_per_chunk;   // not benchmarked yet
+    }
+    const double units_per_sec =
+        measured_ops_per_sec_ / static_cast<double>(info.flop_per_unit);
+    const double units = (kTargetChunkMs / 1000.0) * units_per_sec;
+    if (!(units >= 1.0)) {
+        return 1;
+    }
+    return static_cast<std::uint64_t>(units);
+}
+
 void TaskLoop::HandleBenchmarkRequest(const wire::BenchmarkRequest& request) {
     const std::string kernel_id =
         request.kernel_id() != nullptr ? request.kernel_id()->str() : "";
@@ -364,6 +393,7 @@ void TaskLoop::HandleBenchmarkRequest(const wire::BenchmarkRequest& request) {
             b.add_samples(static_cast<std::uint32_t>(samples.size()));
             return b.Finish();
         });
+    measured_ops_per_sec_ = best_ops_per_sec;
     (void)transport_.Send(frame);
     Log("info", "benchmark: " + std::to_string(best_ops_per_sec / 1e9) + " Gops/s");
 }
@@ -548,7 +578,7 @@ bool TaskLoop::Execute(const PendingTask& task) {
     // output is pinned at 0 forever (D-0040).
     req.output_init = info->output_init;
 
-    const auto outcome = RunTask(device_.context(), req, config_.units_per_chunk);
+    const auto outcome = RunTask(device_.context(), req, ChunkUnitsFor(*info));
     if (!outcome) {
         // Could be device loss, a compile failure, or a limit we could not
         // satisfy. All of them mean the same thing to the coordinator: this

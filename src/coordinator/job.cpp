@@ -159,8 +159,8 @@ protocol::Status JobManager::RenewLease(WorkerId worker, TaskId task_id,
     return {};
 }
 
-std::vector<TaskId> JobManager::SweepExpiredLeases(std::uint64_t now_ms) {
-    std::vector<TaskId> expired;
+std::vector<JobManager::Expiry> JobManager::SweepExpiredLeases(std::uint64_t now_ms) {
+    std::vector<Expiry> expired;
     for (auto& [id, task] : tasks_) {
         // Validity is the HALF-OPEN interval [grant, expires): valid strictly
         // before the deadline, expired at it. That makes a 1000 ms lease last
@@ -177,10 +177,10 @@ std::vector<TaskId> JobManager::SweepExpiredLeases(std::uint64_t now_ms) {
         if (const auto s = Apply(task, TaskEvent::LeaseExpired); !s) {
             continue;   // not expirable from this state; leave it alone
         }
+        expired.push_back(Expiry{id, task.holder, task.unit_count});
         task.holder = WorkerId{};
         task.lease_expires_at_ms = 0;
         queue_.push_back(id);
-        expired.push_back(id);
     }
     return expired;
 }

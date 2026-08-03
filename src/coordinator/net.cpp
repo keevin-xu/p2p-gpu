@@ -7,6 +7,8 @@
 
 #include "p2pgpu/coordinator/net.hpp"
 
+#include "p2pgpu/coordinator/sizer.hpp"
+
 #include <chrono>
 #include <cstdlib>
 #include <memory>
@@ -50,6 +52,24 @@ void Server::Sweep() {
     // tasks that is a scan every second versus 10k live timers
     // (CONVENTIONS.md §4).
     const auto expired = jobs_.SweepExpiredLeases(now_ms);
+    for (const auto& e : expired) {
+        // AN EXPIRY IS EVIDENCE, not just a requeue (D-0044). The task took at
+        // least a full lease, so it was sized too large — feed that back or the
+        // correction factor only ever learns from tasks that COMPLETED, which
+        // is exactly the set that excludes "we got this badly wrong".
+        //
+        // Without this a worker whose first task is wildly oversized expires
+        // forever: it never completes anything, so nothing ever corrects.
+        if (WorkerRecord* rec = fleet_.Mutable(e.holder);
+            rec != nullptr && rec->predicted_ms > 0.0) {
+            // A LOWER BOUND. We know it took at least the lease; we do not know
+            // how much more. Honest, and enough to push the correction the
+            // right way.
+            rec->correction = UpdateCorrection(rec->correction, rec->predicted_ms,
+                                               static_cast<double>(config_.lease_ms));
+            rec->predicted_ms = 0.0;
+        }
+    }
     if (!expired.empty()) {
         // info, not warn. An expired lease is the NORMAL case for a volunteer
         // grid (R8) — logging it as a warning would train everyone to ignore

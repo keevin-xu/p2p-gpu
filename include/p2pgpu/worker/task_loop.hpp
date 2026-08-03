@@ -55,8 +55,14 @@ struct TaskLoopConfig {
 
     /// Bounds ONE dispatch, so no single dispatch approaches the ~2 s at which
     /// Windows TDR resets the driver (R4). A LOCAL execution detail, not
-    /// scheduling — see RunTask. The default is deliberately conservative;
-    /// step 2.11's benchmark replaces it with a measured number.
+    /// scheduling — see RunTask.
+    ///
+    /// **A FALLBACK ONLY.** Once the join-time benchmark has run, the worker
+    /// replaces this with a size derived from its own measured throughput. A
+    /// fixed value cannot be right for both targets: at an M4 Pro's ~3e10
+    /// units/sec this default is ~0.03 ms of work, and browser submissions cost
+    /// ~5 ms each (D-0026), so a large task became tens of thousands of chunks
+    /// that were ~99.99% overhead and expired before finishing (D-0044).
     std::uint64_t units_per_chunk = 1u << 20;
 
     /// How many tasks to ask for at once. A hint the coordinator may ignore.
@@ -189,6 +195,9 @@ private:
         std::string entry_point;
         std::uint32_t workgroup_size = 64;
         std::uint32_t output_bytes = 0;
+        /// Arithmetic ops per work unit, from the manifest via Welcome. Needed
+        /// to turn a device-level ops/sec figure into a chunk size in units.
+        std::uint64_t flop_per_unit = 0;
         /// Bytes to write into the result buffer once per task, from the
         /// coordinator (D-0040). Empty means zero-fill. NOT optional in
         /// practice: a kernel whose reduction has a non-zero identity returns
@@ -196,6 +205,14 @@ private:
         std::vector<std::byte> output_init;
     };
     std::vector<std::pair<std::string, KernelInfo>> kernel_info_;
+
+    /// Measured device throughput in arithmetic ops/sec, from our own benchmark.
+    /// Drives chunk sizing; 0 until the benchmark has run.
+    double measured_ops_per_sec_ = 0.0;
+
+    /// Chunk size for the kernel being run, derived from the two numbers above.
+    /// Falls back to `config_.units_per_chunk` when either is unknown.
+    [[nodiscard]] std::uint64_t ChunkUnitsFor(const KernelInfo& info) const;
 
     [[nodiscard]] const KernelInfo* FindKernel(std::string_view id) const;
 };
