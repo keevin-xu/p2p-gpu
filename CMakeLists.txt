@@ -318,11 +318,11 @@ if(NOT P2PGPU_WASM)
         src/coordinator/session.cpp
         src/coordinator/kernels.cpp
         src/coordinator/fleet.cpp
+        src/coordinator/sizer.cpp
         src/coordinator/params.cpp
         src/coordinator/reference_check.cpp
         src/coordinator/queue.cpp
         src/coordinator/lease.cpp
-        src/coordinator/sizer.cpp
         src/coordinator/validator.cpp
         src/coordinator/signaling.cpp
         src/coordinator/metrics.cpp

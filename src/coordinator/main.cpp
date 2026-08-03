@@ -105,9 +105,12 @@ int main(int argc, char** argv) {
             spdlog::error("--seed-job names an unknown kernel: {}", seed_kernel);
             return 1;
         }
-        const auto job = jobs.CreateJob(seed_kernel, seed_units, seed_tasks, /*seed=*/42);
-        spdlog::warn("DEV: seeded job kernel={} units={} tasks={} job_lo={}",
-                     seed_kernel, seed_units, seed_tasks, job.lo());
+        // Tasks are carved on demand now (D-0043), so --seed-tasks no longer
+        // sets a count. Kept as a knob only for tests that want a specific
+        // shape; the sizer decides the real thing.
+        const auto job = jobs.CreateJob(seed_kernel, seed_units, /*seed=*/42);
+        spdlog::warn("DEV: seeded job kernel={} units={} job_lo={} (tasks carved on demand)",
+                     seed_kernel, seed_units, job.lo());
     }
 
     p2pgpu::coordinator::ReferenceStats ref_stats;

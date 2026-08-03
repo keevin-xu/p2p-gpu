@@ -41,6 +41,11 @@ const WorkerRecord* Fleet::Find(WorkerId id) const noexcept {
     return it == workers_.end() ? nullptr : &it->second;
 }
 
+WorkerRecord* Fleet::Mutable(WorkerId id) noexcept {
+    const auto it = workers_.find(id);
+    return it == workers_.end() ? nullptr : &it->second;
+}
+
 void Fleet::RecordCompletion(WorkerId id) {
     const auto it = workers_.find(id);
     if (it != workers_.end()) {

@@ -13,33 +13,25 @@ using protocol::MakeError;
 }  // namespace
 
 JobId JobManager::CreateJob(std::string kernel_id, std::uint64_t total_units,
-                            std::uint32_t task_count, std::uint64_t seed) {
+                            std::uint64_t seed) {
     const JobId job_id{0, next_id_++};
     Job job;
     job.id = job_id;
     job.kernel_id = std::move(kernel_id);
     job.seed = seed;
-
-    const std::uint32_t n = std::max(task_count, 1U);
-    const std::uint64_t per_task = std::max<std::uint64_t>(total_units / n, 1);
-
-    for (std::uint32_t i = 0; i < n; ++i) {
-        Task t;
-        t.id = TaskId{0, next_id_++};
-        t.job = job_id;
-        t.start_unit = static_cast<std::uint64_t>(i) * per_task;
-        // The last task absorbs the remainder, so the union of all tasks is
-        // exactly the keyspace. Rounding each one independently would leave a
-        // gap, and the missing candidates would never be searched by anyone.
-        t.unit_count = (i + 1 == n) ? (total_units - t.start_unit) : per_task;
-
-        job.tasks.push_back(t.id);
-        queue_.push_back(t.id);
-        tasks_.emplace(t.id, std::move(t));
-    }
-
+    job.total_units = total_units;
+    job.next_unit = 0;
+    // NO tasks yet. They are carved by Grant, sized for whoever asks (D-0043).
     jobs_.emplace(job_id, std::move(job));
     return job_id;
+}
+
+std::uint64_t JobManager::remaining_units() const noexcept {
+    std::uint64_t total = 0;
+    for (const auto& [id, job] : jobs_) {
+        total += job.remaining_units();
+    }
+    return total;
 }
 
 protocol::Status JobManager::Apply(Task& task, TaskEvent ev) {
@@ -52,7 +44,11 @@ protocol::Status JobManager::Apply(Task& task, TaskEvent ev) {
 }
 
 std::optional<Task> JobManager::Grant(WorkerId worker, std::uint64_t now_ms,
-                                      std::uint32_t lease_ms) {
+                                      std::uint32_t lease_ms, std::uint64_t units) {
+    // REQUEUED WORK FIRST. Work that has already failed once is the work most
+    // at risk of being forgotten at the tail of a job. A requeued task keeps
+    // its original size — re-sizing it would leave a hole in the keyspace or
+    // overlap a live task, and neither would be caught by anything.
     for (auto it = queue_.begin(); it != queue_.end(); ++it) {
         auto found = tasks_.find(*it);
         if (found == tasks_.end()) {
@@ -74,6 +70,33 @@ std::optional<Task> JobManager::Grant(WorkerId worker, std::uint64_t now_ms,
         task.lease_expires_at_ms = now_ms + lease_ms;
         queue_.erase(it);
         return task;
+    }
+
+    // Nothing requeued. Carve fresh keyspace, sized for this worker.
+    if (units == 0) {
+        return std::nullopt;
+    }
+    for (auto& [job_id, job] : jobs_) {
+        if (job.keyspace_exhausted()) {
+            continue;
+        }
+        Task t;
+        t.id = TaskId{0, next_id_++};
+        t.job = job_id;
+        t.start_unit = job.next_unit;
+        // Never past the end. The final task of a job takes whatever remains,
+        // which may be less than the R5 floor — correct, because the
+        // alternative is leaving a remainder unsearched (D-0043).
+        t.unit_count = std::min(units, job.remaining_units());
+        t.state = TaskState::Leased;
+        t.holder = worker;
+        t.lease_expires_at_ms = now_ms + lease_ms;
+
+        job.next_unit += t.unit_count;
+        job.tasks.push_back(t.id);
+        const Task copy = t;
+        tasks_.emplace(t.id, std::move(t));
+        return copy;
     }
     return std::nullopt;
 }
@@ -201,9 +224,29 @@ const Task* JobManager::Find(TaskId id) const noexcept {
 }
 
 bool JobManager::AllComplete() const {
-    return std::ranges::all_of(tasks_, [](const auto& kv) {
-        return IsTerminal(kv.second.state);
+    if (jobs_.empty()) {
+        return false;
+    }
+    return std::ranges::all_of(jobs_, [this](const auto& kv) {
+        return JobComplete(kv.first);
     });
+}
+
+const Job* JobManager::PeekNextJob() const noexcept {
+    // Requeued work first, mirroring Grant — otherwise the size would be
+    // computed against one job's kernel and the task carved from another's.
+    for (const TaskId id : queue_) {
+        const auto it = tasks_.find(id);
+        if (it != tasks_.end()) {
+            return FindJob(it->second.job);
+        }
+    }
+    for (const auto& [job_id, job] : jobs_) {
+        if (!job.keyspace_exhausted()) {
+            return &job;
+        }
+    }
+    return nullptr;
 }
 
 const Job* JobManager::FindJob(JobId id) const noexcept {
@@ -229,6 +272,12 @@ bool JobManager::JobComplete(JobId job_id) const {
     // Counts TERMINAL states, not an empty queue. A queue can be empty while
     // tasks are still leased — reporting that as complete would claim success
     // with work outstanding.
+    // TWO conditions, not one (D-0043). Either alone is wrong: an empty queue
+    // with the cursor mid-keyspace is a job that has barely started, and an
+    // exhausted cursor with tasks in flight is one that is nearly done.
+    if (!it->second.keyspace_exhausted()) {
+        return false;
+    }
     return std::ranges::all_of(it->second.tasks, [this](TaskId t) {
         const Task* task = Find(t);
         return task != nullptr && IsTerminal(task->state);

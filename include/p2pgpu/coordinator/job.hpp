@@ -51,27 +51,53 @@ struct Job {
     JobId id;
     std::string kernel_id;
     std::uint64_t seed = 0;
+
+    /// The keyspace, and how much of it has been handed out. Tasks are CARVED
+    /// ON DEMAND from `next_unit` rather than pre-split (D-0043), because a
+    /// task's size depends on which worker is asking — and a fleet with a 20x
+    /// speed spread handed identical tasks either starves the fast machines or
+    /// hands the slow ones work they cannot finish inside a lease.
+    std::uint64_t total_units = 0;
+    std::uint64_t next_unit = 0;
+
+    /// Tasks carved so far. Grows as the job runs; empty at creation.
     std::vector<TaskId> tasks;
+
+    [[nodiscard]] bool keyspace_exhausted() const noexcept {
+        return next_unit >= total_units;
+    }
+    [[nodiscard]] std::uint64_t remaining_units() const noexcept {
+        return keyspace_exhausted() ? 0 : total_units - next_unit;
+    }
 };
 
 /// Owns jobs, tasks, and the queue. Single-threaded: it lives on the
 /// uWebSockets event loop and nothing may block that loop (CONVENTIONS.md §4).
 class JobManager {
 public:
-    /// Split a keyspace into `task_count` equal tasks.
-    ///
-    /// Fixed sizing on purpose at this step. Adaptive sizing needs a benchmark
-    /// score per worker (2.11) which does not exist yet, and inventing one here
-    /// would be a number with no measurement behind it.
+    /// Create a job over `total_units` of keyspace. NO tasks are created here —
+    /// they are carved on demand by `Grant` (D-0043), because a task's size
+    /// depends on which worker asks for it.
     [[nodiscard]] JobId CreateJob(std::string kernel_id, std::uint64_t total_units,
-                                  std::uint32_t task_count, std::uint64_t seed);
+                                  std::uint64_t seed);
 
-    /// Hand the next queued task to `worker`, or nullopt if the queue is empty.
+    /// Hand `worker` a task of `units` work, or nullopt if there is nothing to
+    /// give.
     ///
-    /// Enforces invariant 6: a task is never granted to a worker that already
-    /// computed it or a sibling.
+    /// Order is deliberate: **requeued work first, then fresh keyspace.** Work
+    /// that has already failed once is the work most at risk of being forgotten
+    /// at the tail of a job, and 2.17's speculation exists because the last few
+    /// tasks dominate completion time.
+    ///
+    /// A requeued task keeps its ORIGINAL size — it was carved for whoever had
+    /// it before. Re-sizing it would leave a hole in the keyspace or overlap an
+    /// existing task, and either is a wrong answer nothing would catch.
+    ///
+    /// Enforces invariant 6: never granted to a worker that already computed it
+    /// or a sibling.
     [[nodiscard]] std::optional<Task> Grant(WorkerId worker, std::uint64_t now_ms,
-                                            std::uint32_t lease_ms);
+                                            std::uint32_t lease_ms,
+                                            std::uint64_t units);
 
     /// Invariant 5 on its own, WITHOUT any state change.
     ///
@@ -129,7 +155,18 @@ public:
     [[nodiscard]] const Task* Find(TaskId id) const noexcept;
     [[nodiscard]] const Job* FindJob(JobId id) const noexcept;
     [[nodiscard]] std::vector<TaskId> HeldBy(WorkerId worker) const;
+    /// Tasks waiting to be re-granted. NOT the same as "work left" — fresh
+    /// keyspace is not in the queue until it has been carved and come back.
     [[nodiscard]] std::size_t queued() const noexcept { return queue_.size(); }
+    [[nodiscard]] std::uint64_t remaining_units() const noexcept;
+
+    /// The job a grant would come from next, or nullptr if there is no work.
+    ///
+    /// Exists because sizing needs the KERNEL before the task: a task's size
+    /// depends on the kernel's R5 floor (D-0029), and the kernel depends on
+    /// which job is granted from. Peeking resolves the ordering without making
+    /// Grant take a sizing callback.
+    [[nodiscard]] const Job* PeekNextJob() const noexcept;
     [[nodiscard]] std::size_t total_tasks() const noexcept { return tasks_.size(); }
 
     /// Completion detection. Deliberately counts TERMINAL states rather than

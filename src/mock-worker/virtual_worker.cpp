@@ -182,6 +182,28 @@ void VirtualWorker::OnFrame(std::span<const std::byte> bytes) {
         handshaked_ = true;
         return;
     }
+    if (env.body_type() == wire::Body::BenchmarkRequest) {
+        // A SYNTHETIC score matching this worker's simulated speed (2.11). It
+        // must be consistent with `slow_factor`, or the sizer would be
+        // correcting against a fiction and 2.13's convergence plot would show
+        // the harness disagreeing with itself rather than anything real.
+        //
+        // Derived from the same constant the task simulation uses, so "score"
+        // and "how long tasks actually take" cannot drift apart.
+        const double units_per_sec = 1.0e6 / (kNominalMsPerMegaUnit * 0.001) /
+                                     1000.0 / behaviors_.slow_factor;
+        auto frame = protocol::EncodeMessage(
+            wire::Body::BenchmarkResult, [&](flatbuffers::FlatBufferBuilder& fbb) {
+                auto kid = fbb.CreateString("calibrate_v1");
+                wire::BenchmarkResultBuilder b(fbb);
+                b.add_kernel_id(kid);
+                b.add_score(units_per_sec);
+                b.add_samples(4);
+                return b.Finish();
+            });
+        (void)transport_.Send(frame);
+        return;
+    }
     if (env.body_type() != wire::Body::TaskGrant) {
         return;   // Revoke/Error/etc. are Phase 2's later steps
     }

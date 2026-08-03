@@ -8,7 +8,10 @@
 #include <algorithm>
 #include <array>
 
+#include <cmath>
+
 #include "p2pgpu/coordinator/params.hpp"
+#include "p2pgpu/coordinator/sizer.hpp"
 #include "p2pgpu/protocol/encode.hpp"
 #include "p2pgpu/protocol/invariants.hpp"
 
@@ -16,6 +19,19 @@ namespace p2pgpu::coordinator {
 namespace {
 
 constexpr std::uint32_t kHeartbeatMs = 15000;
+
+/// The join-time benchmark (2.11) runs the Phase 0 calibration kernel, whose
+/// FLOP count is exactly known (D-0018) — which is what makes its score
+/// comparable across devices at all.
+constexpr const char* kCalibrationKernel = "calibrate_v1";
+constexpr std::uint32_t kBenchmarkTargetMs = 200;
+
+/// How long a task should take (ARCHITECTURE.md §7 says 1-3 s).
+constexpr std::uint32_t kTargetTaskMs = 2000;
+
+/// Ceiling on a self-reported score. No real device is near this; a worker
+/// claiming more is trying to be handed the whole keyspace.
+constexpr double kMaxBenchmarkScore = 1.0e12;
 
 /// Map the manifest's determinism to the wire union. No `default:` arm — adding
 /// a class must break this build (ARCHITECTURE.md §5).
@@ -71,33 +87,34 @@ Session::Session(JobManager& jobs, const KernelRegistry& kernels, Fleet& fleet,
 
 Reaction Session::Fatal(wire::ErrorCode code, const char* message) {
     return Reaction{
-        protocol::EncodeMessage(wire::Body::Error,
-                                [&](flatbuffers::FlatBufferBuilder& fbb) {
-                                    auto msg = fbb.CreateString(message);
-                                    wire::ErrorBuilder b(fbb);
-                                    b.add_code(code);
-                                    b.add_message(msg);
-                                    b.add_fatal(true);
-                                    return b.Finish();
-                                }),
+        {protocol::EncodeMessage(wire::Body::Error,
+                                 [&](flatbuffers::FlatBufferBuilder& fbb) {
+                                     auto msg = fbb.CreateString(message);
+                                     wire::ErrorBuilder b(fbb);
+                                     b.add_code(code);
+                                     b.add_message(msg);
+                                     b.add_fatal(true);
+                                     return b.Finish();
+                                 })},
         /*close=*/true};
 }
 
 Reaction Session::NonFatal(wire::ErrorCode code, const char* message) {
     return Reaction{
-        protocol::EncodeMessage(wire::Body::Error,
-                                [&](flatbuffers::FlatBufferBuilder& fbb) {
-                                    auto msg = fbb.CreateString(message);
-                                    wire::ErrorBuilder b(fbb);
-                                    b.add_code(code);
-                                    b.add_message(msg);
-                                    b.add_fatal(false);
-                                    return b.Finish();
-                                }),
+        {protocol::EncodeMessage(wire::Body::Error,
+                                 [&](flatbuffers::FlatBufferBuilder& fbb) {
+                                     auto msg = fbb.CreateString(message);
+                                     wire::ErrorBuilder b(fbb);
+                                     b.add_code(code);
+                                     b.add_message(msg);
+                                     b.add_fatal(false);
+                                     return b.Finish();
+                                 })},
         /*close=*/false};
 }
 
 Reaction Session::OnMessage(const protocol::VerifiedFrame& frame, std::uint64_t now_ms) {
+    now_ms_ = now_ms;
     const wire::Envelope& env = *frame.envelope();
 
     // Hello must come first. Accepting work-bearing messages from an
@@ -146,11 +163,20 @@ Reaction Session::OnMessage(const protocol::VerifiedFrame& frame, std::uint64_t 
         case wire::Body::Goodbye:
             return OnGoodbye();
 
+        case wire::Body::BenchmarkResult:
+            if (const auto* m = env.body_as_BenchmarkResult()) {
+                return OnBenchmarkResult(*m);
+            }
+            break;
+        case wire::Body::Throttle:
+            if (const auto* m = env.body_as_Throttle()) {
+                return OnThrottle(*m);
+            }
+            break;
+
         // Not yet implemented, but explicitly listed so that adding a Body
         // variant breaks THIS switch too (-Werror=switch). A silent default
         // would let a new message type be ignored without anyone noticing.
-        case wire::Body::Throttle:
-        case wire::Body::BenchmarkResult:
         case wire::Body::Signal:
             spdlog::debug("unhandled conn_id={} body_type={}", conn_id_,
                           static_cast<int>(env.body_type()));
@@ -198,7 +224,11 @@ Reaction Session::OnHello(const wire::Hello& hello) {
     spdlog::info("handshake conn_id={} worker_id={} kernels={}", conn_id_,
                  worker_id_.hi(), kernels_.size());
 
-    return Reaction{protocol::EncodeMessage(
+    // Welcome, then immediately BenchmarkRequest (2.11). Two frames rather than
+    // folding the request into Welcome: the benchmark is a REQUEST the worker
+    // answers, and a worker that ignores it simply gets no work — which is the
+    // correct outcome and would be awkward to express as an unanswered field.
+    auto welcome = protocol::EncodeMessage(
         wire::Body::Welcome, [&](flatbuffers::FlatBufferBuilder& fbb) {
             std::vector<flatbuffers::Offset<wire::KernelDescriptor>> descs;
             for (const auto* spec : kernels_.All()) {
@@ -252,7 +282,57 @@ Reaction Session::OnHello(const wire::Hello& hello) {
             wb.add_heartbeat_ms(kHeartbeatMs);
             wb.add_kernels(dv);
             return wb.Finish();
-        })};
+        });
+
+    auto bench = protocol::EncodeMessage(
+        wire::Body::BenchmarkRequest, [&](flatbuffers::FlatBufferBuilder& fbb) {
+            auto kid = fbb.CreateString(kCalibrationKernel);
+            wire::BenchmarkRequestBuilder b(fbb);
+            b.add_kernel_id(kid);
+            b.add_target_ms(kBenchmarkTargetMs);
+            return b.Finish();
+        });
+    // Two SEPARATE frames, not one concatenated buffer — see Reaction::replies.
+    return Reaction{{std::move(welcome), std::move(bench)}};
+}
+
+Reaction Session::OnBenchmarkResult(const wire::BenchmarkResult& result) {
+    WorkerRecord* rec = fleet_.Mutable(worker_id_);
+    if (rec == nullptr) {
+        return {};
+    }
+    const double score = result.score();
+    // Refuse a score that is not a usable positive number. A worker controls
+    // this value, and it propagates into every future grant — a NaN or a
+    // fabricated 1e300 would size a task larger than the keyspace, or poison
+    // the correction factor permanently. Untrusted input, treated as such (R11
+    // in spirit: the wire is not a source of truth about our own scheduling).
+    if (!(score > 0.0) || !std::isfinite(score)) {
+        spdlog::warn("benchmark_reject conn_id={} score={} reason=not_a_usable_number",
+                     conn_id_, score);
+        return NonFatal(wire::ErrorCode::MalformedMessage, "unusable benchmark score");
+    }
+    // Cap it. A worker cannot make itself arbitrarily important by claiming a
+    // huge score — the cap is generous enough that no real device hits it and
+    // tight enough that a liar gains little. Reputation for accuracy is Phase 3;
+    // this is just refusing to be obviously gamed.
+    rec->score = std::min(score, kMaxBenchmarkScore);
+    spdlog::info("benchmark conn_id={} score={:.3g} samples={}", conn_id_, rec->score,
+                 result.samples());
+    return {};
+}
+
+Reaction Session::OnThrottle(const wire::Throttle& throttle) {
+    WorkerRecord* rec = fleet_.Mutable(worker_id_);
+    if (rec == nullptr) {
+        return {};
+    }
+    // R7: applied WITHOUT argument. The user's setting is authoritative and the
+    // coordinator does not get to decide it knows better — that is the whole
+    // point of a consent control.
+    rec->throttle = std::clamp(static_cast<double>(throttle.level()), 0.0, 1.0);
+    spdlog::info("throttle conn_id={} level={:.2f}", conn_id_, rec->throttle);
+    return {};
 }
 
 Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t now_ms) {
@@ -261,10 +341,42 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
     // clamped so a worker cannot ask for an unbounded backlog.
     const std::uint32_t want = std::min(std::max(req.max_tasks(), 1U), 4U);
 
-    std::vector<std::byte> out;
+    const WorkerRecord* rec = fleet_.Find(worker_id_);
+    if (rec == nullptr) {
+        return {};
+    }
+    // A worker with no benchmark score gets NO WORK — not a default-sized task.
+    // Guessing a score would mean the first grant to every worker is a fiction
+    // that then feeds the correction factor, and 2.13 would be correcting
+    // toward a number nobody measured.
+    if (!(rec->score > 0.0)) {
+        spdlog::debug("lease conn_id={} deferred reason=no_benchmark_yet", conn_id_);
+        return {};
+    }
+
+    std::vector<std::vector<std::byte>> out;
     std::uint32_t granted = 0;
     for (std::uint32_t i = 0; i < want; ++i) {
-        const auto task = jobs_.Grant(worker_id_, now_ms, lease_ms_);
+        // Sized for THIS worker, now (2.12). The kernel's R5 floor comes from
+        // the manifest and is a hard minimum the sizer may not clamp under
+        // (D-0029) — which is why the job has to be identified BEFORE sizing.
+        const Job* next_job = jobs_.PeekNextJob();
+        if (next_job == nullptr) {
+            break;   // nothing left anywhere
+        }
+        const KernelSpec* next_spec = kernels_.Find(next_job->kernel_id);
+
+        SizingInputs sizing;
+        sizing.score = rec->score;
+        sizing.correction = rec->correction;
+        sizing.throttle = rec->throttle;
+        sizing.target_ms = kTargetTaskMs;
+        sizing.lease_ms = lease_ms_;
+        sizing.r5_min_units = next_spec != nullptr ? next_spec->r5_min_units : 0;
+        sizing.remaining_units = next_job->remaining_units();
+
+        const auto task = jobs_.Grant(worker_id_, now_ms, lease_ms_,
+                                      ComputeTaskSize(sizing));
         if (!task) {
             break;
         }
@@ -334,12 +446,21 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
                 gb.add_envelope(env);
                 return gb.Finish();
             });
-        out.insert(out.end(), frame.begin(), frame.end());
+        out.push_back(std::move(frame));
         ++granted;
+
+        // Remember what we predicted, on OUR clock. 2.13 compares this against
+        // the observed duration — never against the worker's self-reported
+        // gpu_ms, which is telemetry a worker chooses (invariant 8).
+        if (WorkerRecord* mrec = fleet_.Mutable(worker_id_); mrec != nullptr) {
+            mrec->predicted_ms =
+                1000.0 * static_cast<double>(task->unit_count) / rec->score;
+            mrec->granted_at_ms = now_ms;
+        }
     }
 
-    spdlog::debug("lease conn_id={} asked={} granted={} queued={}", conn_id_,
-                  req.max_tasks(), granted, jobs_.queued());
+    spdlog::debug("lease conn_id={} asked={} granted={} score={:.3g} corr={:.2f}",
+                  conn_id_, req.max_tasks(), granted, rec->score, rec->correction);
     return Reaction{std::move(out)};
 }
 
@@ -523,6 +644,19 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
 
     completed_.push_back(task_id);
     fleet_.RecordCompletion(worker_id_);
+
+    // 2.13 — correct the prediction from what we OBSERVED. The worker also
+    // reports a duration in TaskStats and it is deliberately ignored here:
+    // a worker that under-reports would be granted ever-larger tasks, which is
+    // a way to be handed the whole keyspace by lying about being fast.
+    if (WorkerRecord* rec = fleet_.Mutable(worker_id_);
+        rec != nullptr && rec->predicted_ms > 0.0 && rec->granted_at_ms > 0) {
+        const double actual_ms = static_cast<double>(now_ms_ - rec->granted_at_ms);
+        rec->correction = UpdateCorrection(rec->correction, rec->predicted_ms, actual_ms);
+        spdlog::debug("sizing conn_id={} predicted={:.0f}ms actual={:.0f}ms corr={:.2f}",
+                      conn_id_, rec->predicted_ms, actual_ms, rec->correction);
+        rec->predicted_ms = 0.0;
+    }
     spdlog::info("result conn_id={} task={} bytes={} accepted", conn_id_,
                  task_id.lo(), payload.size());
     return {};

@@ -33,6 +33,28 @@ struct WorkerRecord {
     /// declare our fastest contributors dead.
     std::uint64_t last_seen_ms = 0;
     std::uint32_t tasks_completed = 0;
+
+    // ── Sizing state (2.11-2.14) ─────────────────────────────────────────
+    /// Normalized work-units/sec from the join-time benchmark. 0 until the
+    /// worker reports one — and until then it gets no work, because a
+    /// fabricated score would propagate into every future grant through the
+    /// correction factor below.
+    double score = 0.0;
+
+    /// EWMA of actual/predicted duration. 1.0 = the benchmark has been
+    /// accurate. >1 = tasks take longer than predicted, so grant less.
+    double correction = 1.0;
+
+    /// User-set, 0.0-1.0 (R7). Applied WITHOUT argument — the user's setting is
+    /// authoritative and the coordinator does not get an opinion.
+    double throttle = 1.0;
+
+    /// What we predicted for the task currently in flight, and when it was
+    /// granted. Both on OUR clock: the worker reports a duration in TaskStats
+    /// and that number is untrusted telemetry (invariant 8), so the correction
+    /// factor is computed from what we observed, not what we were told.
+    double predicted_ms = 0.0;
+    std::uint64_t granted_at_ms = 0;
 };
 
 class Fleet {
@@ -54,6 +76,10 @@ public:
     [[nodiscard]] const WorkerRecord* Find(WorkerId id) const noexcept;
     [[nodiscard]] std::size_t size() const noexcept { return workers_.size(); }
     void RecordCompletion(WorkerId id);
+
+    /// Mutable access for the sizing state. Deliberately narrow — everything
+    /// else about a record is set through the methods above.
+    [[nodiscard]] WorkerRecord* Mutable(WorkerId id) noexcept;
 
 private:
     std::unordered_map<WorkerId, WorkerRecord> workers_;

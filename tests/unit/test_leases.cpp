@@ -16,6 +16,8 @@ using p2pgpu::protocol::WorkerId;
 
 namespace {
 constexpr std::uint64_t kNow = 1'000'000;
+/// Tasks are carved on demand now (D-0043), so a grant states its size.
+constexpr std::uint64_t kUnits = 100;
 constexpr std::uint32_t kLease = 30'000;
 const WorkerId kAlice{1, 0};
 const WorkerId kBob{2, 0};
@@ -25,8 +27,8 @@ const WorkerId kBob{2, 0};
 
 TEST_CASE("renewal moves the deadline and nothing else", "[lease]") {
     JobManager jobs;
-    (void)jobs.CreateJob("k", 100, 1, 7);
-    const auto task = jobs.Grant(kAlice, kNow, kLease);
+    (void)jobs.CreateJob("k", 10000, 7);
+    const auto task = jobs.Grant(kAlice, kNow, kLease, kUnits);
     REQUIRE(task.has_value());
     CHECK(jobs.Find(task->id)->lease_expires_at_ms == kNow + kLease);
 
@@ -42,8 +44,8 @@ TEST_CASE("renewal moves the deadline and nothing else", "[lease]") {
 
 TEST_CASE("only the holder may renew", "[lease]") {
     JobManager jobs;
-    (void)jobs.CreateJob("k", 100, 1, 7);
-    const auto task = jobs.Grant(kAlice, kNow, kLease);
+    (void)jobs.CreateJob("k", 10000, 7);
+    const auto task = jobs.Grant(kAlice, kNow, kLease, kUnits);
     REQUIRE(task.has_value());
 
     // Without this check any connected peer could keep another worker's lease
@@ -54,8 +56,8 @@ TEST_CASE("only the holder may renew", "[lease]") {
 
 TEST_CASE("a queued task cannot be renewed", "[lease]") {
     JobManager jobs;
-    (void)jobs.CreateJob("k", 100, 1, 7);
-    const auto task = jobs.Grant(kAlice, kNow, kLease);
+    (void)jobs.CreateJob("k", 10000, 7);
+    const auto task = jobs.Grant(kAlice, kNow, kLease, kUnits);
     REQUIRE(task.has_value());
     REQUIRE(jobs.Requeue(task->id, TaskEvent::Release));
 
@@ -69,9 +71,9 @@ TEST_CASE("a queued task cannot be renewed", "[lease]") {
 
 TEST_CASE("the sweep expires only what is actually overdue", "[lease]") {
     JobManager jobs;
-    (void)jobs.CreateJob("k", 300, 3, 7);
-    const auto a = jobs.Grant(kAlice, kNow, 1000);
-    const auto b = jobs.Grant(kBob, kNow, 60'000);
+    (void)jobs.CreateJob("k", 10000, 7);
+    const auto a = jobs.Grant(kAlice, kNow, 1000, kUnits);
+    const auto b = jobs.Grant(kBob, kNow, 60'000, kUnits);
     REQUIRE(a);
     REQUIRE(b);
 
@@ -95,8 +97,8 @@ TEST_CASE("the sweep expires only what is actually overdue", "[lease]") {
 
 TEST_CASE("expiry costs the worker nothing", "[lease]") {
     JobManager jobs;
-    (void)jobs.CreateJob("k", 100, 1, 7);
-    const auto task = jobs.Grant(kAlice, kNow, 1000);
+    (void)jobs.CreateJob("k", 10000, 7);
+    const auto task = jobs.Grant(kAlice, kNow, 1000, kUnits);
     REQUIRE(task.has_value());
     REQUIRE(jobs.SweepExpiredLeases(kNow + 2000).size() == 1);
 
@@ -105,13 +107,13 @@ TEST_CASE("expiry costs the worker nothing", "[lease]") {
     // task back. Barring it would shrink the eligible set every time a laptop
     // closed, which on a volunteer grid is constantly.
     CHECK(jobs.Find(task->id)->prior_workers.empty());
-    CHECK(jobs.Grant(kAlice, kNow + 3000, kLease).has_value());
+    CHECK(jobs.Grant(kAlice, kNow + 3000, kLease, kUnits).has_value());
 }
 
 TEST_CASE("a renewed lease survives the sweep", "[lease]") {
     JobManager jobs;
-    (void)jobs.CreateJob("k", 100, 1, 7);
-    const auto task = jobs.Grant(kAlice, kNow, 1000);
+    (void)jobs.CreateJob("k", 10000, 7);
+    const auto task = jobs.Grant(kAlice, kNow, 1000, kUnits);
     REQUIRE(task.has_value());
 
     REQUIRE(jobs.RenewLease(kAlice, task->id, kNow + 900, 1000));
@@ -125,8 +127,8 @@ TEST_CASE("a renewed lease survives the sweep", "[lease]") {
 
 TEST_CASE("the sweep is idempotent", "[lease]") {
     JobManager jobs;
-    (void)jobs.CreateJob("k", 100, 1, 7);
-    REQUIRE(jobs.Grant(kAlice, kNow, 1000).has_value());
+    (void)jobs.CreateJob("k", 10000, 7);
+    REQUIRE(jobs.Grant(kAlice, kNow, 1000, kUnits).has_value());
 
     CHECK(jobs.SweepExpiredLeases(kNow + 2000).size() == 1);
     // Running again must not re-queue an already-queued task. The sweep fires
@@ -140,15 +142,17 @@ TEST_CASE("the sweep is idempotent", "[lease]") {
 
 TEST_CASE("releasing a worker's leases returns all of them", "[lease]") {
     JobManager jobs;
-    (void)jobs.CreateJob("k", 400, 4, 7);
-    REQUIRE(jobs.Grant(kAlice, kNow, kLease));
-    REQUIRE(jobs.Grant(kAlice, kNow, kLease));
-    REQUIRE(jobs.Grant(kBob, kNow, kLease));
+    (void)jobs.CreateJob("k", 10000, 7);
+    REQUIRE(jobs.Grant(kAlice, kNow, kLease, kUnits));
+    REQUIRE(jobs.Grant(kAlice, kNow, kLease, kUnits));
+    REQUIRE(jobs.Grant(kBob, kNow, kLease, kUnits));
 
     CHECK(jobs.ReleaseAllHeldBy(kAlice) == 2);
     CHECK(jobs.HeldBy(kAlice).empty());
     CHECK(jobs.HeldBy(kBob).size() == 1);   // Bob is untouched
-    CHECK(jobs.queued() == 3);              // 1 never granted + Alice's 2
+    // Alice's two, and only those. Fresh keyspace is NOT in the queue — nothing
+    // is queued until it has been carved and come back (D-0043).
+    CHECK(jobs.queued() == 2);
 }
 
 TEST_CASE("a worker is lost by OUR clock, not its own claim", "[fleet]") {
@@ -175,9 +179,9 @@ TEST_CASE("elapsed time cannot underflow", "[fleet]") {
 TEST_CASE("a lost worker leaves the fleet but its work does not", "[fleet]") {
     JobManager jobs;
     Fleet fleet;
-    (void)jobs.CreateJob("k", 200, 2, 7);
+    (void)jobs.CreateJob("k", 200, 7);
     fleet.Join(kAlice, 1, kNow);
-    REQUIRE(jobs.Grant(kAlice, kNow, kLease));
+    REQUIRE(jobs.Grant(kAlice, kNow, kLease, kUnits));
 
     fleet.Leave(kAlice);
     CHECK(fleet.size() == 0);
@@ -185,5 +189,5 @@ TEST_CASE("a lost worker leaves the fleet but its work does not", "[fleet]") {
     // leasing. It is still Leased until something releases or expires it.
     CHECK(jobs.HeldBy(kAlice).size() == 1);
     CHECK(jobs.ReleaseAllHeldBy(kAlice) == 1);
-    CHECK(jobs.queued() == 2);
+    CHECK(jobs.queued() == 1);   // only the carved task; fresh keyspace is not queued
 }

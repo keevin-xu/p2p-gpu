@@ -17,14 +17,23 @@
 #include "p2pgpu/coordinator/fleet.hpp"
 #include "p2pgpu/coordinator/kernel_registry.hpp"
 #include "p2pgpu/coordinator/reference_check.hpp"
+#include "p2pgpu/coordinator/sizer.hpp"
 #include "p2pgpu/protocol/verify.hpp"
 
 namespace p2pgpu::coordinator {
 
 /// What the caller should do after handling a frame.
 struct Reaction {
-    /// Frame to send back, if any. Already encoded and framed.
-    std::vector<std::byte> reply;
+    /// Frames to send back, if any — each already encoded and framed.
+    ///
+    /// A LIST, not one buffer. WebSocket is message-oriented and our framing is
+    /// **one frame per message**: `VerifyFrame` on a buffer holding two frames
+    /// reads the second as a trailing payload and rejects it as an orphan.
+    ///
+    /// This was concatenated until step 2.11, and the bug never showed because
+    /// every reply so far held exactly one frame — `max_tasks` was always 1.
+    /// Welcome + BenchmarkRequest is the first two-frame reply.
+    std::vector<std::vector<std::byte>> replies;
     /// Close the connection after sending. Set for fatal errors — a peer that
     /// cannot succeed by retrying must be told to stop, not left looping
     /// (PROTOCOL.md §5).
@@ -62,8 +71,14 @@ private:
     [[nodiscard]] Reaction OnProgress(const wire::Progress& progress, std::uint64_t now_ms);
     [[nodiscard]] Reaction OnRelease(const wire::Release& release);
     [[nodiscard]] Reaction OnGoodbye();
+    [[nodiscard]] Reaction OnBenchmarkResult(const wire::BenchmarkResult& result);
+    [[nodiscard]] Reaction OnThrottle(const wire::Throttle& throttle);
     [[nodiscard]] Reaction OnResultHeader(const wire::ResultHeader& header,
                                           std::span<const std::byte> payload);
+
+    /// Set at the top of OnMessage so the ingestion path can measure how long a
+    /// task actually took. Our clock, never the worker's (invariant 8).
+    std::uint64_t now_ms_ = 0;
 
     [[nodiscard]] static Reaction Fatal(wire::ErrorCode code, const char* message);
     [[nodiscard]] static Reaction NonFatal(wire::ErrorCode code, const char* message);

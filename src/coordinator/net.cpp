@@ -280,8 +280,13 @@ void Server::OnFrame(Session& session, std::uint64_t conn_id, std::uint32_t& rej
             .count());
 
     const Reaction reaction = session.OnMessage(*verified, now_ms);
-    if (!reaction.reply.empty()) {
-        send(reaction.reply);
+    // ONE WebSocket message per frame. Our framing is one-frame-per-message, so
+    // concatenating would make the receiver read the second frame as a trailing
+    // payload and reject it as an orphan.
+    for (const auto& out : reaction.replies) {
+        // `out`, not `frame` — the inbound frame is still in scope above, and
+        // -Wshadow is on precisely so "which frame?" is never a question.
+        send(out);
     }
     if (reaction.close) {
         // Fatal errors close the connection. A peer that cannot succeed by
