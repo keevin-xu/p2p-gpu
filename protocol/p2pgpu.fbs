@@ -121,6 +121,17 @@ union DeterminismClass { Exact, Tolerant, Statistical }
 table OutputSpec {
   bytes: uint;         // <= kMaxOutputBytes (8 MiB), invariant 2
   dtype: DType;
+  /// Exact bytes the host writes into the result buffer ONCE PER TASK, before
+  /// the first dispatch. Absent or empty means zero-fill.
+  ///
+  /// Added in D-0040. A reduction's identity element is part of WHAT THE WORK
+  /// IS, so it belongs to the coordinator (R1) — `brute_search_v1` needs
+  /// 0xFFFFFFFF at offset 4 as atomicMin's identity, and a worker that
+  /// zero-filled instead pinned that output at 0 for every task ever run.
+  ///
+  /// A property of the KERNEL, not the task, so it travels in Welcome's
+  /// KernelDescriptor once per connection rather than in every TaskEnvelope.
+  init: [ubyte];
 }
 
 table AccumulationSpec {

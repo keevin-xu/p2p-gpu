@@ -21,6 +21,22 @@ namespace {
 
 using platform::Log;
 
+/// Read `start_unit` back out of the chunk window at params bytes 0..3
+/// (D-0033), little-endian, matching what the coordinator wrote there.
+///
+/// Returns 0 for a params blob too short to hold a window; RunTask rejects that
+/// case anyway, and guessing a start would be worse than searching from zero.
+[[nodiscard]] std::uint64_t ChunkWindowStart(std::span<const std::byte> params) noexcept {
+    if (params.size() < 4) {
+        return 0;
+    }
+    std::uint32_t v = 0;
+    for (std::size_t i = 0; i < 4; ++i) {
+        v |= static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(params[i])) << (8U * i);
+    }
+    return v;
+}
+
 }  // namespace
 
 TaskLoop::TaskLoop(TaskLoopConfig config, DeviceSession& device, KernelFetcher kernels)
@@ -235,6 +251,12 @@ void TaskLoop::HandleWelcome(const wire::Welcome& welcome) {
             }
             if (const auto* out = k->output()) {
                 info.output_bytes = out->bytes();
+                if (const auto* init = out->init()) {
+                    // Copied, not aliased: the frame is freed when this returns.
+                    info.output_init.assign(
+                        reinterpret_cast<const std::byte*>(init->data()),
+                        reinterpret_cast<const std::byte*>(init->data()) + init->size());
+                }
             }
             kernel_info_.emplace_back(k->kernel_id()->str(), std::move(info));
         }
@@ -468,10 +490,20 @@ bool TaskLoop::Execute(const PendingTask& task) {
     req.wgsl = *wgsl;
     req.entry_point = info->entry_point;
     req.params = task.params;
-    req.start_unit = 0;
+    // THE TASK'S REAL START, read back out of the chunk window the coordinator
+    // wrote at params bytes 0..3 (D-0033). Hardcoding 0 here meant every task
+    // searched the same range and reported it as its own — 1000 tasks
+    // recomputing the first one while the coordinator recorded full coverage
+    // (D-0040). Reading it back is what makes D-0033's convention load-bearing
+    // in both directions rather than only on the write side.
+    req.start_unit = ChunkWindowStart(task.params);
     req.unit_count = task.work_units;
     req.output_bytes = task.output_bytes;
     req.workgroup_size = task.workgroup_size;
+    // Once per task, before the first dispatch. Empty means zero-fill; for
+    // brute_search this carries atomicMin's identity, and without it that
+    // output is pinned at 0 forever (D-0040).
+    req.output_init = info->output_init;
 
     const auto outcome = RunTask(device_.context(), req, config_.units_per_chunk);
     if (!outcome) {

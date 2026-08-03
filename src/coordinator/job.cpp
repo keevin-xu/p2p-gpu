@@ -145,6 +145,12 @@ const Task* JobManager::Find(TaskId id) const noexcept {
     return it == tasks_.end() ? nullptr : &it->second;
 }
 
+bool JobManager::AllComplete() const {
+    return std::ranges::all_of(tasks_, [](const auto& kv) {
+        return IsTerminal(kv.second.state);
+    });
+}
+
 const Job* JobManager::FindJob(JobId id) const noexcept {
     const auto it = jobs_.find(id);
     return it == jobs_.end() ? nullptr : &it->second;

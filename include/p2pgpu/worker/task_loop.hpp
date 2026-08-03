@@ -180,6 +180,11 @@ private:
         std::string entry_point;
         std::uint32_t workgroup_size = 64;
         std::uint32_t output_bytes = 0;
+        /// Bytes to write into the result buffer once per task, from the
+        /// coordinator (D-0040). Empty means zero-fill. NOT optional in
+        /// practice: a kernel whose reduction has a non-zero identity returns
+        /// silently wrong results without it.
+        std::vector<std::byte> output_init;
     };
     std::vector<std::pair<std::string, KernelInfo>> kernel_info_;
 

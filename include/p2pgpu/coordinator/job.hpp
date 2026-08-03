@@ -105,6 +105,11 @@ public:
     /// work is outstanding (step 2.18 makes this subtler with speculation).
     [[nodiscard]] bool JobComplete(JobId job) const;
 
+    /// Every task in every job is terminal. Same definition as JobComplete,
+    /// applied across all jobs — used only by the dev-only
+    /// --exit-when-complete harness (step 1.26).
+    [[nodiscard]] bool AllComplete() const;
+
 private:
     [[nodiscard]] protocol::Status Apply(Task& task, TaskEvent ev);
 

@@ -15,6 +15,7 @@
 
 #include "p2pgpu/coordinator/job.hpp"
 #include "p2pgpu/coordinator/kernel_registry.hpp"
+#include "p2pgpu/coordinator/reference_check.hpp"
 #include "p2pgpu/protocol/verify.hpp"
 
 namespace p2pgpu::coordinator {
@@ -31,7 +32,11 @@ struct Reaction {
 
 class Session {
 public:
-    Session(JobManager& jobs, const KernelRegistry& kernels, std::uint64_t conn_id);
+    /// `reference_stats` is non-null only under the coordinator's dev-only
+    /// --verify-reference flag (step 1.26). It is a TEST HARNESS, not
+    /// validation — see reference_check.hpp for why the distinction matters.
+    Session(JobManager& jobs, const KernelRegistry& kernels, std::uint64_t conn_id,
+            ReferenceStats* reference_stats = nullptr);
 
     /// Handle one already-VERIFIED frame.
     ///
@@ -62,6 +67,7 @@ private:
     JobManager& jobs_;
     const KernelRegistry& kernels_;
     std::uint64_t conn_id_ = 0;
+    ReferenceStats* reference_stats_ = nullptr;
 
     bool handshaked_ = false;
     WorkerId worker_id_;

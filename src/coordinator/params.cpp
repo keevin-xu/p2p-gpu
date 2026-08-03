@@ -89,4 +89,16 @@ protocol::Result<std::vector<std::byte>> BuildParams(const KernelSpec& spec,
                      "no params builder for layout: " + spec.param_layout);
 }
 
+std::vector<std::byte> BuildOutputInit(const KernelSpec& spec) {
+    if (spec.param_layout == "BruteSearchParams") {
+        // min_match must start at atomicMin's identity. Zero would make "no
+        // match" indistinguishable from "matched candidate 0" — and worse,
+        // atomicMin(0, x) is 0 forever, which pinned the field at zero for
+        // every task until D-0040.
+        return ToBytes(kernels::BruteSearchResult{});
+    }
+    // Everything else reduces from zero, which is what an empty vector means.
+    return {};
+}
+
 }  // namespace p2pgpu::coordinator

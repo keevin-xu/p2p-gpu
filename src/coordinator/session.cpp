@@ -64,8 +64,10 @@ std::uint64_t Blake3_64(std::span<const std::byte> bytes) noexcept {
     return out;
 }
 
-Session::Session(JobManager& jobs, const KernelRegistry& kernels, std::uint64_t conn_id)
-    : jobs_(jobs), kernels_(kernels), conn_id_(conn_id) {}
+Session::Session(JobManager& jobs, const KernelRegistry& kernels, std::uint64_t conn_id,
+                 ReferenceStats* reference_stats)
+    : jobs_(jobs), kernels_(kernels), conn_id_(conn_id),
+      reference_stats_(reference_stats) {}
 
 Reaction Session::Fatal(wire::ErrorCode code, const char* message) {
     return Reaction{
@@ -191,8 +193,20 @@ Reaction Session::OnHello(const wire::Hello& hello) {
                 wire::DeterminismClass det_type = wire::DeterminismClass::NONE;
                 auto det = BuildDeterminism(fbb, *spec, det_type);
 
+                // D-0040: the bytes the worker must write into the result
+                // buffer once per task. A reduction's identity element is part
+                // of what the work IS, so the coordinator states it (R1) — the
+                // worker knowing that brute_search wants 0xFFFFFFFF at offset 4
+                // would be the first of many per-kernel branches in portable
+                // code. A kernel property, so it travels here in Welcome rather
+                // than in every TaskEnvelope.
+                const auto init = BuildOutputInit(*spec);
+                auto init_vec = fbb.CreateVector(
+                    reinterpret_cast<const std::uint8_t*>(init.data()), init.size());
+
                 wire::OutputSpecBuilder ob(fbb);
                 ob.add_bytes(spec->output_bytes);
+                ob.add_init(init_vec);
                 auto out = ob.Finish();
 
                 const wire::WorkgroupSize wg{spec->workgroup_size[0],
@@ -411,6 +425,24 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
     // is an authorization step that a future caller can forget.
     if (const auto s = jobs_.Submit(worker_id_, task_id); !s) {
         return NonFatal(wire::ErrorCode::LeaseNotHeld, "no lease on that task");
+    }
+
+    // OPTIONAL, DEV-ONLY (step 1.26): recompute the task on the CPU and compare.
+    // A test harness, never a validation strategy — if the coordinator could
+    // afford to compute every answer there would be no reason to distribute the
+    // work. Affordable here only because 1.26 uses deliberately tiny tasks.
+    // See reference_check.hpp.
+    if (reference_stats_ != nullptr) {
+        const Task* task = jobs_.Find(task_id);
+        const Job* job = task != nullptr ? jobs_.FindJob(task->job) : nullptr;
+        const KernelSpec* spec = job != nullptr ? kernels_.Find(job->kernel_id) : nullptr;
+        if (spec != nullptr) {
+            (void)CheckAgainstReference(*spec, *job, *task, payload, *reference_stats_);
+            // Deliberately NOT rejecting on mismatch. This harness reports; the
+            // run's verdict is the summary at shutdown. Making it reject would
+            // quietly turn a diagnostic into policy — the thing the header
+            // spends its length warning against.
+        }
     }
 
     // Real validation (replication, quorum, reputation) is Phase 3. With one

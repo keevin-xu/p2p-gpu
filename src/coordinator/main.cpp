@@ -15,6 +15,7 @@
 #include <spdlog/spdlog.h>
 
 #include <filesystem>
+#include <functional>
 
 #include "p2pgpu/coordinator/net.hpp"
 
@@ -41,6 +42,19 @@ int main(int argc, char** argv) {
         ->capture_default_str();
     app.add_option("--seed-tasks", seed_tasks, "tasks to split the seeded job into")
         ->capture_default_str();
+
+    // DEV ONLY, step 1.26. Recomputes every accepted result on the CPU and
+    // compares. A TEST HARNESS, NOT VALIDATION — if the coordinator could
+    // afford to compute every answer there would be no reason to distribute
+    // the work at all. Affordable only with the tiny tasks 1.26 uses; at the
+    // sizer's real operating point it would take longer than the whole grid.
+    // Real validation is replication + reputation, in Phase 3.
+    bool verify_reference = false;
+    app.add_flag("--verify-reference", verify_reference,
+                 "DEV ONLY: recompute each result on the CPU and compare "
+                 "(a test harness, never a validation strategy)");
+    app.add_flag("--exit-when-complete", cfg.exit_when_complete,
+                 "DEV ONLY: stop once every seeded task is terminal");
     // Exceptions are permitted in startup/config code, before serving begins
     // (CONVENTIONS.md §1). CLI11 throws for --help and parse errors.
     CLI11_PARSE(app, argc, argv);
@@ -87,7 +101,45 @@ int main(int argc, char** argv) {
                      seed_kernel, seed_units, seed_tasks, job.lo());
     }
 
-    p2pgpu::coordinator::Server server(cfg, *registry, jobs);
+    p2pgpu::coordinator::ReferenceStats ref_stats;
+    if (verify_reference) {
+        spdlog::warn("DEV: --verify-reference is ON. This recomputes every result on "
+                     "the CPU. It is a TEST HARNESS, not validation — never quote it "
+                     "as evidence that results are validated (Phase 3 does that).");
+    }
+
+    p2pgpu::coordinator::Server server(cfg, *registry, jobs,
+                                       verify_reference ? &ref_stats : nullptr);
+
+    // Runs from inside the event loop when every task is terminal, under
+    // --exit-when-complete. The summary has to be printed there rather than
+    // after Run(), because Run() does not return while a worker is attached.
+    const auto report = [&]() -> int {
+        if (!verify_reference) {
+            return 0;
+        }
+        // "Nothing was verified" and "everything verified clean" must never
+        // look alike, so `checked` is reported even when there are no
+        // mismatches — "0 mismatches" over 0 results would read as a pass.
+        spdlog::info("reference check: checked={} matched={} mismatched={} unsupported={}",
+                     ref_stats.checked, ref_stats.matched, ref_stats.mismatched,
+                     ref_stats.unsupported);
+        if (ref_stats.mismatched > 0) {
+            spdlog::error("{} RESULT(S) DID NOT MATCH THE CPU REFERENCE",
+                          ref_stats.mismatched);
+            return 1;
+        }
+        return 0;
+    };
+    server.SetOnComplete(report);
     server.Run();
+
+    if (verify_reference) {
+        // "Nothing was verified" and "everything verified clean" must never
+        // look alike, so `checked` is reported even when there are no
+        // mismatches — a summary of "0 mismatches" over 0 results would
+        // otherwise read as a pass.
+        return report();   // reached only if Run() returned on its own
+    }
     return 0;
 }

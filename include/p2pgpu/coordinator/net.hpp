@@ -14,6 +14,7 @@
 
 #include "p2pgpu/coordinator/job.hpp"
 #include "p2pgpu/coordinator/kernel_registry.hpp"
+#include "p2pgpu/coordinator/reference_check.hpp"
 #include "p2pgpu/coordinator/session.hpp"
 #include "p2pgpu/protocol/verify.hpp"
 
@@ -27,6 +28,10 @@ inline constexpr std::uint32_t kMaxFrameBytes = 16 * 1024 * 1024;
 
 struct Config {
     int port = 8080;
+    /// DEV ONLY (step 1.26): stop the event loop once every seeded task has
+    /// reached a terminal state, so a scripted end-to-end run terminates and
+    /// can print its summary. A real coordinator serves indefinitely.
+    bool exit_when_complete = false;
     std::string manifest = "kernels/manifest.toml";
     std::string kernel_dir = "kernels";
     std::string log_level = "info";
@@ -34,7 +39,15 @@ struct Config {
 
 class Server {
 public:
-    Server(Config config, const KernelRegistry& kernels, JobManager& jobs);
+    /// `reference_stats` is non-null only under --verify-reference (step
+    /// 1.26). A TEST HARNESS, not validation — see reference_check.hpp.
+    Server(Config config, const KernelRegistry& kernels, JobManager& jobs,
+           ReferenceStats* reference_stats = nullptr);
+
+    /// DEV ONLY (step 1.26): invoked once when every task is terminal, under
+    /// --exit-when-complete. Returns the process exit code.
+    using OnCompleteFn = std::function<int()>;
+    void SetOnComplete(OnCompleteFn fn) { on_complete_ = std::move(fn); }
 
     /// Blocks, running the uWebSockets event loop.
     ///
@@ -52,6 +65,8 @@ private:
     Config config_;
     const KernelRegistry& kernels_;
     JobManager& jobs_;
+    ReferenceStats* reference_stats_ = nullptr;
+    OnCompleteFn on_complete_;
 };
 
 }  // namespace p2pgpu::coordinator

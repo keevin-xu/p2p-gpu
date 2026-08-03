@@ -35,4 +35,12 @@ namespace p2pgpu::coordinator {
 [[nodiscard]] protocol::Result<std::vector<std::byte>> BuildParams(
     const KernelSpec& spec, const Job& job, const Task& task);
 
+/// The bytes the worker must write into the result buffer once per task, before
+/// the first dispatch (D-0040).
+///
+/// A reduction's identity element is part of what the work IS, so it is the
+/// coordinator's to state (R1). Empty means zero-fill, which is correct for any
+/// kernel whose reductions all start at zero.
+[[nodiscard]] std::vector<std::byte> BuildOutputInit(const KernelSpec& spec);
+
 }  // namespace p2pgpu::coordinator

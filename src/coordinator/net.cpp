@@ -8,6 +8,7 @@
 #include "p2pgpu/coordinator/net.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <vector>
 
@@ -34,11 +35,53 @@ struct SocketData {
 
 }  // namespace
 
-Server::Server(Config config, const KernelRegistry& kernels, JobManager& jobs)
-    : config_(std::move(config)), kernels_(kernels), jobs_(jobs) {}
+Server::Server(Config config, const KernelRegistry& kernels, JobManager& jobs,
+               ReferenceStats* reference_stats)
+    : config_(std::move(config)), kernels_(kernels), jobs_(jobs),
+      reference_stats_(reference_stats) {}
 
 void Server::Run() {
     std::uint64_t next_conn_id = 1;
+    us_listen_socket_t* listen_socket = nullptr;
+
+    // DEV ONLY (step 1.26). Checked after every loop iteration: once the
+    // seeded work is done, close the listen socket so run() returns and main()
+    // can print its summary. Without this the harness would have to be killed,
+    // and a killed process prints nothing.
+    //
+    // Guarded on having had at least one task, so an empty queue at startup is
+    // not mistaken for "finished".
+    if (config_.exit_when_complete) {
+        bool fired = false;
+        uWS::Loop::get()->addPostHandler(this, [this, &listen_socket, &fired](uWS::Loop*) {
+            // ONCE. Without the guard this fires on every loop iteration for as
+            // long as the process lives — observed, and it buried the log.
+            if (fired || jobs_.total_tasks() == 0 || !jobs_.AllComplete()) {
+                return;
+            }
+            fired = true;
+            spdlog::info("all {} tasks terminal; shutting down (--exit-when-complete)",
+                         jobs_.total_tasks());
+            if (listen_socket != nullptr) {
+                us_listen_socket_close(0, listen_socket);
+                listen_socket = nullptr;
+            }
+
+            const int rc = on_complete_ ? on_complete_() : 0;
+
+            // std::exit, and it is a deliberate shortcut CONFINED TO THIS
+            // DEV-ONLY FLAG. Closing the listen socket stops new connections
+            // but does not end the loop while a worker is still attached, and
+            // the harness must terminate to report its verdict. Ending the
+            // fleet cleanly means sending Shutdown to every socket and waiting,
+            // which is real work (2.x) and not worth building for a test
+            // harness that has already finished measuring.
+            //
+            // A real coordinator NEVER takes this path: exit_when_complete is
+            // off by default and this is unreachable without it.
+            std::exit(rc);
+        });
+    }
 
     uWS::App()
         // Liveness only — deliberately says nothing about readiness or fleet
@@ -100,7 +143,8 @@ void Server::Run() {
                     auto* data = ws->getUserData();
                     data->conn_id = next_conn_id++;
                     data->session = std::make_unique<Session>(this->jobs_, this->kernels_,
-                                                              data->conn_id);
+                                                              data->conn_id,
+                                                              this->reference_stats_);
                     // Correlation fields from CONVENTIONS.md §6. worker_id is
                     // unknown until Hello arrives, so conn_id carries the trace
                     // until then — without it, a frame rejected during the
@@ -149,8 +193,9 @@ void Server::Run() {
             })
 
         .listen(config_.port,
-                [this](auto* token) {
+                [this, &listen_socket](auto* token) {
                     if (token != nullptr) {
+                        listen_socket = token;
                         spdlog::info("coordinator listening port={} kernels={}",
                                      config_.port, kernels_.size());
                     } else {
