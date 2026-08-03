@@ -123,7 +123,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build clang lld
 
-      - name: Restore vcpkg binary cache
+      - name: Restore vcpkg install tree
+        id: cache
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/vcpkg_installed_fuzz
@@ -132,6 +133,23 @@ jobs:
           # than merely slow.
           key: ${{ env.CACHE_VERSION }}-vcpkg-fuzz-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: ${{ env.CACHE_VERSION }}-vcpkg-fuzz-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
+
+
+      # 1.29's last open question, answered in the log instead of by inference.
+      # The cache took four attempts to get right (a silently-broken x-gha
+      # source, a key that did not change when the paths did, and
+      # lukka/run-vcpkg overriding our path with a per-run UUID directory), and
+      # every diagnosis until the last was wrong. A one-line HIT/MISS beats
+      # guessing from job duration.
+      - name: Cache status
+        run: |
+          echo "cache-hit = '${{ steps.cache.outputs.cache-hit }}'"
+          if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
+            echo "HIT — dependencies restored, nothing should be rebuilt below."
+          else
+            echo "MISS — dependencies will be built from source (expected on the"
+            echo "first run after a vcpkg.json, baseline, or CACHE_VERSION change)."
+          fi
 
       - uses: lukka/run-vcpkg@v11
         with:
@@ -206,7 +224,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build clang lld pkg-config
 
-      - name: Restore vcpkg binary cache
+      - name: Restore vcpkg install tree
+        id: cache
         uses: actions/cache@v4
         with:
           # The finished install tree — 175 MB on the runner, and on a hit vcpkg
@@ -214,6 +233,23 @@ jobs:
           path: ${{ github.workspace }}/vcpkg_installed
           key: ${{ env.CACHE_VERSION }}-vcpkg-native-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: ${{ env.CACHE_VERSION }}-vcpkg-native-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
+
+
+      # 1.29's last open question, answered in the log instead of by inference.
+      # The cache took four attempts to get right (a silently-broken x-gha
+      # source, a key that did not change when the paths did, and
+      # lukka/run-vcpkg overriding our path with a per-run UUID directory), and
+      # every diagnosis until the last was wrong. A one-line HIT/MISS beats
+      # guessing from job duration.
+      - name: Cache status
+        run: |
+          echo "cache-hit = '${{ steps.cache.outputs.cache-hit }}'"
+          if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
+            echo "HIT — dependencies restored, nothing should be rebuilt below."
+          else
+            echo "MISS — dependencies will be built from source (expected on the"
+            echo "first run after a vcpkg.json, baseline, or CACHE_VERSION change)."
+          fi
 
       - uses: lukka/run-vcpkg@v11
         with:
@@ -281,8 +317,94 @@ jobs:
           echo "== vcpkg env actually in effect"
           env | grep -i '^VCPKG' | sort
 
+  # ── Step 1.30: the browser worker must keep building ────────────────────
+  #
+  # A SEPARATE JOB, on purpose. `fuzz` and `native` work and took four attempts
+  # to get their caching right; this one shares no step, no cache key and no
+  # install tree with them, so a failure here cannot touch either. Jobs without
+  # `needs:` are independent — a red wasm job leaves both of the others green.
+  #
+  # What it protects is R2. `worker-core` compiles to native and to wasm from
+  # identical source, and the native jobs above only ever prove one half of
+  # that. A portable file that stops building for the browser is otherwise
+  # invisible until somebody builds it by hand — which, after 1.23 and 1.24
+  # changed that target substantially, is now a real risk rather than a
+  # theoretical one.
+  #
+  # BUILD ONLY. There is no browser and no GPU here, so nothing runs. This job
+  # answers "does it still compile and link for wasm32", which is exactly the
+  # question the native jobs cannot answer and nothing else does.
+  wasm:
+    name: wasm (browser worker build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-# The wasm build is step 1.30, landing with the browser worker. It is the
-# slowest job to set up (mymindstorm/setup-emsdk) and until that target changes
-# regularly there is little for it to catch — though after 1.23/1.24 that is
-# now close to false, so 1.30 is due.
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      # Own tree, own key. The wasm preset sets VCPKG_MANIFEST_FEATURES="" and a
+      # wasm32-emscripten triplet, so it shares nothing with the native jobs'
+      # packages — pointing them at one tree would make every run add and remove
+      # ports. The triplet is in the key for the same reason.
+      - name: Restore vcpkg install tree (wasm)
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg_installed_wasm
+          key: ${{ env.CACHE_VERSION }}-vcpkg-wasm32-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: ${{ env.CACHE_VERSION }}-vcpkg-wasm32-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
+
+      - name: Cache status
+        run: |
+          echo "cache-hit = '${{ steps.cache.outputs.cache-hit }}'"
+          if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
+            echo "HIT — wasm dependencies restored."
+          else
+            echo "MISS — wasm dependencies will be built from source."
+          fi
+
+      # PINNED to the exact emsdk the project is developed against. Not
+      # 'latest': Emscripten 6 removed -sUSE_WEBGPU outright (D-0014), so a
+      # silent SDK bump is a hard configure error, and finding that out from CI
+      # rather than deliberately is the wrong order. `actions-cache-folder` lets
+      # the action cache the SDK itself, which is the expensive part.
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 6.0.5
+          actions-cache-folder: emsdk-cache
+
+      - name: Verify the pinned toolchain
+        run: emcc --version | head -1
+
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 827a2e1203bc19941126c657166da44f2623acc4
+
+      # The preset chainloads Emscripten's toolchain THROUGH vcpkg's rather than
+      # setting CMAKE_TOOLCHAIN_FILE twice — two toolchains fighting over one
+      # variable is how that build broke the first time. setup-emsdk exports
+      # EMSDK, which the preset reads.
+      #
+      # Also fetches datachannel-wasm and upstream BLAKE3 (D-0032, D-0034), and
+      # applies the globalThis patch (D-0038). Those are small clones and are
+      # deliberately NOT cached: caching FetchContent's subbuild stamps to save
+      # a few seconds would add a stale-state failure mode to the one job whose
+      # entire purpose is telling us the truth about this target.
+      - name: Configure
+        run: cmake --preset wasm -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/vcpkg_installed_wasm"
+
+      - name: Build
+        run: cmake --build build/wasm
+
+      # The module and the static R7 surface must all be present. A link that
+      # "succeeds" while emitting nothing is a failure mode worth naming.
+      - name: Check the artifacts exist
+        run: |
+          ls -la build/wasm/web/
+          for f in p2pgpu-worker.js p2pgpu-worker.wasm index.html ui.js; do
+            test -s "build/wasm/web/$f" || { echo "MISSING OR EMPTY: $f"; exit 1; }
+          done
+          echo "wasm module and R7 page assets present"

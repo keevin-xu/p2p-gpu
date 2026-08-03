@@ -13,7 +13,15 @@ following:
   - `Signal` used `to`/`from` in the doc and `peer` in the schema
 
 None of that breaks a build. A stale wire document is worse than no document,
-because it is trusted — so this runs as a test (`protocol_doc_matches_schema`).
+because it is trusted.
+
+── RUN THIS BY HAND. IT IS NOT A CTEST. ─────────────────────────────────
+`*.md` is gitignored in this repo, so docs/PROTOCOL.md does not exist on a
+fresh clone. Registered as a ctest it passed locally and failed in CI with
+FileNotFoundError — a test that cannot run where the code actually lives.
+
+A ctest may only read committed files. Run this before a gate, or any time the
+schema changes.
 
 Checks two things the doc actually asserts:
   1. Inline ```` ```flatbuffers ```` blocks reproducing a table must list the
