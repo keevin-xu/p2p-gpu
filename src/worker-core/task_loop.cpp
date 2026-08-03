@@ -24,7 +24,11 @@ using platform::Log;
 }  // namespace
 
 TaskLoop::TaskLoop(TaskLoopConfig config, DeviceSession& device, KernelFetcher kernels)
-    : config_(std::move(config)), device_(device), kernels_(std::move(kernels)) {
+    // Transport takes a log sink rather than calling platform::Log itself, so
+    // the library stays GPU-free (D-0042). Passing it here keeps browser
+    // console routing exactly as it was.
+    : config_(std::move(config)), device_(device), kernels_(std::move(kernels)),
+      transport_(platform::Log) {
     // Wired here, not in Start(), so a loss during connection is still handled.
     device_.OnLost([this] { OnDeviceLost(); });
     device_.OnReady([this] { OnDeviceReady(); });

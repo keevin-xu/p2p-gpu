@@ -9,18 +9,30 @@
 // The shared subset is MEASURED, not assumed — D-0032 lists it. Everything used
 // below is in that table. Data plane (WebRTC DataChannel) is Phase 6.
 
-#include "p2pgpu/worker/transport.hpp"
+#include "p2pgpu/transport/transport.hpp"
 
 #include <rtc/rtc.hpp>
 
+#include <cstdio>
+#include <string>
 #include <utility>
 #include <variant>
 
-#include "p2pgpu/worker/platform.hpp"
-
 namespace p2pgpu::worker {
 
-Transport::Transport() : ws_(std::make_unique<rtc::WebSocket>()) {}
+namespace {
+
+/// Default sink. Used by mock-worker and anything else that has no opinion.
+void LogToStderr(std::string_view level, std::string_view message) {
+    std::fprintf(stderr, "[%.*s] %.*s\n", static_cast<int>(level.size()), level.data(),
+                 static_cast<int>(message.size()), message.data());
+}
+
+}  // namespace
+
+Transport::Transport(LogFn log)
+    : ws_(std::make_unique<rtc::WebSocket>()),
+      log_(log ? std::move(log) : LogFn{&LogToStderr}) {}
 
 // Out of line, and it has to be: the header only forward-declares
 // rtc::WebSocket, so unique_ptr's deleter needs the complete type here.
@@ -37,21 +49,21 @@ void Transport::OnMessage(std::function<void(std::span<const std::byte>)> handle
 
 void Transport::Connect(const std::string& url) {
     ws_->onOpen([this] {
-        platform::Log("info", "transport open");
+        log_("info", "transport open");
         if (on_open_) {
             on_open_();
         }
     });
 
     ws_->onClosed([this] {
-        platform::Log("info", "transport closed");
+        log_("info", "transport closed");
         if (on_closed_) {
             on_closed_();
         }
     });
 
     ws_->onError([this](std::string error) {
-        platform::Log("warn", "transport error: " + error);
+        log_("warn", "transport error: " + error);
         if (on_error_) {
             on_error_(error);
         }
@@ -73,7 +85,7 @@ void Transport::Connect(const std::string& url) {
                 on_message_(std::span<const std::byte>{bin->data(), bin->size()});
             }
         } else {
-            platform::Log("warn", "transport dropped a non-binary frame");
+            log_("warn", "transport dropped a non-binary frame");
         }
     });
 

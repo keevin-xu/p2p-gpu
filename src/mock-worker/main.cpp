@@ -4,10 +4,111 @@
 // and E5 (stragglers) are all produced by this binary. It turns week-long
 // fleet experiments into 30-second runs, so it is the fast path, not a detour.
 //
-// Build it FIRST in Phase 2, before the lease manager and sizer.
-//
-// Usage target:
-//   mock-worker --count 200 --coordinator ws://localhost:8080 \
+// Usage:
+//   mock-worker --count 200 --coordinator ws://localhost:8080/ws \
 //               --chaos byzantine_10pct --seed 42
-#include <cstdio>
-int main() { std::puts("p2pgpu mock-worker - see docs/phases/PHASE_2.md"); }
+//
+// ── WHAT THIS BINARY IS AND IS NOT EVIDENCE FOR ──────────────────────────
+// Honest workers compute the REAL answer on the CPU and then sleep for their
+// simulated duration (D-0042), so replication has something true to compare
+// against and a liar is a real deviation rather than a different flavour of
+// fiction. But simulated speed is decoupled from real compute, and task sizes
+// are bounded by what the CPU reference can do — so **nothing here is GPU
+// throughput evidence.** These runs measure SCHEDULING.
+
+#include <CLI/CLI.hpp>
+#include <spdlog/spdlog.h>
+
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "profiles.hpp"
+#include "virtual_worker.hpp"
+
+int main(int argc, char** argv) {
+    std::uint32_t count = 10;
+    std::string url = "ws://localhost:8080/ws";
+    std::string chaos = "default";
+    std::uint64_t seed = 42;
+    std::uint32_t run_seconds = 0;
+    bool list_profiles = false;
+
+    CLI::App app{"p2pgpu mock worker fleet"};
+    app.add_option("--count", count, "virtual workers in this process")
+        ->capture_default_str();
+    app.add_option("--coordinator", url, "coordinator WebSocket URL")
+        ->capture_default_str();
+    app.add_option("--chaos", chaos, "chaos profile name")->capture_default_str();
+    app.add_option("--seed", seed, "run seed — same seed replays the same fleet")
+        ->capture_default_str();
+    app.add_option("--seconds", run_seconds, "stop after N seconds (0 = run until killed)")
+        ->capture_default_str();
+    app.add_flag("--list-profiles", list_profiles, "print the chaos profiles and exit");
+    CLI11_PARSE(app, argc, argv);
+
+    spdlog::set_pattern("[%Y-%m-%dT%H:%M:%S.%e%z] [%^%l%$] %v");
+
+    if (list_profiles) {
+        for (const auto* p : p2pgpu::mock::AllProfiles()) {
+            std::printf("  %-18s %s\n", std::string(p->name).c_str(),
+                        std::string(p->description).c_str());
+        }
+        return 0;
+    }
+
+    // REFUSE an unknown profile rather than falling back to `default`. An
+    // experiment that silently ran the wrong fleet produces numbers that look
+    // perfectly fine, which is the worst possible failure for a measurement
+    // instrument.
+    const auto* profile = p2pgpu::mock::FindProfile(chaos);
+    if (profile == nullptr) {
+        spdlog::error("unknown chaos profile: {}. --list-profiles to see them.", chaos);
+        return 1;
+    }
+
+    spdlog::info("fleet: count={} profile={} seed={} coordinator={}", count,
+                 std::string(profile->name), seed, url);
+    spdlog::warn("mock workers simulate device speed; these runs measure SCHEDULING, "
+                 "never GPU throughput");
+
+    std::vector<std::unique_ptr<p2pgpu::mock::VirtualWorker>> fleet;
+    fleet.reserve(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        p2pgpu::mock::Dice dice(seed, i);
+        auto behaviors = profile->assign(i, count, dice);
+        fleet.push_back(std::make_unique<p2pgpu::mock::VirtualWorker>(
+            i, url, behaviors, seed));
+        fleet.back()->Start();
+    }
+
+    // ONE loop for the whole fleet — N workers, not N processes (step 2.2).
+    // Poll() is non-blocking for exactly this reason: one slow worker must not
+    // stall the other 199.
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(run_seconds == 0 ? 86400 : run_seconds);
+    while (std::chrono::steady_clock::now() < deadline) {
+        for (auto& w : fleet) {
+            w->Poll();
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+
+    p2pgpu::mock::WorkerStats total;
+    for (auto& w : fleet) {
+        const auto& s = w->stats();
+        total.tasks_completed += s.tasks_completed;
+        total.tasks_lied_about += s.tasks_lied_about;
+        total.tasks_abandoned += s.tasks_abandoned;
+        total.reconnects += s.reconnects;
+        total.malformed_sent += s.malformed_sent;
+        w->Stop();
+    }
+    spdlog::info("fleet done: completed={} lied={} abandoned={} reconnects={} malformed={}",
+                 total.tasks_completed, total.tasks_lied_about, total.tasks_abandoned,
+                 total.reconnects, total.malformed_sent);
+    return 0;
+}

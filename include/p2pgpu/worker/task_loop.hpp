@@ -32,7 +32,7 @@
 #include "p2pgpu/protocol/ids.hpp"
 #include "p2pgpu/worker/kernel_host.hpp"
 #include "p2pgpu/worker/recovery.hpp"
-#include "p2pgpu/worker/transport.hpp"
+#include "p2pgpu/transport/transport.hpp"
 
 namespace p2pgpu::worker {
 

@@ -17,6 +17,16 @@
 //
 // If you find yourself adding an `#ifdef` to transport.cpp, re-read D-0008
 // first — and note that tools/check_seam.py will fail the build anyway (R2).
+//
+// ── WHY THIS IS ITS OWN LIBRARY ──────────────────────────────────────────
+// It used to live in `worker-core`, which links wgpu-native. `mock-worker` is a
+// full protocol client that never touches a GPU — that is what lets 200 virtual
+// workers share one process — so linking worker-core would have dragged the GPU
+// runtime into a binary whose whole point is not having one (D-0042).
+//
+// Hence the log CALLBACK below rather than a direct `platform::Log` call: that
+// function sits behind a header which includes webgpu.h, and depending on it
+// would have made this library GPU-free only in appearance.
 
 #include <cstddef>
 #include <cstdint>
@@ -24,6 +34,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace rtc {
@@ -39,7 +50,14 @@ namespace p2pgpu::worker {
 /// no decisions at all (R1), and this class makes fewer.
 class Transport {
 public:
-    Transport();
+    /// Where this object's diagnostics go.
+    ///
+    /// Defaults to stderr. `TaskLoop` passes `platform::Log`, so the browser
+    /// still routes transport messages to the console; `mock-worker` takes the
+    /// default and needs no GPU header to do it.
+    using LogFn = std::function<void(std::string_view level, std::string_view message)>;
+
+    explicit Transport(LogFn log = {});
     ~Transport();
 
     Transport(const Transport&) = delete;
@@ -84,6 +102,7 @@ private:
     std::function<void()> on_closed_;
     std::function<void(std::span<const std::byte>)> on_message_;
     std::function<void(const std::string&)> on_error_;
+    LogFn log_;
 };
 
 }  // namespace p2pgpu::worker

@@ -202,6 +202,25 @@ if(NOT P2PGPU_WASM)
 endif()
 
 # ─────────────────────────────────────────────────────────────────────────
+# p2pgpu-transport — the WebSocket control plane, GPU-free (D-0042)
+#
+# Split out of worker-core so `mock-worker` can be a full protocol client with
+# NO GPU runtime linked in — the property that lets 200 virtual workers share
+# one process. worker-core links wgpu-native; this deliberately links nothing
+# but libdatachannel (or datachannel-wasm) and the protocol.
+#
+# One WebSocket wrapper, two consumers. The alternative was the same ~90 lines
+# twice, and the second copy is the one that stops getting fixed.
+# ─────────────────────────────────────────────────────────────────────────
+add_library(p2pgpu-transport STATIC src/transport/transport.cpp)
+target_include_directories(p2pgpu-transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(p2pgpu-transport PUBLIC p2pgpu-protocol)
+if(NOT P2PGPU_WASM)
+    target_link_libraries(p2pgpu-transport PUBLIC LibDataChannel::LibDataChannel)
+endif()
+p2pgpu_harden(p2pgpu-transport)
+
+# ─────────────────────────────────────────────────────────────────────────
 # p2pgpu-worker-core — THE dual-target library (R2)
 #
 # Identical source compiled for native and WASM. Platform differences live
@@ -216,11 +235,10 @@ add_library(p2pgpu-worker-core STATIC
     src/worker-core/gpu_info.cpp           # portable: adapter info, features, limits
     src/worker-core/bench.cpp              # portable: throughput + overhead (0.10-0.12)
     src/worker-core/recovery.cpp           # portable: device-loss recovery (0.14)
-    src/worker-core/transport.cpp          # portable: libdatachannel API on both
     src/worker-core/checksum.cpp           # portable: BLAKE3-64, invariant 9
 )
 target_include_directories(p2pgpu-worker-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(p2pgpu-worker-core PUBLIC p2pgpu-protocol)
+target_link_libraries(p2pgpu-worker-core PUBLIC p2pgpu-protocol p2pgpu-transport)
 
 if(P2PGPU_WASM)
     target_sources(p2pgpu-worker-core PRIVATE
@@ -260,13 +278,12 @@ if(P2PGPU_WASM)
                       -DSOURCE_DIR=<SOURCE_DIR>
                       -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_datachannel_wasm.cmake)
     FetchContent_MakeAvailable(datachannel_wasm)
-    target_link_libraries(p2pgpu-worker-core PUBLIC datachannel-wasm)
+    target_link_libraries(p2pgpu-transport PUBLIC datachannel-wasm)
 else()
     target_sources(p2pgpu-worker-core PRIVATE
         src/worker-core/platform/gpu_native.cpp
         src/worker-core/platform/timer_native.cpp)
-    target_link_libraries(p2pgpu-worker-core PUBLIC
-        wgpu-native LibDataChannel::LibDataChannel BLAKE3::blake3)
+    target_link_libraries(p2pgpu-worker-core PUBLIC wgpu-native BLAKE3::blake3)
 endif()
 
 # NOTE: worker-core deliberately does NOT know where kernels live. Native reads
@@ -346,10 +363,15 @@ if(NOT P2PGPU_WASM)
     add_executable(mock-worker
         src/mock-worker/main.cpp
         src/mock-worker/virtual_worker.cpp
-        src/mock-worker/behaviors.cpp
         src/mock-worker/profiles.cpp
     )
-    target_link_libraries(mock-worker PRIVATE p2pgpu-protocol)
+    target_link_libraries(mock-worker PRIVATE
+        p2pgpu-transport CLI11::CLI11 spdlog::spdlog
+        # Invariant 9's checksum. BLAKE3 is native-only and already in the
+        # vcpkg `native` feature — D-0042's constraint was NO GPU, not no
+        # dependencies. Without it every mock result fails the checksum and is
+        # requeued, and the harness measures nothing.
+        BLAKE3::blake3)
     p2pgpu_harden(mock-worker)
 
 else()
