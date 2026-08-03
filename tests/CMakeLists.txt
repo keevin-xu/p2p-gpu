@@ -61,6 +61,13 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 add_test(NAME r2_platform_seam
          COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_seam.py)
 
+# R3 as a TEST too (G1). PROTOCOL.md is the authoritative wire contract and the
+# schema is the source of truth; those are only compatible if they agree, and
+# nothing enforced it. By step 1.28 the doc had fallen three changes behind. A
+# stale wire document is worse than none, because it is trusted.
+add_test(NAME protocol_doc_matches_schema
+         COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_protocol_doc.py)
+
 # T3 — kernel tests on a REAL GPU. Headless via worker-core, because CI has no
 # browser. Golden · chunk-invariance · cross-implementation · limits
 # (KERNELS.md §5).
