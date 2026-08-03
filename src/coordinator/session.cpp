@@ -29,9 +29,19 @@ constexpr std::uint32_t kBenchmarkTargetMs = 200;
 /// How long a task should take (ARCHITECTURE.md §7 says 1-3 s).
 constexpr std::uint32_t kTargetTaskMs = 2000;
 
-/// Ceiling on a self-reported score. No real device is near this; a worker
-/// claiming more is trying to be handed the whole keyspace.
-constexpr double kMaxBenchmarkScore = 1.0e12;
+/// Ceiling on a self-reported score, in arithmetic ops/sec.
+///
+/// 1e15. The first version was 1e12 and **an Apple M4 Pro exceeded it on the
+/// first real run** — 1.86e12 ops/s, matching D-0019's measured 1874 GFLOP/s.
+/// The cap silently clipped a truthful score, which is the worst kind of
+/// mis-tuned guard: it degrades an honest worker and reports nothing.
+///
+/// 1e15 is ~500x the fastest device measured here and still bounds a liar to
+/// something finite. The point is refusing an obviously fabricated number
+/// (NaN, 1e300), not second-guessing plausible hardware — reputation for
+/// accuracy is Phase 3's job, and the EWMA correction already pulls an
+/// optimistic score back toward reality.
+constexpr double kMaxBenchmarkScore = 1.0e15;
 
 /// Map the manifest's determinism to the wire union. No `default:` arm — adding
 /// a class must break this build (ARCHITECTURE.md §5).
@@ -219,7 +229,12 @@ Reaction Session::OnHello(const wire::Hello& hello) {
 
     handshaked_ = true;
     worker_id_ = WorkerId{conn_id_, 0};
-    fleet_.Join(worker_id_, conn_id_, /*now_ms=*/0);   // stamped on the next frame
+    // Stamp with the CURRENT time, not 0. A zero here means
+    // `0 + timeout < now` on the very first sweep, so every worker is declared
+    // lost within a second of connecting — and because it holds no leases yet,
+    // `released=0` makes the log look harmless while the worker is silently
+    // removed from the fleet and can never be granted work.
+    fleet_.Join(worker_id_, conn_id_, now_ms_);
 
     spdlog::info("handshake conn_id={} worker_id={} kernels={}", conn_id_,
                  worker_id_.hi(), kernels_.size());
@@ -316,9 +331,9 @@ Reaction Session::OnBenchmarkResult(const wire::BenchmarkResult& result) {
     // huge score — the cap is generous enough that no real device hits it and
     // tight enough that a liar gains little. Reputation for accuracy is Phase 3;
     // this is just refusing to be obviously gamed.
-    rec->score = std::min(score, kMaxBenchmarkScore);
-    spdlog::info("benchmark conn_id={} score={:.3g} samples={}", conn_id_, rec->score,
-                 result.samples());
+    rec->score_ops_per_sec = std::min(score, kMaxBenchmarkScore);
+    spdlog::info("benchmark conn_id={} ops/s={:.3g} samples={}", conn_id_,
+                 rec->score_ops_per_sec, result.samples());
     return {};
 }
 
@@ -349,7 +364,7 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
     // Guessing a score would mean the first grant to every worker is a fiction
     // that then feeds the correction factor, and 2.13 would be correcting
     // toward a number nobody measured.
-    if (!(rec->score > 0.0)) {
+    if (!(rec->score_ops_per_sec > 0.0)) {
         spdlog::debug("lease conn_id={} deferred reason=no_benchmark_yet", conn_id_);
         return {};
     }
@@ -366,8 +381,17 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
         }
         const KernelSpec* next_spec = kernels_.Find(next_job->kernel_id);
 
+        // ops/sec -> units/sec for THIS kernel. `flop_per_unit` is the
+        // manifest's count of arithmetic ops per work unit (D-0029(a) rules that
+        // the R5 gate counts integer ops too, which is what makes one device
+        // number comparable across kernels at all).
+        const double ops_per_unit =
+            (next_spec != nullptr && next_spec->flop_per_unit > 0)
+                ? static_cast<double>(next_spec->flop_per_unit)
+                : 1.0;
+
         SizingInputs sizing;
-        sizing.score = rec->score;
+        sizing.score = rec->score_ops_per_sec / ops_per_unit;
         sizing.correction = rec->correction;
         sizing.throttle = rec->throttle;
         sizing.target_ms = kTargetTaskMs;
@@ -453,14 +477,15 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
         // the observed duration — never against the worker's self-reported
         // gpu_ms, which is telemetry a worker chooses (invariant 8).
         if (WorkerRecord* mrec = fleet_.Mutable(worker_id_); mrec != nullptr) {
-            mrec->predicted_ms =
-                1000.0 * static_cast<double>(task->unit_count) / rec->score;
+            mrec->predicted_ms = 1000.0 * static_cast<double>(task->unit_count) /
+                                 (rec->score_ops_per_sec / ops_per_unit);
             mrec->granted_at_ms = now_ms;
         }
     }
 
-    spdlog::debug("lease conn_id={} asked={} granted={} score={:.3g} corr={:.2f}",
-                  conn_id_, req.max_tasks(), granted, rec->score, rec->correction);
+    spdlog::debug("lease conn_id={} asked={} granted={} ops/s={:.3g} corr={:.2f}",
+                  conn_id_, req.max_tasks(), granted, rec->score_ops_per_sec,
+                  rec->correction);
     return Reaction{std::move(out)};
 }
 

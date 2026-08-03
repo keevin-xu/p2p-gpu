@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "p2pgpu/protocol/encode.hpp"
+#include "p2pgpu/worker/bench.hpp"
 #include "p2pgpu/worker/checksum.hpp"
 #include "p2pgpu/protocol/verify.hpp"
 
@@ -191,9 +192,14 @@ void TaskLoop::OnFrame(std::span<const std::byte> bytes) {
         // Not yet handled, but listed so adding a Body variant breaks THIS
         // switch too (-Werror=switch). A `default:` would let a new
         // coordinator-to-worker message be ignored with nobody noticing.
+        case wire::Body::BenchmarkRequest:
+            if (const auto* m = env.body_as_BenchmarkRequest()) {
+                HandleBenchmarkRequest(*m);
+            }
+            return;
+
         case wire::Body::LeaseAck:
         case wire::Body::PeerList:
-        case wire::Body::BenchmarkRequest:
         case wire::Body::Throttle:
             Log("debug", "unhandled coordinator message");
             return;
@@ -311,6 +317,55 @@ void TaskLoop::HandleRevoke(const wire::Revoke& revoke) {
     std::erase_if(queue_, [&](const PendingTask& t) { return t.id == id; });
     std::erase(held_, id);
     Log("info", "task revoked");
+}
+
+void TaskLoop::HandleBenchmarkRequest(const wire::BenchmarkRequest& request) {
+    const std::string kernel_id =
+        request.kernel_id() != nullptr ? request.kernel_id()->str() : "";
+    const auto wgsl = kernels_(kernel_id);
+    if (!wgsl || !device_.healthy()) {
+        // Report NOTHING rather than a guess. The coordinator refuses work to a
+        // worker with no score, which is the correct outcome — a fabricated
+        // number would feed its correction factor and mis-size every future
+        // grant for this machine.
+        Log("warn", "cannot benchmark " + kernel_id + "; no work will be granted");
+        return;
+    }
+
+    // A short sweep, not a single size: one measurement at one problem size can
+    // land on a bad occupancy point and under-report a fast device by a lot.
+    const std::vector<std::uint32_t> sizes{1u << 16, 1u << 18, 1u << 20};
+    const auto samples = RunCalibration(device_.context(), *wgsl, sizes, 2048);
+
+    // BEST, not mean. The slower samples are dominated by launch overhead and
+    // by whatever else the machine was doing; the best is the closest estimate
+    // of what this device can sustain. The EWMA correction (2.13) is what pulls
+    // it back toward reality if it turns out optimistic — which is exactly the
+    // division of labour that lets this be a rough number.
+    double best_ops_per_sec = 0.0;
+    for (const auto& s : samples) {
+        if (s.wall_ms > 0.0) {
+            best_ops_per_sec =
+                std::max(best_ops_per_sec,
+                         static_cast<double>(s.flops) / (s.wall_ms / 1000.0));
+        }
+    }
+    if (!(best_ops_per_sec > 0.0)) {
+        Log("warn", "benchmark produced no usable sample");
+        return;
+    }
+
+    auto frame = protocol::EncodeMessage(
+        wire::Body::BenchmarkResult, [&](flatbuffers::FlatBufferBuilder& fbb) {
+            auto kid = fbb.CreateString(kernel_id);
+            wire::BenchmarkResultBuilder b(fbb);
+            b.add_kernel_id(kid);
+            b.add_score(best_ops_per_sec);
+            b.add_samples(static_cast<std::uint32_t>(samples.size()));
+            return b.Finish();
+        });
+    (void)transport_.Send(frame);
+    Log("info", "benchmark: " + std::to_string(best_ops_per_sec / 1e9) + " Gops/s");
 }
 
 void TaskLoop::HandleShutdown() {

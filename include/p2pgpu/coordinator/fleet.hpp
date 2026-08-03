@@ -35,11 +35,15 @@ struct WorkerRecord {
     std::uint32_t tasks_completed = 0;
 
     // ── Sizing state (2.11-2.14) ─────────────────────────────────────────
-    /// Normalized work-units/sec from the join-time benchmark. 0 until the
-    /// worker reports one — and until then it gets no work, because a
+    /// Device throughput in **arithmetic ops per second**, from the join-time
+    /// benchmark. NOT units/sec: a worker cannot know which kernel it will be
+    /// given, so it reports a device-level number and the sizer divides by the
+    /// target kernel's `flop_per_unit` from the manifest.
+    ///
+    /// 0 until the worker reports one, and until then it gets no work — a
     /// fabricated score would propagate into every future grant through the
     /// correction factor below.
-    double score = 0.0;
+    double score_ops_per_sec = 0.0;
 
     /// EWMA of actual/predicted duration. 1.0 = the benchmark has been
     /// accurate. >1 = tasks take longer than predicted, so grant less.

@@ -190,14 +190,23 @@ void VirtualWorker::OnFrame(std::span<const std::byte> bytes) {
         //
         // Derived from the same constant the task simulation uses, so "score"
         // and "how long tasks actually take" cannot drift apart.
-        const double units_per_sec = 1.0e6 / (kNominalMsPerMegaUnit * 0.001) /
-                                     1000.0 / behaviors_.slow_factor;
+        // ARITHMETIC OPS PER SECOND, matching what a real worker reports —
+        // the coordinator divides by the kernel's flop_per_unit. Reporting
+        // units/sec here would work by accident today and break the moment a
+        // second kernel exists.
+        //
+        // Derived from the same constant the task simulation uses, so "score"
+        // and "how long tasks actually take" cannot drift apart.
+        constexpr double kOpsPerUnit = 80.0;   // brute_search_v1, manifest
+        const double units_per_sec =
+            1.0e6 / kNominalMsPerMegaUnit * 1000.0 / behaviors_.slow_factor / 1000.0;
+        const double ops_per_sec = units_per_sec * kOpsPerUnit;
         auto frame = protocol::EncodeMessage(
             wire::Body::BenchmarkResult, [&](flatbuffers::FlatBufferBuilder& fbb) {
                 auto kid = fbb.CreateString("calibrate_v1");
                 wire::BenchmarkResultBuilder b(fbb);
                 b.add_kernel_id(kid);
-                b.add_score(units_per_sec);
+                b.add_score(ops_per_sec);
                 b.add_samples(4);
                 return b.Finish();
             });

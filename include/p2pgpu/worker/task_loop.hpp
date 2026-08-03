@@ -121,6 +121,14 @@ private:
     void HandleWelcome(const wire::Welcome& welcome);
     void HandleTaskGrant(const wire::TaskGrant& grant);
     void HandleRevoke(const wire::Revoke& revoke);
+    /// Step 2.11. Runs the calibration kernel and reports achieved throughput.
+    ///
+    /// The score is **arithmetic ops per second**, NOT tasks or candidates per
+    /// second. The worker cannot know which kernel it will be given, so it
+    /// reports a device-level number and the COORDINATOR divides by the target
+    /// kernel's `flop_per_unit` from the manifest. Reporting units/sec here
+    /// would silently mean "units of whatever I happened to benchmark".
+    void HandleBenchmarkRequest(const wire::BenchmarkRequest& request);
     void HandleShutdown();
     void HandleError(const wire::Error& error);
 

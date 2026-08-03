@@ -191,3 +191,16 @@ TEST_CASE("a lost worker leaves the fleet but its work does not", "[fleet]") {
     CHECK(jobs.ReleaseAllHeldBy(kAlice) == 1);
     CHECK(jobs.queued() == 1);   // only the carved task; fresh keyspace is not queued
 }
+
+TEST_CASE("a worker that just joined is not immediately lost", "[fleet]") {
+    Fleet fleet;
+    // Stamped with a REAL clock value. Joining with 0 makes
+    // `0 + timeout < now` true on the very first sweep, so every worker is
+    // declared lost within a second of connecting — and since it holds no
+    // leases yet, `released=0` makes the log look harmless while the worker is
+    // silently removed and can never be granted work.
+    fleet.Join(kAlice, 1, kNow);
+    CHECK(fleet.FindLost(kNow, /*timeout_ms=*/45'000).empty());
+    CHECK(fleet.FindLost(kNow + 1000, /*timeout_ms=*/45'000).empty());
+    CHECK(fleet.FindLost(kNow + 46'000, /*timeout_ms=*/45'000).size() == 1);
+}

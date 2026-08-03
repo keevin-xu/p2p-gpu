@@ -23,7 +23,12 @@ namespace p2pgpu::coordinator {
 /// Everything sizing depends on. Grouped so the calculation is a pure function
 /// of its inputs and can be tested without a fleet, a job, or a clock.
 struct SizingInputs {
-    /// Normalized work-units/sec from the join-time benchmark (2.11).
+    /// Work-units per second FOR THIS KERNEL.
+    ///
+    /// Derived, not reported: the worker sends device throughput in arithmetic
+    /// ops/sec (it cannot know which kernel it will run), and the caller divides
+    /// by the kernel's `flop_per_unit`. Conflating the two would make a score
+    /// mean "units of whatever I happened to benchmark".
     double score = 0.0;
 
     /// EWMA of (actual / predicted) duration for this worker (2.13). 1.0 means
