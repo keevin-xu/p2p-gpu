@@ -67,11 +67,30 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # A plain directory binary cache, restored by actions/cache below. vcpkg uses
-  # this by default when VCPKG_BINARY_SOURCES is unset, so there is nothing else
-  # to configure and nothing to silently misconfigure.
-  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+  # NO VCPKG_DEFAULT_BINARY_CACHE, deliberately. `lukka/run-vcpkg` OVERRIDES it
+  # with a per-run UUID directory and sets VCPKG_BINARY_SOURCES=clear;x-gha —
+  # measured on the runner:
+  #
+  #   VCPKG_DEFAULT_BINARY_CACHE=/home/runner/work/.../969f6665-.../vcpkg_cache
+  #   VCPKG_BINARY_SOURCES=clear;x-gha,readwrite
+  #
+  # So our directory was never written (4 KB, empty) and the path we cached was
+  # a fresh UUID every run. Two earlier theories about the small cache were
+  # wrong; this is what the diagnostic step actually showed.
+  #
+  # Rather than fight the action for control of the binary cache, skip the
+  # indirection: cache the FINISHED INSTALL TREE. On a hit vcpkg reads its
+  # status file and installs nothing, which is strictly better than restoring
+  # binary packages and re-resolving them.
   VCPKG_COMMIT: 827a2e1203bc19941126c657166da44f2623acc4  # matches vcpkg.json baseline
+  # Where BOTH jobs put their install tree. Set explicitly because every CMake
+  # preset otherwise gets its own vcpkg_installed/ under its own binaryDir, and
+  # the second configure then reinstalls everything — observed rebuilding
+  # libdatachannel on a runner that had just built it.
+  #
+  # The two jobs use DIFFERENT trees: fuzz installs no `native` feature
+  # (D-0015), so sharing one would make each run add and remove packages.
+  #
   # BUMP THIS whenever the cache's `path:` list changes.
   #
   # actions/cache does not save when it hits, and the key is derived from
@@ -80,7 +99,7 @@ env:
   # every run restores the old, incomplete entry and never stores the new one.
   # Caught exactly that way: a 35 MB cache, about right for the binary-cache
   # directory alone and far too small for a real install tree.
-  CACHE_VERSION: v2
+  CACHE_VERSION: v3
 
 jobs:
   # ── The regression net R11 asks for, and the cheapest thing here ────────
@@ -107,22 +126,19 @@ jobs:
       - name: Restore vcpkg binary cache
         uses: actions/cache@v4
         with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          path: ${{ github.workspace }}/vcpkg_installed_fuzz
           # Keyed on the manifest AND the baseline: either one changing means
           # different package versions, so a stale hit would be wrong rather
           # than merely slow.
           key: ${{ env.CACHE_VERSION }}-vcpkg-fuzz-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: ${{ env.CACHE_VERSION }}-vcpkg-fuzz-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
 
-      - name: Create binary cache dir
-        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
-
       - uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: 827a2e1203bc19941126c657166da44f2623acc4
 
       - name: Configure
-        run: cmake --preset linux-fuzz
+        run: cmake --preset linux-fuzz -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/vcpkg_installed_fuzz"
         env:
           CC: clang
           CXX: clang++
@@ -136,10 +152,7 @@ jobs:
       - name: What is actually being cached
         if: always()
         run: |
-          echo "== VCPKG_DEFAULT_BINARY_CACHE = $VCPKG_DEFAULT_BINARY_CACHE"
-          du -sh "$VCPKG_DEFAULT_BINARY_CACHE" 2>/dev/null || echo "   MISSING"
-          ls "$VCPKG_DEFAULT_BINARY_CACHE" 2>/dev/null | head -5
-          echo "== $GITHUB_WORKSPACE/vcpkg_installed"
+          echo "== install trees"
           du -sh "$GITHUB_WORKSPACE/vcpkg_installed" 2>/dev/null || echo "   MISSING"
           ls "$GITHUB_WORKSPACE/vcpkg_installed" 2>/dev/null | head -5
           echo "== any other vcpkg_installed trees the build made"
@@ -196,17 +209,11 @@ jobs:
       - name: Restore vcpkg binary cache
         uses: actions/cache@v4
         with:
-          # BOTH the finished install tree and the binary cache. The tree is the
-          # fast path — on a hit, vcpkg checks its status file and installs
-          # nothing. The binary cache is the fallback for a partial miss.
-          path: |
-            ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-            ${{ github.workspace }}/vcpkg_installed
+          # The finished install tree — 175 MB on the runner, and on a hit vcpkg
+          # reads its status file and installs nothing at all.
+          path: ${{ github.workspace }}/vcpkg_installed
           key: ${{ env.CACHE_VERSION }}-vcpkg-native-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: ${{ env.CACHE_VERSION }}-vcpkg-native-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
-
-      - name: Create binary cache dir
-        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
 
       - uses: lukka/run-vcpkg@v11
         with:
@@ -265,10 +272,7 @@ jobs:
       - name: What is actually being cached
         if: always()
         run: |
-          echo "== VCPKG_DEFAULT_BINARY_CACHE = $VCPKG_DEFAULT_BINARY_CACHE"
-          du -sh "$VCPKG_DEFAULT_BINARY_CACHE" 2>/dev/null || echo "   MISSING"
-          ls "$VCPKG_DEFAULT_BINARY_CACHE" 2>/dev/null | head -5
-          echo "== $GITHUB_WORKSPACE/vcpkg_installed"
+          echo "== install trees"
           du -sh "$GITHUB_WORKSPACE/vcpkg_installed" 2>/dev/null || echo "   MISSING"
           ls "$GITHUB_WORKSPACE/vcpkg_installed" 2>/dev/null | head -5
           echo "== any other vcpkg_installed trees the build made"
