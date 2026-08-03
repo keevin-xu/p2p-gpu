@@ -47,6 +47,10 @@ std::uint64_t Blake3_64(std::span<const std::byte> bytes) noexcept {
 /// take hours without measuring anything the harness is for.
 constexpr double kNominalMsPerMegaUnit = 4.0;
 
+/// How often a working worker renews. Deliberately well under any sane lease:
+/// the point of renewal is to prove liveness *before* expiry, not to race it.
+constexpr auto kRenewInterval = std::chrono::milliseconds(2000);
+
 }  // namespace
 
 VirtualWorker::VirtualWorker(std::uint32_t index, std::string url, Behaviors behaviors,
@@ -116,6 +120,19 @@ void VirtualWorker::Poll() {
     // Finish any task whose simulated duration has elapsed. The ANSWER was
     // computed at grant time; this is only the clock catching up, which is what
     // decouples "slow worker" from "busy CPU" (D-0042).
+    // Keep the lease alive while working (2.6). `never_renews_lease` is what
+    // makes this a real behaviour rather than a declared one: a flagged worker
+    // stalls with the task held and the sweep takes it back, which is exactly
+    // the case expiry exists for and could not otherwise be tested.
+    if (!behaviors_.never_renews_lease) {
+        for (auto& task : in_flight_) {
+            if (task.renew_at <= now) {
+                SendRenew(task);
+                task.renew_at = now + kRenewInterval;
+            }
+        }
+    }
+
     while (!in_flight_.empty() && in_flight_.front().finish_at <= now) {
         const Pending task = std::move(in_flight_.front());
         in_flight_.pop_front();
@@ -228,6 +245,7 @@ void VirtualWorker::BeginTask(Pending task) {
                                         behaviors_.slow_factor) +
                       behaviors_.high_latency_ms;
     task.finish_at = Clock::now() + std::chrono::milliseconds(static_cast<long long>(ms));
+    task.renew_at = Clock::now() + kRenewInterval;
     in_flight_.push_back(std::move(task));
 }
 
@@ -302,6 +320,22 @@ void VirtualWorker::RequestLease() {
     // Jittered, so a fleet of 200 does not synchronise into a thundering herd
     // against an empty queue (RISKS.md §2, step 2.15).
     next_action_ = Clock::now() + std::chrono::milliseconds(5 + (dice_.next() % 45));
+}
+
+void VirtualWorker::SendRenew(const Pending& task) {
+    auto frame = protocol::EncodeMessage(
+        wire::Body::Progress, [&](flatbuffers::FlatBufferBuilder& fbb) {
+            const wire::Uuid tid = task.id.to_wire();
+            wire::ProgressBuilder b(fbb);
+            b.add_task_id(&tid);
+            // fraction_done is TELEMETRY the coordinator must not act on
+            // (invariant 8). Reported honestly anyway — a harness that lied
+            // here by default would make the dishonest profiles less distinct.
+            b.add_fraction_done(0.5F);
+            b.add_request_renew(true);
+            return b.Finish();
+        });
+    (void)transport_.Send(frame);
 }
 
 void VirtualWorker::SendMalformed() {

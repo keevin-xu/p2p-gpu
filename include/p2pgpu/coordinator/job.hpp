@@ -87,6 +87,39 @@ public:
     /// price for this never being bypassable.
     [[nodiscard]] protocol::Status Submit(WorkerId worker, TaskId task);
 
+    /// Extend a lease — step 2.6, driven by `Progress{request_renew}`.
+    ///
+    /// The DEADLINE moves; the state does not (D-0011). Modelling renewal as a
+    /// state change would make it indistinguishable from a fresh grant, and the
+    /// two mean opposite things to the sweep below.
+    ///
+    /// Enforces invariant 5: only the holder may renew. Without that check any
+    /// connected peer could keep another worker's lease alive indefinitely,
+    /// which is a denial-of-service on the queue rather than a protocol nicety.
+    [[nodiscard]] protocol::Status RenewLease(WorkerId worker, TaskId task,
+                                              std::uint64_t now_ms,
+                                              std::uint32_t lease_ms);
+
+    /// Return every task whose lease has expired to the queue — step 2.7.
+    ///
+    /// ONE sweep over all tasks, called from ONE timer on the event loop, never
+    /// a timer per task (CONVENTIONS.md §4). At 10k tasks the difference is a
+    /// linear scan every few seconds versus 10k live timers.
+    ///
+    /// **NO REPUTATION PENALTY** (R8). A worker whose lease expired is absent,
+    /// and absence is not malice — the machines we most want to reach are the
+    /// ones most likely to sleep, close a tab, or lose wifi mid-task.
+    ///
+    /// Returns the expired ids so the caller can log and count them; 2.9's
+    /// metrics need expiry and voluntary release to be tellable apart.
+    [[nodiscard]] std::vector<TaskId> SweepExpiredLeases(std::uint64_t now_ms);
+
+    /// Release every lease held by `worker` — step 2.8/2.9. Disconnect, missed
+    /// heartbeat, `Goodbye`, and user-stop all route here.
+    ///
+    /// Returns how many were released. Also no penalty, for the same reason.
+    std::size_t ReleaseAllHeldBy(WorkerId worker);
+
     /// Terminal outcome after validation.
     [[nodiscard]] protocol::Status Finish(TaskId task, bool accepted);
 

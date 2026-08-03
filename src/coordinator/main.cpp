@@ -55,6 +55,12 @@ int main(int argc, char** argv) {
                  "(a test harness, never a validation strategy)");
     app.add_flag("--exit-when-complete", cfg.exit_when_complete,
                  "DEV ONLY: stop once every seeded task is terminal");
+    app.add_option("--lease-ms", cfg.lease_ms,
+                   "lease duration on the coordinator clock")->capture_default_str();
+    app.add_option("--worker-timeout-ms", cfg.worker_timeout_ms,
+                   "silence after which a worker is declared lost")->capture_default_str();
+    app.add_option("--sweep-ms", cfg.sweep_interval_ms,
+                   "how often the expiry/loss sweep runs")->capture_default_str();
     // Exceptions are permitted in startup/config code, before serving begins
     // (CONVENTIONS.md §1). CLI11 throws for --help and parse errors.
     CLI11_PARSE(app, argc, argv);
@@ -87,6 +93,9 @@ int main(int argc, char** argv) {
     // Empty at startup unless --seed-job is given; the real submission API is
     // step 2.16.
     p2pgpu::coordinator::JobManager jobs;
+    // Owns who is connected, separately from who owns work — the two have
+    // genuinely different lifetimes (fleet.hpp).
+    p2pgpu::coordinator::Fleet fleet;
 
     if (!seed_kernel.empty()) {
         if (registry->Find(seed_kernel) == nullptr) {
@@ -108,7 +117,7 @@ int main(int argc, char** argv) {
                      "as evidence that results are validated (Phase 3 does that).");
     }
 
-    p2pgpu::coordinator::Server server(cfg, *registry, jobs,
+    p2pgpu::coordinator::Server server(cfg, *registry, jobs, fleet,
                                        verify_reference ? &ref_stats : nullptr);
 
     // Runs from inside the event loop when every task is terminal, under

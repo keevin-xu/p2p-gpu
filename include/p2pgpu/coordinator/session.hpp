@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "p2pgpu/coordinator/job.hpp"
+#include "p2pgpu/coordinator/fleet.hpp"
 #include "p2pgpu/coordinator/kernel_registry.hpp"
 #include "p2pgpu/coordinator/reference_check.hpp"
 #include "p2pgpu/protocol/verify.hpp"
@@ -35,7 +36,8 @@ public:
     /// `reference_stats` is non-null only under the coordinator's dev-only
     /// --verify-reference flag (step 1.26). It is a TEST HARNESS, not
     /// validation — see reference_check.hpp for why the distinction matters.
-    Session(JobManager& jobs, const KernelRegistry& kernels, std::uint64_t conn_id,
+    Session(JobManager& jobs, const KernelRegistry& kernels, Fleet& fleet,
+            std::uint64_t conn_id, std::uint32_t lease_ms,
             ReferenceStats* reference_stats = nullptr);
 
     /// Handle one already-VERIFIED frame.
@@ -57,7 +59,9 @@ public:
 private:
     [[nodiscard]] Reaction OnHello(const wire::Hello& hello);
     [[nodiscard]] Reaction OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t now_ms);
+    [[nodiscard]] Reaction OnProgress(const wire::Progress& progress, std::uint64_t now_ms);
     [[nodiscard]] Reaction OnRelease(const wire::Release& release);
+    [[nodiscard]] Reaction OnGoodbye();
     [[nodiscard]] Reaction OnResultHeader(const wire::ResultHeader& header,
                                           std::span<const std::byte> payload);
 
@@ -66,11 +70,19 @@ private:
 
     JobManager& jobs_;
     const KernelRegistry& kernels_;
+    Fleet& fleet_;
     std::uint64_t conn_id_ = 0;
+    std::uint32_t lease_ms_ = 30000;
     ReferenceStats* reference_stats_ = nullptr;
 
     bool handshaked_ = false;
     WorkerId worker_id_;
+
+    /// Tasks whose result has already been ACCEPTED — step 2.10. A duplicate
+    /// `ResultHeader` for one of these is discarded SILENTLY, not errored:
+    /// speculation (2.17) makes duplicates routine rather than pathological, and
+    /// a worker that raced and lost has done nothing wrong.
+    std::vector<TaskId> completed_;
 
     /// Invariant 4: at most one in-flight ResultHeader per task per worker.
     /// Without it a worker can announce an 8 MiB payload repeatedly and pin

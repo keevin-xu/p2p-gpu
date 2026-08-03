@@ -317,6 +317,7 @@ if(NOT P2PGPU_WASM)
         src/coordinator/job.cpp
         src/coordinator/session.cpp
         src/coordinator/kernels.cpp
+        src/coordinator/fleet.cpp
         src/coordinator/params.cpp
         src/coordinator/reference_check.cpp
         src/coordinator/queue.cpp

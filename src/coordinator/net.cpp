@@ -36,9 +36,37 @@ struct SocketData {
 }  // namespace
 
 Server::Server(Config config, const KernelRegistry& kernels, JobManager& jobs,
-               ReferenceStats* reference_stats)
-    : config_(std::move(config)), kernels_(kernels), jobs_(jobs),
+               Fleet& fleet, ReferenceStats* reference_stats)
+    : config_(std::move(config)), kernels_(kernels), jobs_(jobs), fleet_(fleet),
       reference_stats_(reference_stats) {}
+
+void Server::Sweep() {
+    const auto now_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+
+    // 2.7 — expiry. ONE linear pass over the tasks, from ONE timer. At 10k
+    // tasks that is a scan every second versus 10k live timers
+    // (CONVENTIONS.md §4).
+    const auto expired = jobs_.SweepExpiredLeases(now_ms);
+    if (!expired.empty()) {
+        // info, not warn. An expired lease is the NORMAL case for a volunteer
+        // grid (R8) — logging it as a warning would train everyone to ignore
+        // warnings.
+        spdlog::info("lease_expiry count={} requeued penalty=none", expired.size());
+    }
+
+    // 2.8 — worker loss. Detected on OUR clock from when we last received a
+    // frame, never from a worker's self-report: a worker that claims to be
+    // alive is exactly what a hung worker also does (PROTOCOL.md §5).
+    for (const WorkerId lost : fleet_.FindLost(now_ms, config_.worker_timeout_ms)) {
+        const std::size_t released = jobs_.ReleaseAllHeldBy(lost);
+        fleet_.Leave(lost);
+        spdlog::info("worker_lost worker={} released={} penalty=none", lost.hi(),
+                     released);
+    }
+}
 
 void Server::Run() {
     std::uint64_t next_conn_id = 1;
@@ -51,6 +79,18 @@ void Server::Run() {
     //
     // Guarded on having had at least one task, so an empty queue at startup is
     // not mistaken for "finished".
+    // THE ONE TIMER (2.7/2.8). A post-handler was considered and rejected: it
+    // runs only when the loop wakes, so a fleet that has gone completely silent
+    // — precisely the case expiry exists for — would never be swept.
+    us_timer_t* sweep_timer = us_create_timer(
+        reinterpret_cast<us_loop_t*>(uWS::Loop::get()), 0, sizeof(Server*));
+    *reinterpret_cast<Server**>(us_timer_ext(sweep_timer)) = this;
+    us_timer_set(
+        sweep_timer,
+        [](us_timer_t* t) { (*reinterpret_cast<Server**>(us_timer_ext(t)))->Sweep(); },
+        static_cast<int>(config_.sweep_interval_ms),
+        static_cast<int>(config_.sweep_interval_ms));
+
     if (config_.exit_when_complete) {
         bool fired = false;
         uWS::Loop::get()->addPostHandler(this, [this, &listen_socket, &fired](uWS::Loop*) {
@@ -142,9 +182,9 @@ void Server::Run() {
                 .open = [this, &next_conn_id](auto* ws) {
                     auto* data = ws->getUserData();
                     data->conn_id = next_conn_id++;
-                    data->session = std::make_unique<Session>(this->jobs_, this->kernels_,
-                                                              data->conn_id,
-                                                              this->reference_stats_);
+                    data->session = std::make_unique<Session>(
+                        this->jobs_, this->kernels_, this->fleet_, data->conn_id,
+                        this->config_.lease_ms, this->reference_stats_);
                     // Correlation fields from CONVENTIONS.md §6. worker_id is
                     // unknown until Hello arrives, so conn_id carries the trace
                     // until then — without it, a frame rejected during the

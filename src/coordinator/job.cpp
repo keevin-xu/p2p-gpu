@@ -117,6 +117,61 @@ protocol::Status JobManager::Submit(WorkerId worker, TaskId task_id) {
     return {};
 }
 
+protocol::Status JobManager::RenewLease(WorkerId worker, TaskId task_id,
+                                        std::uint64_t now_ms, std::uint32_t lease_ms) {
+    // Invariant 5 first. A peer that does not hold the lease must not be able
+    // to extend it — otherwise anyone can pin a task out of the queue forever.
+    if (const auto s = CheckLease(worker, task_id); !s) {
+        return s;
+    }
+    Task& task = tasks_.find(task_id)->second;
+
+    // Only the DEADLINE moves. Apply(Renew) is still called so the state
+    // machine gets to reject a renewal from a state that should not see one —
+    // it maps Leased->Leased and everything else to an error (D-0011).
+    if (const auto s = Apply(task, TaskEvent::Renew); !s) {
+        return s;
+    }
+    task.lease_expires_at_ms = now_ms + lease_ms;
+    return {};
+}
+
+std::vector<TaskId> JobManager::SweepExpiredLeases(std::uint64_t now_ms) {
+    std::vector<TaskId> expired;
+    for (auto& [id, task] : tasks_) {
+        // Validity is the HALF-OPEN interval [grant, expires): valid strictly
+        // before the deadline, expired at it. That makes a 1000 ms lease last
+        // exactly 1000 ms — and the sizer's "never exceed lease duration" clamp
+        // (2.12) has to read it the same way, or a task can be sized to outlive
+        // the lease it was granted under.
+        if (task.state != TaskState::Leased || now_ms < task.lease_expires_at_ms) {
+            continue;
+        }
+        // LeaseExpired, not Release. Same target state, deliberately distinct
+        // events: neither penalises reputation (R8), but 2.7 and 2.9 must tell
+        // them apart in metrics — "the worker gave it back" and "the worker
+        // vanished" are different facts about the fleet.
+        if (const auto s = Apply(task, TaskEvent::LeaseExpired); !s) {
+            continue;   // not expirable from this state; leave it alone
+        }
+        task.holder = WorkerId{};
+        task.lease_expires_at_ms = 0;
+        queue_.push_back(id);
+        expired.push_back(id);
+    }
+    return expired;
+}
+
+std::size_t JobManager::ReleaseAllHeldBy(WorkerId worker) {
+    std::size_t released = 0;
+    for (const TaskId id : HeldBy(worker)) {
+        if (Requeue(id, TaskEvent::Release)) {
+            ++released;
+        }
+    }
+    return released;
+}
+
 protocol::Status JobManager::Finish(TaskId task_id, bool accepted) {
     auto it = tasks_.find(task_id);
     if (it == tasks_.end()) {

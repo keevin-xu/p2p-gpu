@@ -95,8 +95,9 @@ const KernelRegistry& Registry() {
 /// One coordinator plus a handshaked session, which most cases need.
 struct Fixture {
     JobManager jobs;
+    Fleet fleet;
     const KernelRegistry& kernels = Registry();
-    Session session{jobs, kernels, /*conn_id=*/7};
+    Session session{jobs, kernels, fleet, /*conn_id=*/7, /*lease_ms=*/30000};
 
     void Handshake() {
         const auto hello = HelloFrame(protocol::kProtocolVersion);
@@ -319,4 +320,112 @@ TEST_CASE("Disconnect before the handshake is harmless", "[session]") {
     (void)f.jobs.CreateJob(kKernel, 1000, 1, 7);
     f.session.OnDisconnect();
     CHECK(f.jobs.queued() == 1);
+}
+
+// ── Step 2.10 — idempotent submission ────────────────────────────────────
+
+TEST_CASE("a duplicate result is discarded SILENTLY", "[session]") {
+    Fixture f;
+    (void)f.jobs.CreateJob(kKernel, 1000, 1, 7);
+    f.Handshake();
+    {
+        const auto req = LeaseRequestFrame(1);
+        (void)Feed(f.session, req);
+    }
+    const TaskId task = f.jobs.HeldBy(f.session.worker_id()).front();
+
+    const std::vector<std::byte> payload(32, std::byte{0xAB});
+    const auto frame = ResultFrame(task, payload, 32, Blake3_64(payload));
+
+    const Reaction first = Feed(f.session, frame);
+    CHECK(first.reply.empty());
+    CHECK(f.jobs.Find(task)->state == TaskState::Accepted);
+
+    // SILENT. Not an error, not a reply, not a state change. Once speculation
+    // exists (2.17) a duplicate is the normal outcome of a race, and the worker
+    // that lost has done nothing wrong — returning an error would teach it to
+    // retry, or show up in whatever counts protocol errors.
+    const Reaction second = Feed(f.session, frame);
+    CHECK(second.reply.empty());
+    CHECK_FALSE(second.close);
+    CHECK(f.jobs.Find(task)->state == TaskState::Accepted);
+}
+
+TEST_CASE("Goodbye releases every held lease immediately", "[session]") {
+    Fixture f;
+    (void)f.jobs.CreateJob(kKernel, 1000, 3, 7);
+    f.Handshake();
+    {
+        const auto req = LeaseRequestFrame(3);
+        (void)Feed(f.session, req);
+    }
+    REQUIRE(f.jobs.queued() == 0);
+
+    const auto bye = protocol::EncodeMessage(
+        wire::Body::Goodbye, [](flatbuffers::FlatBufferBuilder& fbb) {
+            wire::GoodbyeBuilder b(fbb);
+            b.add_reason(wire::ReleaseReason::UserStopped);
+            return b.Finish();
+        });
+    const Reaction r = Feed(f.session, bye);
+
+    // Identical handling to a disconnect, deliberately — the only difference is
+    // that we were told. Releasing now is what stops a polite worker's tasks
+    // waiting out a full lease.
+    CHECK(r.reply.empty());
+    CHECK(f.jobs.queued() == 3);
+    CHECK(f.jobs.HeldBy(f.session.worker_id()).empty());
+}
+
+TEST_CASE("Progress renews the lease it names", "[session]") {
+    Fixture f;
+    (void)f.jobs.CreateJob(kKernel, 1000, 1, 7);
+    f.Handshake();
+    {
+        const auto req = LeaseRequestFrame(1);
+        (void)Feed(f.session, req, /*now_ms=*/1000);
+    }
+    const TaskId task = f.jobs.HeldBy(f.session.worker_id()).front();
+    const std::uint64_t first_deadline = f.jobs.Find(task)->lease_expires_at_ms;
+
+    const auto prog = protocol::EncodeMessage(
+        wire::Body::Progress, [&](flatbuffers::FlatBufferBuilder& fbb) {
+            const wire::Uuid tid = task.to_wire();
+            wire::ProgressBuilder b(fbb);
+            b.add_task_id(&tid);
+            b.add_fraction_done(0.5F);
+            b.add_request_renew(true);
+            return b.Finish();
+        });
+    const Reaction r = Feed(f.session, prog, /*now_ms=*/9000);
+
+    CHECK(r.reply.empty());
+    CHECK(f.jobs.Find(task)->lease_expires_at_ms > first_deadline);
+    CHECK(f.jobs.Find(task)->state == TaskState::Leased);
+}
+
+TEST_CASE("a heartbeat without request_renew does not extend anything", "[session]") {
+    Fixture f;
+    (void)f.jobs.CreateJob(kKernel, 1000, 1, 7);
+    f.Handshake();
+    {
+        const auto req = LeaseRequestFrame(1);
+        (void)Feed(f.session, req, /*now_ms=*/1000);
+    }
+    const TaskId task = f.jobs.HeldBy(f.session.worker_id()).front();
+    const std::uint64_t deadline = f.jobs.Find(task)->lease_expires_at_ms;
+
+    const auto beat = protocol::EncodeMessage(
+        wire::Body::Progress, [&](flatbuffers::FlatBufferBuilder& fbb) {
+            const wire::Uuid tid = task.to_wire();
+            wire::ProgressBuilder b(fbb);
+            b.add_task_id(&tid);
+            b.add_request_renew(false);
+            return b.Finish();
+        });
+    (void)Feed(f.session, beat, /*now_ms=*/9000);
+
+    // Liveness and lease extension are separate facts. A worker saying "still
+    // here" must not silently keep a task it has stopped working on.
+    CHECK(f.jobs.Find(task)->lease_expires_at_ms == deadline);
 }

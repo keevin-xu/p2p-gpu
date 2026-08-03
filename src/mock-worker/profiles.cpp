@@ -62,7 +62,16 @@ Behaviors FlakyNetwork(std::uint32_t index, std::uint32_t, Dice& dice) {
     b.high_latency_ms = static_cast<std::uint32_t>(50 + (dice.next() % 450));
     b.flaps = 0.15;
     if (index % 7 == 0) {
-        b.never_renews_lease = true;   // stalls without renewing: lease expires
+        // STALLED, not merely slow. `never_renews_lease` on its own cannot have
+        // an effect: a worker that finishes in 16 ms renews nothing because it
+        // never needs to, and no sane lease expires in that window. The flag
+        // was set and inert until this was noticed.
+        //
+        // Composing two orthogonal behaviours is exactly how this is meant to
+        // work — "hung worker" is `slow` plus `never_renews_lease`, not a third
+        // behaviour that secretly means both.
+        b.never_renews_lease = true;
+        b.slow_factor = 60.0;
     }
     return b;
 }

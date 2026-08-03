@@ -16,7 +16,6 @@ namespace p2pgpu::coordinator {
 namespace {
 
 constexpr std::uint32_t kHeartbeatMs = 15000;
-constexpr std::uint32_t kLeaseMs = 30000;
 
 /// Map the manifest's determinism to the wire union. No `default:` arm — adding
 /// a class must break this build (ARCHITECTURE.md §5).
@@ -64,10 +63,11 @@ std::uint64_t Blake3_64(std::span<const std::byte> bytes) noexcept {
     return out;
 }
 
-Session::Session(JobManager& jobs, const KernelRegistry& kernels, std::uint64_t conn_id,
+Session::Session(JobManager& jobs, const KernelRegistry& kernels, Fleet& fleet,
+                 std::uint64_t conn_id, std::uint32_t lease_ms,
                  ReferenceStats* reference_stats)
-    : jobs_(jobs), kernels_(kernels), conn_id_(conn_id),
-      reference_stats_(reference_stats) {}
+    : jobs_(jobs), kernels_(kernels), fleet_(fleet), conn_id_(conn_id),
+      lease_ms_(lease_ms), reference_stats_(reference_stats) {}
 
 Reaction Session::Fatal(wire::ErrorCode code, const char* message) {
     return Reaction{
@@ -108,6 +108,14 @@ Reaction Session::OnMessage(const protocol::VerifiedFrame& frame, std::uint64_t 
         return Fatal(wire::ErrorCode::Internal, "first message must be Hello");
     }
 
+    // EVERY inbound frame is proof of life (2.8), not just an explicit
+    // heartbeat. A worker returning results is self-evidently alive, and
+    // requiring a separate keepalive from a busy one would be a way to declare
+    // our fastest contributors dead.
+    if (handshaked_) {
+        fleet_.Touch(worker_id_, now_ms);
+    }
+
     switch (env.body_type()) {
         case wire::Body::Hello:
             if (const auto* m = env.body_as_Hello()) {
@@ -130,13 +138,18 @@ Reaction Session::OnMessage(const protocol::VerifiedFrame& frame, std::uint64_t 
                 return OnRelease(*m);
             }
             break;
+        case wire::Body::Progress:
+            if (const auto* m = env.body_as_Progress()) {
+                return OnProgress(*m, now_ms);
+            }
+            break;
+        case wire::Body::Goodbye:
+            return OnGoodbye();
 
         // Not yet implemented, but explicitly listed so that adding a Body
         // variant breaks THIS switch too (-Werror=switch). A silent default
         // would let a new message type be ignored without anyone noticing.
-        case wire::Body::Progress:
         case wire::Body::Throttle:
-        case wire::Body::Goodbye:
         case wire::Body::BenchmarkResult:
         case wire::Body::Signal:
             spdlog::debug("unhandled conn_id={} body_type={}", conn_id_,
@@ -180,6 +193,7 @@ Reaction Session::OnHello(const wire::Hello& hello) {
 
     handshaked_ = true;
     worker_id_ = WorkerId{conn_id_, 0};
+    fleet_.Join(worker_id_, conn_id_, /*now_ms=*/0);   // stamped on the next frame
 
     spdlog::info("handshake conn_id={} worker_id={} kernels={}", conn_id_,
                  worker_id_.hi(), kernels_.size());
@@ -250,7 +264,7 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
     std::vector<std::byte> out;
     std::uint32_t granted = 0;
     for (std::uint32_t i = 0; i < want; ++i) {
-        const auto task = jobs_.Grant(worker_id_, now_ms, kLeaseMs);
+        const auto task = jobs_.Grant(worker_id_, now_ms, lease_ms_);
         if (!task) {
             break;
         }
@@ -313,7 +327,7 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
                 tb.add_start_unit(task->start_unit);
                 tb.add_work_units(task->unit_count);
                 tb.add_output_spec(os);
-                tb.add_lease_ms(kLeaseMs);
+                tb.add_lease_ms(lease_ms_);
                 auto env = tb.Finish();
 
                 wire::TaskGrantBuilder gb(fbb);
@@ -327,6 +341,42 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
     spdlog::debug("lease conn_id={} asked={} granted={} queued={}", conn_id_,
                   req.max_tasks(), granted, jobs_.queued());
     return Reaction{std::move(out)};
+}
+
+Reaction Session::OnProgress(const wire::Progress& progress, std::uint64_t now_ms) {
+    if (progress.task_id() == nullptr) {
+        return NonFatal(wire::ErrorCode::MalformedMessage, "Progress has no task_id");
+    }
+    // `fraction_done` is TELEMETRY and is deliberately not read here. It is a
+    // number the worker chooses, so nothing may depend on it (invariant 8).
+    if (!progress.request_renew()) {
+        return {};   // pure heartbeat; the Touch above already did the work
+    }
+
+    const TaskId task_id{*progress.task_id()};
+    if (const auto s = jobs_.RenewLease(worker_id_, task_id, now_ms, lease_ms_); !s) {
+        // A renewal for a task this worker does not hold. Common and benign
+        // once expiry is real: the sweep took it back while the renewal was in
+        // flight. NonFatal so the worker learns and moves on; it must not be
+        // able to reclaim a task already granted to somebody else.
+        spdlog::debug("renew_rejected conn_id={} task={} reason=lease_not_held",
+                      conn_id_, task_id.lo());
+        return NonFatal(wire::ErrorCode::LeaseNotHeld, "no lease on that task");
+    }
+
+    spdlog::debug("renew conn_id={} task={} until={}", conn_id_, task_id.lo(),
+                  now_ms + lease_ms_);
+    return {};
+}
+
+Reaction Session::OnGoodbye() {
+    // Clean drain (2.9). Identical handling to a disconnect, and deliberately
+    // so — the difference is only that we were told. Releasing immediately is
+    // what stops a polite worker's tasks waiting out a full lease.
+    const std::size_t released = jobs_.ReleaseAllHeldBy(worker_id_);
+    fleet_.Leave(worker_id_);
+    spdlog::info("goodbye conn_id={} released={} penalty=none", conn_id_, released);
+    return {};
 }
 
 Reaction Session::OnRelease(const wire::Release& release) {
@@ -364,6 +414,17 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
         return NonFatal(wire::ErrorCode::MalformedMessage, "ResultHeader has no task_id");
     }
     const TaskId task_id{*header.task_id()};
+
+    // STEP 2.10 — idempotent submission. A result for a task already accepted
+    // is discarded SILENTLY, not errored. Once speculation exists (2.17) a
+    // duplicate is the normal outcome of a race, and the worker that lost has
+    // done nothing wrong; returning an error would teach it to retry, or worse,
+    // look like a fault in whatever counts errors.
+    if (std::ranges::find(completed_, task_id) != completed_.end()) {
+        spdlog::debug("duplicate_result conn_id={} task={} action=discard",
+                      conn_id_, task_id.lo());
+        return {};
+    }
 
     // INVARIANT 4 — one in-flight ResultHeader per task per worker.
     const bool already =
@@ -460,6 +521,8 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
         return NonFatal(wire::ErrorCode::Internal, "task could not be finalised");
     }
 
+    completed_.push_back(task_id);
+    fleet_.RecordCompletion(worker_id_);
     spdlog::info("result conn_id={} task={} bytes={} accepted", conn_id_,
                  task_id.lo(), payload.size());
     return {};
@@ -469,6 +532,7 @@ void Session::OnDisconnect() {
     if (!handshaked_) {
         return;
     }
+    fleet_.Leave(worker_id_);
     // Release every held lease IMMEDIATELY rather than waiting for expiry. A
     // worker vanishing is the normal case (R8); making the queue wait out a
     // 30-second lease for a socket we already know is gone would stall the job

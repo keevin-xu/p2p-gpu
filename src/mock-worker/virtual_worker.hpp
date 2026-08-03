@@ -82,11 +82,15 @@ private:
         std::uint64_t work_units = 0;
         std::uint32_t output_bytes = 0;
         std::chrono::steady_clock::time_point finish_at;
+        /// When to send the next Progress{request_renew}. A long task must keep
+        /// its lease alive or the sweep takes the work back mid-flight (2.6).
+        std::chrono::steady_clock::time_point renew_at;
         std::vector<std::byte> result;   // computed at grant, sent at finish_at
     };
 
     void BeginTask(Pending task);
     void FinishTask(const Pending& task);
+    void SendRenew(const Pending& task);
 
     std::uint32_t index_;
     std::string url_;
