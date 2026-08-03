@@ -16,6 +16,7 @@ add_executable(tests
     unit/test_job.cpp              # 1.14 — job/task queue + lease bookkeeping
     unit/test_session.cpp          # 1.15-1.16 — handshake + result ingestion
     unit/test_checksum.cpp         # 1.20 — invariant 9, pinned to BLAKE3's vectors
+    unit/test_reference.cpp        # 1.25 — the CPU ground truth, no GPU needed
 
     # Still to come:
     # unit/test_sizer.cpp          # 2.12
