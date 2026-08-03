@@ -22,6 +22,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <chrono>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -141,6 +142,7 @@ private:
     // Outbound
     void SendHello();
     void RequestLease();
+    void SendProgress(protocol::TaskId task, float fraction);
     void SendResult(protocol::TaskId task, const TaskOutcome& outcome);
     void SendRelease(protocol::TaskId task, wire::ReleaseReason reason);
 
@@ -185,7 +187,21 @@ private:
     protocol::WorkerId worker_id_;
     bool running_ = false;
     bool handshaked_ = false;
+    /// A lease request is in flight. Cleared by a grant — OR by the timeout
+    /// below, because the coordinator answers "no work" with SILENCE.
+    ///
+    /// Without the timeout a worker that asks while the queue is momentarily
+    /// empty never asks again: it stays quiet, is declared lost after the
+    /// heartbeat window, and its capacity is gone for the rest of the run.
     bool lease_outstanding_ = false;
+    std::chrono::steady_clock::time_point lease_requested_at_{};
+
+    /// Consecutive empty replies. Drives jittered exponential backoff (2.15) so
+    /// a 200-worker fleet does not synchronise into a thundering herd against
+    /// an empty queue (RISKS.md §2).
+    std::uint32_t empty_replies_ = 0;
+    /// Earliest time the next lease request may go out, under backoff.
+    std::chrono::steady_clock::time_point next_action_{};
     std::atomic<float> throttle_{1.0F};
     WorkerStatus status_;
 

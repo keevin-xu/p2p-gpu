@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -112,8 +113,18 @@ struct TaskOutcome {
 ///
 /// Returns nullopt on any failure, including device loss mid-task. Failures are
 /// logged through the seam; the caller reports them and moves on (R8).
+/// Called after each chunk, with (units_done, units_total).
+///
+/// Exists so a long task can prove it is alive. `Execute` runs a whole task
+/// inside one `Poll()`, so without this the worker sends nothing for the task's
+/// entire duration and the coordinator declares it lost — chunking already
+/// exists to yield between dispatches (R4), and this is the natural place to
+/// say so out loud.
+using ChunkCallback = std::function<void(std::uint64_t, std::uint64_t)>;
+
 [[nodiscard]] std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
                                                  const TaskRequest& req,
-                                                 std::uint64_t units_per_chunk = 0);
+                                                 std::uint64_t units_per_chunk = 0,
+                                                 const ChunkCallback& on_chunk = {});
 
 }  // namespace p2pgpu::worker

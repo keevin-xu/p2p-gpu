@@ -321,7 +321,8 @@ double MillisBetween(std::chrono::steady_clock::time_point a,
 
 std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
                                    const TaskRequest& req,
-                                   std::uint64_t units_per_chunk) {
+                                   std::uint64_t units_per_chunk,
+                                   const ChunkCallback& on_chunk) {
     if (!ctx.valid() || req.unit_count == 0 || req.output_bytes == 0 ||
         req.workgroup_size == 0) {
         Log("error", "RunTask: invalid arguments");
@@ -551,6 +552,13 @@ std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
         const auto yield_start = platform::Now();
         platform::Yield();
         stats.idle_ms += MillisBetween(yield_start, platform::Now());
+
+        // Proof of life for a long task. The whole task runs inside one Poll(),
+        // so without this the worker is silent for its entire duration and gets
+        // declared lost while working perfectly.
+        if (on_chunk) {
+            on_chunk(done, req.unit_count);
+        }
     }
 
     // ── readback, ONCE, after every chunk has accumulated ──

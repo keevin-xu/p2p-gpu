@@ -21,6 +21,7 @@ namespace p2pgpu::worker {
 namespace {
 
 using platform::Log;
+using Clock = std::chrono::steady_clock;
 
 }  // namespace
 
@@ -140,6 +141,20 @@ void TaskLoop::Poll() {
     if (throttle_.load() <= 0.0F) {
         return;
     }
+    // A lease request that was never answered. The coordinator says "no work"
+    // by sending NOTHING, so a timeout is the only way to learn — and a worker
+    // that does not time out is silently retired: it stops sending frames, is
+    // declared lost after the heartbeat window, and its capacity is gone for the
+    // rest of the run while it sits there perfectly healthy.
+    //
+    // Observed exactly that: one task completed, the keyspace emptied, and the
+    // worker went quiet forever 20 s later.
+    if (lease_outstanding_ &&
+        Clock::now() - lease_requested_at_ > std::chrono::milliseconds(1500)) {
+        lease_outstanding_ = false;
+        ++empty_replies_;
+    }
+
     if (!lease_outstanding_ && held_.empty()) {
         RequestLease();
     }
@@ -263,6 +278,7 @@ void TaskLoop::HandleWelcome(const wire::Welcome& welcome) {
 
 void TaskLoop::HandleTaskGrant(const wire::TaskGrant& grant) {
     lease_outstanding_ = false;
+    empty_replies_ = 0;   // work exists again; stop backing off
 
     const auto* env = grant.envelope();
     if (env == nullptr || env->task_id() == nullptr || env->job_id() == nullptr) {
@@ -477,7 +493,40 @@ void TaskLoop::SendHello() {
     (void)transport_.Send(frame);
 }
 
+void TaskLoop::SendProgress(protocol::TaskId task, float fraction) {
+    auto frame = protocol::EncodeMessage(
+        wire::Body::Progress, [&](flatbuffers::FlatBufferBuilder& fbb) {
+            const wire::Uuid tid = task.to_wire();
+            wire::ProgressBuilder b(fbb);
+            b.add_task_id(&tid);
+            // Telemetry the coordinator must not act on (invariant 8), reported
+            // honestly regardless — a worker that lied here by default would
+            // make the dishonest mock profiles less distinguishable.
+            b.add_fraction_done(fraction);
+            b.add_request_renew(true);
+            return b.Finish();
+        });
+    (void)transport_.Send(frame);
+}
+
 void TaskLoop::RequestLease() {
+    // Exponential backoff with jitter on repeated empty replies (2.15). Capped
+    // so a worker that waited through a lull still picks work up promptly when
+    // a job arrives — backing off to minutes would make an idle fleet look dead.
+    const auto now = Clock::now();
+    if (empty_replies_ > 0) {
+        const std::uint32_t step = std::min<std::uint32_t>(empty_replies_, 6);
+        const auto base = std::chrono::milliseconds(100u << (step - 1));
+        // Jitter, so a fleet that emptied the queue together does not come back
+        // together (RISKS.md §2).
+        const auto jitter = std::chrono::milliseconds(
+            static_cast<int>(reinterpret_cast<std::uintptr_t>(this) % 250));
+        if (now < next_action_) {
+            return;
+        }
+        next_action_ = now + std::min(base, std::chrono::milliseconds(5000)) + jitter;
+    }
+
     auto frame = protocol::EncodeMessage(
         wire::Body::LeaseRequest, [&](flatbuffers::FlatBufferBuilder& fbb) {
             wire::LeaseRequestBuilder b(fbb);
@@ -578,7 +627,22 @@ bool TaskLoop::Execute(const PendingTask& task) {
     // output is pinned at 0 forever (D-0040).
     req.output_init = info->output_init;
 
-    const auto outcome = RunTask(device_.context(), req, ChunkUnitsFor(*info));
+    // Renew from inside the chunk loop. Rate-limited rather than per chunk:
+    // chunks are ~100 ms, and a renewal per chunk would be ten frames a second
+    // per worker for no benefit.
+    auto last_renew = std::chrono::steady_clock::now();
+    const auto outcome = RunTask(
+        device_.context(), req, ChunkUnitsFor(*info),
+        [&](std::uint64_t done, std::uint64_t total) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_renew < std::chrono::seconds(3)) {
+                return;
+            }
+            last_renew = now;
+            SendProgress(task.id, total > 0 ? static_cast<float>(done) /
+                                                  static_cast<float>(total)
+                                            : 0.0F);
+        });
     if (!outcome) {
         // Could be device loss, a compile failure, or a limit we could not
         // satisfy. All of them mean the same thing to the coordinator: this
