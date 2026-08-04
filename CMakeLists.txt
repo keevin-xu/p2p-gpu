@@ -34,7 +34,9 @@ include(cmake/Hardening.cmake)
 # docs/CONVENTIONS.md §10 without a DECISIONS.md entry (DL5).
 # ─────────────────────────────────────────────────────────────────────────
 
-# find_package(unofficial-sqlite3 CONFIG REQUIRED)   # step 2.19
+# NOTE: sqlite3 is NOT looked up here. It lives in the vcpkg `native` feature,
+# which the fuzz presets disable, so its find_package must sit BELOW the
+# P2PGPU_FUZZ_ONLY early-return with the other native deps (the 1.29 CI break).
 # find_package(stduuid     CONFIG REQUIRED)
 
 # NOTE: the coordinator's dependencies (spdlog, CLI11, uWebSockets) are found
@@ -308,6 +310,7 @@ if(NOT P2PGPU_WASM)
     find_package(spdlog CONFIG REQUIRED)
     find_package(CLI11  CONFIG REQUIRED)
     find_package(unofficial-uwebsockets CONFIG REQUIRED)
+    find_package(unofficial-sqlite3 CONFIG REQUIRED)   # step 2.19
 
     # The coordinator's DECISION logic, split out from its transport so the
     # tests can link it. Everything here is socket-free by construction — if a
@@ -315,6 +318,7 @@ if(NOT P2PGPU_WASM)
     # the line (session.hpp explains why that boundary is worth keeping).
     add_library(p2pgpu-coordinator-core STATIC
         src/coordinator/affinity.cpp
+        src/coordinator/store.cpp
         src/coordinator/job.cpp
         src/coordinator/session.cpp
         src/coordinator/kernels.cpp
@@ -332,7 +336,8 @@ if(NOT P2PGPU_WASM)
     target_link_libraries(p2pgpu-coordinator-core PUBLIC
         p2pgpu-protocol
         spdlog::spdlog
-        BLAKE3::blake3)
+        BLAKE3::blake3
+        unofficial::sqlite3::sqlite3)
     p2pgpu_harden(p2pgpu-coordinator-core)
 
     add_executable(coordinator

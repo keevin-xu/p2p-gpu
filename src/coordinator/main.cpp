@@ -17,6 +17,8 @@
 #include <filesystem>
 #include <functional>
 
+#include <memory>
+
 #include "p2pgpu/coordinator/net.hpp"
 
 int main(int argc, char** argv) {
@@ -26,6 +28,8 @@ int main(int argc, char** argv) {
     app.add_option("--port", cfg.port, "WebSocket / HTTP port")->capture_default_str();
     app.add_option("--manifest", cfg.manifest, "kernel manifest")->capture_default_str();
     app.add_option("--kernel-dir", cfg.kernel_dir, "WGSL directory")->capture_default_str();
+    app.add_option("--store", cfg.store_path,
+                   "SQLite file for durable state; empty (default) disables it");
     app.add_option("--log-level", cfg.log_level,
                    "trace|debug|info|warn|error")->capture_default_str();
 
@@ -97,6 +101,48 @@ int main(int argc, char** argv) {
     // genuinely different lifetimes (fleet.hpp).
     p2pgpu::coordinator::Fleet fleet;
 
+    // 2.19/2.20 — open the store and recover BEFORE seeding.
+    //
+    // Order matters: recovery replaces all state (`AdoptRecovered`), so a job
+    // seeded first would be silently discarded. And --seed-job after a
+    // successful recovery would create a SECOND job over the same keyspace,
+    // which presents as the fleet doing everything twice.
+    std::unique_ptr<p2pgpu::coordinator::Store> store;
+    bool recovered_any = false;
+    if (!cfg.store_path.empty()) {
+        auto opened = p2pgpu::coordinator::Store::Open(cfg.store_path);
+        if (!opened) {
+            spdlog::error("could not open store: {}", opened.error().message);
+            return 1;
+        }
+        store = *std::move(opened);
+
+        auto state = store->LoadAll();
+        if (!state) {
+            spdlog::error("could not read store: {}", state.error().message);
+            return 1;
+        }
+        if (!state->jobs.empty()) {
+            p2pgpu::coordinator::RecoverInto(jobs, *state);
+            recovered_any = true;
+            spdlog::info("recovered jobs={} tasks={} requeued={} from {}",
+                         state->jobs.size(), state->tasks.size(), jobs.queued(),
+                         cfg.store_path);
+        } else {
+            spdlog::info("store {} is empty; starting fresh", cfg.store_path);
+        }
+    }
+
+    if (recovered_any && !seed_kernel.empty()) {
+        // Refuse rather than guess. Seeding on top of a recovered job would
+        // double the keyspace, and silently ignoring --seed-job would make a
+        // restart quietly do something different from what was asked.
+        spdlog::error("--seed-job with a non-empty store: refusing to seed a second "
+                      "job over recovered state. Delete {} or drop --seed-job.",
+                      cfg.store_path);
+        return 1;
+    }
+
     if (!seed_kernel.empty()) {
         if (registry->Find(seed_kernel) == nullptr) {
             // Refuse rather than queue work no worker can run — the failure
@@ -121,7 +167,8 @@ int main(int argc, char** argv) {
     }
 
     p2pgpu::coordinator::Server server(cfg, *registry, jobs, fleet,
-                                       verify_reference ? &ref_stats : nullptr);
+                                       verify_reference ? &ref_stats : nullptr,
+                                       store.get());
 
     // Runs from inside the event loop when every task is terminal, under
     // --exit-when-complete. The summary has to be printed there rather than

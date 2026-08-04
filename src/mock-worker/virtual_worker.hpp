@@ -35,6 +35,18 @@
 
 namespace p2pgpu::mock {
 
+/// Set the nominal simulated device speed (`--ms-per-mega-unit`).
+void SetNominalMsPerMegaUnit(double ms);
+
+/// Warn if `fleet_size` workers at the current nominal speed demand more real
+/// CPU than one core can supply.
+///
+/// This exists because the failure is SILENT: mocks compute real answers on a
+/// single shared thread, so an oversubscribed fleet does not error, it just
+/// runs slowly and produces a scheduling measurement of the harness's own
+/// backlog. Returns true when oversubscribed.
+[[nodiscard]] bool WarnIfOversubscribed(std::uint32_t fleet_size);
+
 // Transport still lives in p2pgpu::worker — it was extracted into its own
 // library (D-0042) without renaming the namespace, since the real worker is
 // still its primary consumer and a rename would touch more than it is worth.

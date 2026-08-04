@@ -11,6 +11,7 @@
 
 #include <functional>
 #include <span>
+#include <memory>
 #include <unordered_map>
 
 #include "p2pgpu/coordinator/job.hpp"
@@ -18,6 +19,8 @@
 #include "p2pgpu/coordinator/fleet.hpp"
 #include "p2pgpu/coordinator/reference_check.hpp"
 #include "p2pgpu/coordinator/session.hpp"
+#include "p2pgpu/coordinator/metrics.hpp"
+#include "p2pgpu/coordinator/store.hpp"
 #include "p2pgpu/protocol/verify.hpp"
 
 namespace p2pgpu::coordinator {
@@ -47,14 +50,26 @@ struct Config {
     std::string manifest = "kernels/manifest.toml";
     std::string kernel_dir = "kernels";
     std::string log_level = "info";
+
+    /// SQLite file for durable state (2.19). Empty disables persistence
+    /// entirely, which is what every test and mock run uses — a harness that
+    /// silently accumulated a database between runs would make each run depend
+    /// on the last.
+    std::string store_path;
 };
 
 class Server {
 public:
     /// `reference_stats` is non-null only under --verify-reference (step
     /// 1.26). A TEST HARNESS, not validation — see reference_check.hpp.
+    /// `store` is optional (null disables persistence). Non-owning: `main`
+    /// owns it, so the lifetime is obvious at the one place both are created.
     Server(Config config, const KernelRegistry& kernels, JobManager& jobs,
-           Fleet& fleet, ReferenceStats* reference_stats = nullptr);
+           Fleet& fleet, ReferenceStats* reference_stats = nullptr,
+           Store* store = nullptr);
+
+    /// Out-of-line so `SseClients` may stay incomplete in this header.
+    ~Server();
 
     /// DEV ONLY (step 1.26): invoked once when every task is terminal, under
     /// --exit-when-complete. Returns the process exit code.
@@ -97,11 +112,26 @@ private:
     void Register(protocol::WorkerId id, Session* session, SendFn send);
     void Unregister(protocol::WorkerId id);
 
+    /// Open SSE connections for the dashboard (2.21). Opaque here so
+    /// uWebSockets does not leak into a header that coordinator-core includes —
+    /// the same reason `Session` is transport-free.
+    struct SseClients;
+    std::unique_ptr<SseClients> sse_;
+
+    /// Fleet-wide rejected frames (2.21). CONNECTION hygiene, and deliberately
+    /// not task reputation: conflating the two is how an honest-but-buggy
+    /// client gets blacklisted (3.11).
+    std::uint64_t rejected_frames_total_ = 0;
+
+    /// Push one snapshot to every open SSE connection.
+    void PublishMetrics(std::uint64_t now_ms);
+
     Config config_;
     const KernelRegistry& kernels_;
     JobManager& jobs_;
     Fleet& fleet_;
     ReferenceStats* reference_stats_ = nullptr;
+    Store* store_ = nullptr;
     OnCompleteFn on_complete_;
 };
 

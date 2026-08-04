@@ -755,6 +755,14 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
         spdlog::debug("sizing conn_id={} predicted={:.0f}ms actual={:.0f}ms corr={:.2f}",
                       conn_id_, rec->predicted_ms, actual_ms, rec->correction);
         rec->predicted_ms = 0.0;
+
+        // 2.21 — observed throughput, accumulated from the SAME measurement the
+        // correction uses. Two numbers derived from one observation cannot
+        // disagree; two independently maintained ones eventually do.
+        if (const Task* done = jobs_.Find(task_id); done != nullptr) {
+            rec->units_completed += done->unit_count;
+            rec->observed_ms_total += actual_ms;
+        }
     }
     spdlog::info("result conn_id={} task={} bytes={} accepted", conn_id_,
                  task_id.lo(), payload.size());

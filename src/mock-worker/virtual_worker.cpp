@@ -43,16 +43,57 @@ std::uint64_t Blake3_64(std::span<const std::byte> bytes) noexcept {
 }
 
 /// Nominal wall time a task "should" take on a reference device, before the
-/// worker's own speed factor. Small on purpose: these experiments measure
-/// SCHEDULING, and a realistic per-task duration would make a 100-worker sweep
-/// take hours without measuring anything the harness is for.
-constexpr double kNominalMsPerMegaUnit = 4.0;
+/// worker's own speed factor. Settable with `--ms-per-mega-unit`.
+///
+/// ── WHY THE DEFAULT IS 600 AND NOT 4 ─────────────────────────────────────
+/// Mocks compute REAL answers (D-0042) and every virtual worker is polled on
+/// ONE thread, so the entire fleet shares a single core. Measured on an M4 Pro,
+/// `BruteSearchReference` runs at ~6.6e8 units/s — that is the fleet's TOTAL
+/// budget, not each worker's.
+///
+/// The original 4.0 declared 2.5e8 units/s PER worker. Twelve of those demand
+/// 3e9 units/s from a core that can supply 6.6e8: 4.5x oversubscribed, and the
+/// symptom was a 90 s run completing eleven tasks with nothing in the log to
+/// say why. 600 ms/mega-unit declares ~1.7e6 units/s each, so even a
+/// 100-worker sweep (E1) stays inside a quarter of the budget.
+///
+/// It is a CONSTANT rather than something scaled by fleet size on purpose: E1
+/// sweeps the worker count 1 -> 100, and per-worker speed that changed with the
+/// fleet would make its throughput curve meaningless.
+double g_nominal_ms_per_mega_unit = 600.0;
+
+/// Measured single-thread throughput of `BruteSearchReference`, units/sec.
+/// Used only to warn when a run is oversubscribed — see `WarnIfOversubscribed`.
+constexpr double kReferenceUnitsPerSec = 6.6e8;
 
 /// How often a working worker renews. Deliberately well under any sane lease:
 /// the point of renewal is to prove liveness *before* expiry, not to race it.
 constexpr auto kRenewInterval = std::chrono::milliseconds(2000);
 
 }  // namespace
+
+void SetNominalMsPerMegaUnit(double ms) {
+    if (ms > 0.0) {
+        g_nominal_ms_per_mega_unit = ms;
+    }
+}
+
+bool WarnIfOversubscribed(std::uint32_t fleet_size) {
+    const double per_worker = 1.0e9 / g_nominal_ms_per_mega_unit;
+    const double demanded = per_worker * static_cast<double>(fleet_size);
+    // Half the measured budget, not all of it: the same thread also runs the
+    // event loop, framing, and BLAKE3 over every result.
+    if (demanded <= 0.5 * kReferenceUnitsPerSec) {
+        return false;
+    }
+    spdlog::warn("OVERSUBSCRIBED: {} workers x {:.3g} units/s = {:.3g} units/s demanded, "
+                 "but one thread supplies ~{:.3g}. Mocks compute REAL answers on a "
+                 "SINGLE shared thread, so this run will measure the harness's own "
+                 "backlog rather than scheduling. Raise --ms-per-mega-unit or lower "
+                 "--count.",
+                 fleet_size, per_worker, demanded, kReferenceUnitsPerSec);
+    return true;
+}
 
 VirtualWorker::VirtualWorker(std::uint32_t index, std::string url, Behaviors behaviors,
                              std::uint64_t run_seed)
@@ -199,8 +240,21 @@ void VirtualWorker::OnFrame(std::span<const std::byte> bytes) {
         // Derived from the same constant the task simulation uses, so "score"
         // and "how long tasks actually take" cannot drift apart.
         constexpr double kOpsPerUnit = 80.0;   // brute_search_v1, manifest
+
+        // 1e6 units take `g_nominal_ms_per_mega_unit * slow_factor` MILLISECONDS,
+        // so the rate is 1e6 units per (that / 1000) seconds = 1e9 / (kNom *
+        // slow). Written as one expression deliberately: the previous version
+        // was `1e6 / kNom * 1000 / slow / 1000`, whose `* 1000` and `/ 1000`
+        // cancelled, making every worker report a score **1000x too slow**.
+        //
+        // How it hid: the coordinator's EWMA correction absorbs a mis-scaled
+        // score by design, so the fleet still worked — it just sized every task
+        // 1000x too small. The tell was that every worker's correction sat at
+        // 0.12-0.17, pinned against the 0.1 clamp, trying to express 0.001.
+        // Nothing failed; the numbers were simply fiction, which is exactly
+        // what the comment above swears must not happen.
         const double units_per_sec =
-            1.0e6 / kNominalMsPerMegaUnit * 1000.0 / behaviors_.slow_factor / 1000.0;
+            1.0e9 / g_nominal_ms_per_mega_unit / behaviors_.slow_factor;
         // Inflated for straggler simulation: the coordinator sizes for a
         // machine faster than this one actually is (E5).
         const double ops_per_sec =
@@ -289,7 +343,7 @@ void VirtualWorker::BeginTask(Pending task) {
     // Real CPU time is unrelated — that is what lets 200 "slow" workers share
     // a handful of cores.
     const double mega_units = static_cast<double>(task.work_units) / 1.0e6;
-    const double ms = std::max(1.0, mega_units * kNominalMsPerMegaUnit *
+    const double ms = std::max(1.0, mega_units * g_nominal_ms_per_mega_unit *
                                         behaviors_.slow_factor) +
                       behaviors_.high_latency_ms;
     task.finish_at = Clock::now() + std::chrono::milliseconds(static_cast<long long>(ms));

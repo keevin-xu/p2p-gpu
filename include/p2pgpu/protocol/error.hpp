@@ -84,6 +84,16 @@ public:
     [[nodiscard]] constexpr const T& operator*() const& { return std::get<0>(v_); }
     [[nodiscard]] constexpr const T* operator->() const { return &std::get<0>(v_); }
 
+    /// Rvalue overload, so a MOVE-ONLY `T` can be taken out.
+    ///
+    /// Added at 2.19, when the first `Result<std::unique_ptr<...>>` appeared and
+    /// there was no way to extract it — every existing use held a copyable type,
+    /// so the gap was invisible. Ref-qualified (`&&`) rather than added as a
+    /// plain non-const overload: moving out of a named `Result` must be spelled
+    /// `std::move(r)` at the call site, or a `*r` in a loop would silently
+    /// hollow out the value on the first iteration.
+    [[nodiscard]] constexpr T&& operator*() && { return std::get<0>(std::move(v_)); }
+
     [[nodiscard]] constexpr const Error& error() const { return std::get<1>(v_); }
 
 private:

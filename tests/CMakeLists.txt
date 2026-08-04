@@ -15,6 +15,8 @@ add_executable(tests
     unit/test_task_state.cpp       # 1.13 — all 54 pairs, incl. every ILLEGAL one
     unit/test_job.cpp              # 1.14 — job/task queue + lease bookkeeping
     unit/test_leases.cpp           # 2.6-2.10 — renewal, expiry, loss, drain
+    unit/test_store.cpp            # 2.19/2.20 — durable state + crash recovery
+    unit/test_metrics.cpp          # 2.21 — derived metrics + SSE payload
     unit/test_sizer.cpp            # 2.12-2.14 — sizing rules, in order
     unit/test_session.cpp          # 1.15-1.16 — handshake + result ingestion
     unit/test_checksum.cpp         # 1.20 — invariant 9, pinned to BLAKE3's vectors

@@ -58,6 +58,14 @@ struct WorkerRecord {
     /// granted. Both on OUR clock: the worker reports a duration in TaskStats
     /// and that number is untrusted telemetry (invariant 8), so the correction
     /// factor is computed from what we observed, not what we were told.
+    /// Work this worker has actually completed, measured on OUR clock (2.21).
+    ///
+    /// Never from `TaskStats.gpu_ms`. A worker that under-reports its duration
+    /// would look faster than it is and be granted ever-larger tasks, which is
+    /// a way to be handed the whole keyspace by lying (invariant 8).
+    std::uint64_t units_completed = 0;
+    double observed_ms_total = 0.0;
+
     double predicted_ms = 0.0;
     std::uint64_t granted_at_ms = 0;
 
@@ -98,6 +106,12 @@ public:
 
     [[nodiscard]] const WorkerRecord* Find(WorkerId id) const noexcept;
     [[nodiscard]] std::size_t size() const noexcept { return workers_.size(); }
+
+    /// Read-only view for metrics (2.21). Const so an observer cannot become a
+    /// mutator by accident — the dashboard reports state, it never changes it.
+    [[nodiscard]] const std::unordered_map<WorkerId, WorkerRecord>& All() const noexcept {
+        return workers_;
+    }
     void RecordCompletion(WorkerId id);
 
     /// Mutable access for the sizing state. Deliberately narrow — everything

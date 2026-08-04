@@ -23,7 +23,29 @@ JobId JobManager::CreateJob(std::string kernel_id, std::uint64_t total_units,
     job.next_unit = 0;
     // NO tasks yet. They are carved by Grant, sized for whoever asks (D-0043).
     jobs_.emplace(job_id, std::move(job));
+    MarkJobDirty(job_id);
     return job_id;
+}
+
+std::vector<std::size_t> JobManager::CountByState() const {
+    // Sized from the enum's last member, so adding a state widens this
+    // automatically rather than silently dropping it off the dashboard.
+    std::vector<std::size_t> out(static_cast<std::size_t>(TaskState::Cancelled) + 1, 0);
+    for (const auto& [id, task] : tasks_) {
+        const auto idx = static_cast<std::size_t>(task.state);
+        if (idx < out.size()) {
+            ++out[idx];
+        }
+    }
+    return out;
+}
+
+std::uint64_t JobManager::total_units() const noexcept {
+    std::uint64_t total = 0;
+    for (const auto& [id, job] : jobs_) {
+        total += job.total_units;
+    }
+    return total;
 }
 
 std::uint64_t JobManager::remaining_units() const noexcept {
@@ -40,7 +62,85 @@ protocol::Status JobManager::Apply(Task& task, TaskEvent ev) {
         return next.error();
     }
     task.state = *next;
+    // THE choke point for durability (2.19). Every state transition in the
+    // system goes through here, so marking dirty here covers Grant, Submit,
+    // Requeue, Finish, Renew and Cancel by construction rather than by
+    // remembering to call it at six sites.
+    MarkTaskDirty(task.id);
     return {};
+}
+
+void JobManager::MarkTaskDirty(TaskId id) { dirty_tasks_.insert(id); }
+void JobManager::MarkJobDirty(JobId id) { dirty_jobs_.insert(id); }
+
+std::vector<Job> JobManager::DirtyJobs() const {
+    std::vector<Job> out;
+    out.reserve(dirty_jobs_.size());
+    for (const JobId id : dirty_jobs_) {
+        if (const auto it = jobs_.find(id); it != jobs_.end()) {
+            out.push_back(it->second);
+        }
+    }
+    return out;
+}
+
+std::vector<Task> JobManager::DirtyTasks() const {
+    std::vector<Task> out;
+    out.reserve(dirty_tasks_.size());
+    for (const TaskId id : dirty_tasks_) {
+        if (const auto it = tasks_.find(id); it != tasks_.end()) {
+            out.push_back(it->second);
+        }
+    }
+    return out;
+}
+
+void JobManager::ClearDirty() {
+    dirty_jobs_.clear();
+    dirty_tasks_.clear();
+}
+
+void JobManager::AdoptRecovered(const std::vector<Job>& jobs,
+                                const std::vector<Task>& tasks,
+                                std::uint64_t next_id) {
+    jobs_.clear();
+    tasks_.clear();
+    queue_.clear();
+    ClearDirty();
+    next_id_ = next_id;
+
+    for (const Job& job : jobs) {
+        Job copy = job;
+        copy.tasks.clear();  // rebuilt below, so the two cannot disagree
+        jobs_.emplace(job.id, std::move(copy));
+    }
+
+    for (const Task& task : tasks) {
+        Task copy = task;
+
+        // THE RECOVERY POLICY, in one visible place (2.20). A task that was
+        // Leased or Validating when we died belongs to a worker that was
+        // talking to a process which no longer exists. R8 says that is the
+        // normal case, so it is requeued rather than treated as an error.
+        //
+        // `prior_workers` survives, so invariant 6 still holds across a
+        // restart: the worker that already computed this task does not get
+        // handed its replica after we come back up.
+        if (copy.state == TaskState::Leased || copy.state == TaskState::Validating) {
+            copy.state = TaskState::Queued;
+            queue_.push_back(copy.id);
+        }
+        // Always cleared, whatever the state. A holder that outlived the
+        // process is a lie about who is working, and a lease deadline measured
+        // against a clock we no longer share is worse than none.
+        copy.holder = WorkerId{};
+        copy.lease_expires_at_ms = 0;
+
+        if (const auto it = jobs_.find(copy.job); it != jobs_.end()) {
+            it->second.tasks.push_back(copy.id);
+        }
+        tasks_.emplace(copy.id, std::move(copy));
+    }
 }
 
 std::optional<Task> JobManager::Grant(WorkerId worker, std::uint64_t now_ms,
@@ -127,6 +227,10 @@ std::optional<Task> JobManager::Grant(WorkerId worker, std::uint64_t now_ms,
 
         job.next_unit += t.unit_count;
         job.tasks.push_back(t.id);
+        // The CURSOR moved, which is the only job field that changes after
+        // creation — and the field that decides what a restart re-carves.
+        MarkJobDirty(job_id);
+        MarkTaskDirty(t.id);
         const Task copy = t;
         tasks_.emplace(t.id, std::move(t));
         return copy;
@@ -375,7 +479,12 @@ std::optional<Task> JobManager::IssueSpeculative(WorkerId worker, std::uint64_t 
 
             job.tasks.push_back(replica.id);
             const Task copy = replica;
+            const TaskId replica_id = replica.id;
             tasks_.emplace(replica.id, std::move(replica));
+            // Constructed directly rather than via Apply (it is born Leased),
+            // so it needs an explicit mark — the one task-creation path Apply
+            // does not cover.
+            MarkTaskDirty(replica_id);
             return copy;
         }
     }

@@ -37,10 +37,34 @@ struct SocketData {
 
 }  // namespace
 
+/// Open SSE connections. Raw `HttpResponse*` because uWebSockets owns them;
+/// `onAborted` is what keeps this list from holding a dead one, and it is
+/// registered at the same moment the pointer is stored so there is no window
+/// where a client is tracked but not watched.
+struct Server::SseClients {
+    std::vector<uWS::HttpResponse<false>*> open;
+};
+
 Server::Server(Config config, const KernelRegistry& kernels, JobManager& jobs,
-               Fleet& fleet, ReferenceStats* reference_stats)
+               Fleet& fleet, ReferenceStats* reference_stats, Store* store)
     : config_(std::move(config)), kernels_(kernels), jobs_(jobs), fleet_(fleet),
-      reference_stats_(reference_stats) {}
+      reference_stats_(reference_stats), store_(store),
+      sse_(std::make_unique<SseClients>()) {}
+
+Server::~Server() = default;
+
+void Server::PublishMetrics(std::uint64_t now_ms) {
+    if (sse_->open.empty()) {
+        return;
+    }
+    // Collected ONCE for all subscribers. Two dashboards must not see two
+    // different instants and disagree about the same moment.
+    const std::string payload =
+        "data: " + ToJson(Collect(jobs_, fleet_, rejected_frames_total_, now_ms)) + "\n\n";
+    for (auto* res : sse_->open) {
+        res->write(payload);
+    }
+}
 
 void Server::Sweep() {
     const auto now_ms = static_cast<std::uint64_t>(
@@ -110,6 +134,27 @@ void Server::Sweep() {
     if (revoked > 0) {
         spdlog::info("revoke_push count={}", revoked);
     }
+
+    // 2.19 — durability, ONE transaction per sweep (D-0048). Last in the pass,
+    // deliberately: expiry and revocation both mutate task state, so flushing
+    // first would write rows this same tick is about to change and leave the
+    // file a sweep behind for no reason.
+    if (store_ != nullptr && jobs_.has_dirty()) {
+        if (const auto s = store_->Flush(jobs_.DirtyJobs(), jobs_.DirtyTasks()); !s) {
+            // NOT cleared. The rows stay dirty and go out next sweep; dropping
+            // them here would let the file diverge from memory with nothing to
+            // show for it. Warn rather than fatal — the coordinator is still
+            // correct in memory, it has just lost its ability to survive a
+            // restart, and killing a live fleet over that is worse.
+            spdlog::warn("store flush failed: {}", s.error().message);
+        } else {
+            jobs_.ClearDirty();
+        }
+    }
+
+    // 2.21 — publish LAST, so a subscriber sees the state after this whole tick
+    // rather than a half-applied one.
+    PublishMetrics(now_ms);
 }
 
 void Server::Register(WorkerId id, Session* session, SendFn send) {
@@ -157,6 +202,22 @@ void Server::Run() {
                 listen_socket = nullptr;
             }
 
+            // Final flush. This path calls std::exit below, so without it the
+            // last sweep interval of transitions never reaches the file —
+            // measured as 410 tasks terminal in memory against 408 rows on
+            // disk. That gap is exactly the loss D-0048 permits and it is
+            // harmless (the work is redone), but a dev harness whose summary
+            // does not reconcile with its own database invites an hour of
+            // hunting for data loss that is not there.
+            if (store_ != nullptr && jobs_.has_dirty()) {
+                if (const auto s = store_->Flush(jobs_.DirtyJobs(), jobs_.DirtyTasks());
+                    !s) {
+                    spdlog::warn("final store flush failed: {}", s.error().message);
+                } else {
+                    jobs_.ClearDirty();
+                }
+            }
+
             const int rc = on_complete_ ? on_complete_() : 0;
 
             // std::exit, and it is a deliberate shortcut CONFINED TO THIS
@@ -180,6 +241,47 @@ void Server::Run() {
         .get("/health",
              [](auto* res, auto* /*req*/) {
                  res->writeHeader("Content-Type", "text/plain")->end("ok");
+             })
+
+        // 2.21 — metrics stream. Server-Sent Events, not a WebSocket: this is
+        // one-directional and read-only, and SSE reconnects on its own, so the
+        // dashboard needs no retry logic of its own.
+        //
+        // CORS is REQUIRED here for the same reason it is on /kernel/:id (1.23):
+        // the dashboard is served from a different origin (tools/serve.py on
+        // :8000) than this coordinator, and without the header the fetch fails
+        // with a console error that looks nothing like its cause.
+        .get("/metrics/stream",
+             [this](auto* res, auto* /*req*/) {
+                 res->writeHeader("Content-Type", "text/event-stream")
+                     ->writeHeader("Cache-Control", "no-cache")
+                     ->writeHeader("Connection", "keep-alive")
+                     ->writeHeader("Access-Control-Allow-Origin", "*");
+
+                 // Registered together with onAborted, so there is never a
+                 // moment where this pointer is in the list but unwatched — the
+                 // sweep would then write to a freed response.
+                 this->sse_->open.push_back(res);
+                 res->onAborted([this, res] {
+                     std::erase(this->sse_->open, res);
+                 });
+
+                 // One immediate snapshot so a dashboard opened between sweeps
+                 // is not blank for up to a full interval.
+                 res->write("data: " +
+                            ToJson(Collect(this->jobs_, this->fleet_,
+                                           this->rejected_frames_total_, 0)) +
+                            "\n\n");
+             })
+
+        // Point-in-time metrics, for a script or a curl. Same collector as the
+        // stream, so the two cannot report different things.
+        .get("/metrics",
+             [this](auto* res, auto* /*req*/) {
+                 res->writeHeader("Content-Type", "application/json")
+                     ->writeHeader("Access-Control-Allow-Origin", "*")
+                     ->end(ToJson(Collect(this->jobs_, this->fleet_,
+                                          this->rejected_frames_total_, 0)));
              })
 
         // Serve WGSL by kernel id (step 1.12). Workers fetch the source they
@@ -341,6 +443,7 @@ void Server::OnFrame(Session& session, std::uint64_t conn_id, std::uint32_t& rej
     const auto verified = protocol::VerifyFrame(frame);
     if (!verified) {
         ++rejected;
+        ++rejected_frames_total_;
         // A Verifier rejection is always warn WITH the diagnostic detail
         // (CONVENTIONS.md §6): it is the primary signal for protocol bugs and
         // the first sign of an actual attack.

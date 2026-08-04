@@ -36,8 +36,13 @@ int main(int argc, char** argv) {
     std::uint64_t seed = 42;
     std::uint32_t run_seconds = 0;
     bool list_profiles = false;
+    double nominal_ms = 600.0;
 
     CLI::App app{"p2pgpu mock worker fleet"};
+    app.add_option("--ms-per-mega-unit", nominal_ms,
+                   "simulated device speed; see virtual_worker.cpp for the "
+                   "fleet-size constraint")
+        ->capture_default_str();
     app.add_option("--count", count, "virtual workers in this process")
         ->capture_default_str();
     app.add_option("--coordinator", url, "coordinator WebSocket URL")
@@ -69,6 +74,12 @@ int main(int argc, char** argv) {
         spdlog::error("unknown chaos profile: {}. --list-profiles to see them.", chaos);
         return 1;
     }
+
+    p2pgpu::mock::SetNominalMsPerMegaUnit(nominal_ms);
+    // Checked BEFORE any worker connects, so an oversubscribed run says so up
+    // front rather than being diagnosed from a suspiciously low task count an
+    // hour later.
+    (void)p2pgpu::mock::WarnIfOversubscribed(count);
 
     spdlog::info("fleet: count={} profile={} seed={} coordinator={}", count,
                  std::string(profile->name), seed, url);

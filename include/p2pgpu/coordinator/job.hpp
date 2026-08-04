@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "p2pgpu/coordinator/affinity.hpp"
@@ -205,6 +206,15 @@ public:
     [[nodiscard]] const Job* PeekNextJob() const noexcept;
     [[nodiscard]] std::size_t total_tasks() const noexcept { return tasks_.size(); }
 
+    /// Task counts indexed by `TaskState` (2.21). Derived on demand rather than
+    /// kept as counters: a tally maintained beside the state it describes is a
+    /// tally that eventually disagrees with it.
+    [[nodiscard]] std::vector<std::size_t> CountByState() const;
+
+    /// Sum of `total_units` over every job. `remaining_units()` is the
+    /// uncarved counterpart.
+    [[nodiscard]] std::uint64_t total_units() const noexcept;
+
     /// Completion detection. Deliberately counts TERMINAL states rather than
     /// "queue is empty" — an empty queue with tasks still leased is not a
     /// finished job, and conflating them is how a job reports success while
@@ -252,8 +262,54 @@ public:
     /// state. Drives the speculation threshold.
     [[nodiscard]] double CompletionFraction(JobId job) const;
 
+    // ── 2.19 — durability (D-0048) ───────────────────────────────────────
+    //
+    // JobManager contains NO SQL and does not link SQLite. It reports which
+    // rows changed; `Store` decides how to write them. That is the same
+    // separation that made `Session` testable without a socket (1.15), and it
+    // is why every existing test still runs without a database.
+
+    /// Jobs and tasks changed since the last `ClearDirty`.
+    ///
+    /// Returned by value as full copies rather than pointers: the sweep hands
+    /// these to `Store::Flush`, and a pointer into `tasks_` would dangle the
+    /// moment anything rehashes the map mid-flush.
+    [[nodiscard]] std::vector<Job> DirtyJobs() const;
+    [[nodiscard]] std::vector<Task> DirtyTasks() const;
+
+    /// Called only AFTER a successful flush. If the write failed the rows stay
+    /// dirty and go out on the next sweep — dropping them would silently make
+    /// the file diverge from memory, which is the one failure this layer must
+    /// not have.
+    void ClearDirty();
+
+    [[nodiscard]] bool has_dirty() const noexcept {
+        return !dirty_jobs_.empty() || !dirty_tasks_.empty();
+    }
+
+    /// Replace all state with what was recovered from disk (2.20).
+    ///
+    /// Applies the recovery POLICY: a task that was `Leased` or `Validating`
+    /// when we died is requeued, because its worker was talking to a process
+    /// that no longer exists (R8). Terminal tasks stay terminal.
+    ///
+    /// Everything adopted is marked clean, not dirty: it came FROM the file, so
+    /// writing it straight back would be a full rewrite on the first sweep
+    /// after every restart.
+    void AdoptRecovered(const std::vector<Job>& jobs, const std::vector<Task>& tasks,
+                        std::uint64_t next_id);
+
 private:
     [[nodiscard]] protocol::Status Apply(Task& task, TaskEvent ev);
+
+    /// Mark a row for the next flush. Called from every mutating path; the
+    /// alternative — remembering to call it at each site — is the kind of
+    /// bookkeeping that is correct until someone adds a path.
+    void MarkTaskDirty(TaskId id);
+    void MarkJobDirty(JobId id);
+
+    std::unordered_set<TaskId> dirty_tasks_;
+    std::unordered_set<JobId> dirty_jobs_;
 
     std::unordered_map<TaskId, Task> tasks_;
     std::unordered_map<JobId, Job> jobs_;
