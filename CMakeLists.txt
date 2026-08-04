@@ -314,6 +314,7 @@ if(NOT P2PGPU_WASM)
     # file in this list ever needs uWebSockets, it belongs on the other side of
     # the line (session.hpp explains why that boundary is worth keeping).
     add_library(p2pgpu-coordinator-core STATIC
+        src/coordinator/affinity.cpp
         src/coordinator/job.cpp
         src/coordinator/session.cpp
         src/coordinator/kernels.cpp

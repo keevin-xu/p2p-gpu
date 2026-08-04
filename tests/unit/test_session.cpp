@@ -481,3 +481,83 @@ TEST_CASE("a heartbeat without request_renew does not extend anything", "[sessio
     // here" must not silently keep a task it has stopped working on.
     CHECK(f.jobs.Find(task)->lease_expires_at_ms == deadline);
 }
+
+// ── D-0046 — a revoke must be retrievable without the loser saying anything ──
+//
+// This is the regression test for the defect that made speculation report a
+// saving it did not make. The old design appended queued revokes to the reply
+// of the loser's NEXT inbound message; a worker executing a task it has already
+// lost is silent by definition, so the stop arrived attached to the reply to its
+// own result submission — after every unit it was meant to save was spent.
+//
+// The assertion is therefore specifically about the ABSENCE of a stimulus: the
+// loser's session is fed nothing at all between the cancellation and the drain.
+// That is what the sweep timer does, and it is the property that a return to
+// piggybacking would break.
+TEST_CASE("a queued revoke is deliverable with no inbound frame from the loser",
+          "[session][speculation]") {
+    JobManager jobs;
+    Fleet fleet;
+    const KernelRegistry& kernels = Registry();
+
+    // Both identities come from real handshakes rather than a test-only
+    // setter — the id the coordinator assigns is the one the sweep will look
+    // up, and inventing it here could agree with nothing.
+    Session winner_session{jobs, kernels, fleet, /*conn_id=*/1, /*lease_ms=*/30000};
+    Session loser_session{jobs, kernels, fleet, /*conn_id=*/2, /*lease_ms=*/30000};
+    for (Session* s : {&winner_session, &loser_session}) {
+        const auto hello = HelloFrame(protocol::kProtocolVersion);
+        const Reaction r = Feed(*s, hello);
+        REQUIRE_FALSE(r.close);
+        REQUIRE(s->handshaked());
+    }
+    const WorkerId winner = winner_session.worker_id();
+    const WorkerId loser = loser_session.worker_id();
+    REQUIRE(winner != loser);
+
+    // From here the LOSER's session is handed no frames at all.
+
+    (void)jobs.CreateJob("brute_search_v1", /*total_units=*/1000, /*seed=*/1);
+    const auto original = jobs.Grant(winner, 1000, 30000, 500);
+    const auto other = jobs.Grant(winner, 1000, 30000, 500);
+    REQUIRE(original);
+    REQUIRE(other);
+    REQUIRE(jobs.remaining_units() == 0);
+
+    // Speculation needs the keyspace exhausted AND the job near done. Finish
+    // one of the two so the fraction is 0.5, then pass an explicit threshold
+    // rather than carving 20 tasks to reach the 95% default — the delivery
+    // path is what is under test here, not the trigger condition (which
+    // test_leases.cpp covers directly).
+    REQUIRE(jobs.Submit(winner, other->id));
+    REQUIRE(jobs.Finish(other->id, /*accepted=*/true));
+    const auto replica = jobs.IssueSpeculative(loser, 1000, 30000, /*threshold=*/0.4);
+    REQUIRE(replica);
+    REQUIRE(replica->replica_of == original->id);
+
+    // The winner finishes; the replica is cancelled and a revoke is queued
+    // against the loser's fleet record.
+    REQUIRE(jobs.Submit(winner, original->id));
+    REQUIRE(jobs.Finish(original->id, /*accepted=*/true));
+    const auto cancelled = jobs.CancelSiblingsOf(original->id);
+    REQUIRE(cancelled.size() == 1);
+    CHECK(cancelled.front().task == replica->id);
+    fleet.Mutable(cancelled.front().holder)->pending_revokes.push_back(
+        cancelled.front().task);
+
+    // THE POINT: drained with no message from the loser, exactly as the sweep
+    // timer does it. Under the old design this returned nothing here and the
+    // frame only appeared once the loser spoke.
+    const auto frames = loser_session.DrainRevokes();
+    REQUIRE(frames.size() == 1);
+
+    // And the queue is emptied, so a second sweep does not re-send it.
+    CHECK(loser_session.DrainRevokes().empty());
+
+    // WHAT THIS DOES NOT COVER, stated plainly: it pins the API property (a
+    // revoke is retrievable with no stimulus) and would fail to compile if
+    // `DrainRevokes` went private again. It does NOT prove `Server::Sweep`
+    // still calls it — that is transport code with no unit-test seam, and the
+    // evidence for it is the live run in `results/2.15-2.18-speculation.md`
+    // where the fleet's `revoked` count went from 0 to non-zero.
+}

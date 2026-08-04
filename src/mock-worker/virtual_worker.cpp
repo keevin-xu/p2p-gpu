@@ -11,6 +11,7 @@
 #include <array>
 
 #include <algorithm>
+#include <iterator>
 #include <cstring>
 #include <utility>
 
@@ -200,7 +201,10 @@ void VirtualWorker::OnFrame(std::span<const std::byte> bytes) {
         constexpr double kOpsPerUnit = 80.0;   // brute_search_v1, manifest
         const double units_per_sec =
             1.0e6 / kNominalMsPerMegaUnit * 1000.0 / behaviors_.slow_factor / 1000.0;
-        const double ops_per_sec = units_per_sec * kOpsPerUnit;
+        // Inflated for straggler simulation: the coordinator sizes for a
+        // machine faster than this one actually is (E5).
+        const double ops_per_sec =
+            units_per_sec * kOpsPerUnit * behaviors_.score_inflation;
         auto frame = protocol::EncodeMessage(
             wire::Body::BenchmarkResult, [&](flatbuffers::FlatBufferBuilder& fbb) {
                 auto kid = fbb.CreateString("calibrate_v1");
@@ -213,8 +217,21 @@ void VirtualWorker::OnFrame(std::span<const std::byte> bytes) {
         (void)transport_.Send(frame);
         return;
     }
+    if (env.body_type() == wire::Body::Revoke) {
+        // Stop promptly (2.17). A speculative loser that keeps going burns
+        // compute on a range already finished — and the wasted-work metric E5
+        // reports would understate the cost if workers ignored this.
+        if (const auto* rev = env.body_as_Revoke(); rev != nullptr &&
+                                                    rev->task_id() != nullptr) {
+            const protocol::TaskId id{*rev->task_id()};
+            const auto before = in_flight_.size();
+            std::erase_if(in_flight_, [&](const Pending& p) { return p.id == id; });
+            stats_.tasks_revoked += static_cast<std::uint32_t>(before - in_flight_.size());
+        }
+        return;
+    }
     if (env.body_type() != wire::Body::TaskGrant) {
-        return;   // Revoke/Error/etc. are Phase 2's later steps
+        return;
     }
 
     const auto* grant = env.body_as_TaskGrant();

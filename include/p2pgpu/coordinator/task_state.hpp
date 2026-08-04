@@ -44,6 +44,15 @@ enum class TaskState : std::uint8_t {
     NeedsReplica,  ///< disagreement or low confidence; needs another opinion
     Accepted,      ///< terminal
     Rejected,      ///< terminal; the worker's reputation is penalised
+    /// Terminal. Work superseded through NO FAULT of the worker — a
+    /// speculative replica whose sibling finished first (2.17, D-0045).
+    ///
+    /// Deliberately NOT `Rejected`, which means a wrong answer and costs
+    /// reputation. A straggler that loses a race it was entered into without
+    /// being asked has done nothing wrong, and a fleet where the slowest
+    /// workers accumulate rejections would drive off exactly the volunteers R8
+    /// exists to keep.
+    Cancelled,
 };
 
 /// What can happen to a task. Also switch-exhaustive; adding one breaks the
@@ -58,6 +67,7 @@ enum class TaskEvent : std::uint8_t {
     Disagreement,  ///< replicas differ, or confidence is too low
     IssueReplica,  ///< a replica is being dispatched
     Reject,        ///< validator concluded the result is wrong
+    Cancel,        ///< superseded by a speculative sibling; no penalty (D-0045)
 };
 
 [[nodiscard]] constexpr std::string_view ToString(TaskState s) noexcept {
@@ -68,6 +78,7 @@ enum class TaskEvent : std::uint8_t {
         case TaskState::NeedsReplica: return "NeedsReplica";
         case TaskState::Accepted:     return "Accepted";
         case TaskState::Rejected:     return "Rejected";
+        case TaskState::Cancelled:    return "Cancelled";
     }
     return "?";  // unreachable for a valid enumerator; keeps the compiler happy
 }
@@ -83,6 +94,7 @@ enum class TaskEvent : std::uint8_t {
         case TaskEvent::Disagreement: return "Disagreement";
         case TaskEvent::IssueReplica: return "IssueReplica";
         case TaskEvent::Reject:       return "Reject";
+        case TaskEvent::Cancel:       return "Cancel";
     }
     return "?";
 }
@@ -93,6 +105,7 @@ enum class TaskEvent : std::uint8_t {
     switch (s) {
         case TaskState::Accepted:
         case TaskState::Rejected:
+        case TaskState::Cancelled:
             return true;
         case TaskState::Queued:
         case TaskState::Leased:
@@ -138,6 +151,7 @@ enum class TaskEvent : std::uint8_t {
                 case TaskEvent::Disagreement:
                 case TaskEvent::IssueReplica:
                 case TaskEvent::Reject:
+                case TaskEvent::Cancel:
                     return illegal();
             }
             break;
@@ -158,6 +172,10 @@ enum class TaskEvent : std::uint8_t {
                 case TaskEvent::LeaseExpired:
                 case TaskEvent::Release:
                     return TaskState::Queued;
+                // A speculative sibling finished first. The work is done; this
+                // holder is simply too late, and is not penalised (D-0045).
+                case TaskEvent::Cancel:
+                    return TaskState::Cancelled;
                 case TaskEvent::Grant:
                 case TaskEvent::Accept:
                 case TaskEvent::Disagreement:
@@ -175,6 +193,11 @@ enum class TaskEvent : std::uint8_t {
                     return TaskState::Rejected;
                 case TaskEvent::Disagreement:
                     return TaskState::NeedsReplica;
+                // Superseded while being validated: a sibling was accepted
+                // first, so this result is no longer needed. Not Rejected —
+                // nobody said it was wrong.
+                case TaskEvent::Cancel:
+                    return TaskState::Cancelled;
                 // No lease is held while validating, so expiry cannot apply and
                 // a second Submit is not a state transition — duplicate submits
                 // are discarded silently by the caller (2.10), not errored.
@@ -194,6 +217,9 @@ enum class TaskEvent : std::uint8_t {
                 // picks it up — invariant 6 enforces "different" (D-0029).
                 case TaskEvent::IssueReplica:
                     return TaskState::Queued;
+                // The job finished while this was waiting for a second opinion.
+                case TaskEvent::Cancel:
+                    return TaskState::Cancelled;
                 case TaskEvent::Grant:
                 case TaskEvent::Renew:
                 case TaskEvent::Submit:
@@ -211,6 +237,7 @@ enum class TaskEvent : std::uint8_t {
         // reviving a finished task would double-count the work.
         case TaskState::Accepted:
         case TaskState::Rejected:
+        case TaskState::Cancelled:
             switch (ev) {
                 case TaskEvent::Grant:
                 case TaskEvent::Renew:
@@ -221,6 +248,10 @@ enum class TaskEvent : std::uint8_t {
                 case TaskEvent::Disagreement:
                 case TaskEvent::IssueReplica:
                 case TaskEvent::Reject:
+                // Cancelling an already-terminal task is a no-op the caller
+                // must not treat as success — a sibling that expires after the
+                // group finished is already done, not cancellable.
+                case TaskEvent::Cancel:
                     return illegal();
             }
             break;

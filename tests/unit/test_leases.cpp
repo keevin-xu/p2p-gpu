@@ -21,6 +21,8 @@ constexpr std::uint64_t kUnits = 100;
 constexpr std::uint32_t kLease = 30'000;
 const WorkerId kAlice{1, 0};
 const WorkerId kBob{2, 0};
+const WorkerId kCarol{3, 0};
+const WorkerId kDave{4, 0};
 }  // namespace
 
 // ── 2.6 renewal ──────────────────────────────────────────────────────────
@@ -206,4 +208,153 @@ TEST_CASE("a worker that just joined is not immediately lost", "[fleet]") {
     CHECK(fleet.FindLost(kNow, /*timeout_ms=*/45'000).empty());
     CHECK(fleet.FindLost(kNow + 1000, /*timeout_ms=*/45'000).empty());
     CHECK(fleet.FindLost(kNow + 46'000, /*timeout_ms=*/45'000).size() == 1);
+}
+
+// ── 2.17 / 2.18 — speculation and completion detection ───────────────────
+//
+// The subtle part is the INTERACTION. A task can be superseded while its
+// replica expires, or expire while its original is validating, and completion
+// has to stay correct through all of it.
+
+TEST_CASE("speculation only fires near the end of a job", "[speculation]") {
+    JobManager jobs;
+    const JobId job = jobs.CreateJob("k", 1000, 7);
+    const auto t1 = jobs.Grant(kAlice, kNow, kLease, 500);
+    REQUIRE(t1.has_value());
+
+    // Keyspace not exhausted: there is real work left, so racing a straggler
+    // would be pure waste.
+    CHECK_FALSE(jobs.IssueSpeculative(kBob, kNow, kLease).has_value());
+
+    const auto t2 = jobs.Grant(kBob, kNow, kLease, 500);
+    REQUIRE(t2.has_value());
+    REQUIRE(jobs.remaining_units() == 0);
+
+    // Exhausted but only 0% accepted — still below the threshold.
+    CHECK_FALSE(jobs.IssueSpeculative(kCarol, kNow, kLease).has_value());
+
+    // Half done. Threshold defaults to 95%, so still no.
+    REQUIRE(jobs.Submit(kAlice, t1->id));
+    REQUIRE(jobs.Finish(t1->id, true));
+    CHECK(jobs.CompletionFraction(job) == 0.5);
+    CHECK_FALSE(jobs.IssueSpeculative(kCarol, kNow, kLease).has_value());
+
+    // With a lower threshold it fires — Bob's task is the straggler.
+    const auto spec = jobs.IssueSpeculative(kCarol, kNow, kLease, 0.4);
+    REQUIRE(spec.has_value());
+    CHECK(spec->replica_of == t2->id);
+    CHECK(spec->start_unit == t2->start_unit);
+    CHECK(spec->unit_count == t2->unit_count);
+    CHECK(spec->holder == kCarol);
+    // The original is UNDISTURBED. The point is to race, not to restart.
+    CHECK(jobs.Find(t2->id)->state == TaskState::Leased);
+    CHECK(jobs.Find(t2->id)->holder == kBob);
+}
+
+TEST_CASE("a worker never races itself", "[speculation]") {
+    JobManager jobs;
+    (void)jobs.CreateJob("k", 500, 7);
+    const auto t = jobs.Grant(kAlice, kNow, kLease, 500);
+    REQUIRE(t.has_value());
+
+    // Invariant 6, and here it is not even about evidence — a worker racing
+    // itself is not a race.
+    CHECK_FALSE(jobs.IssueSpeculative(kAlice, kNow, kLease, 0.0).has_value());
+    CHECK(jobs.IssueSpeculative(kBob, kNow, kLease, 0.0).has_value());
+}
+
+TEST_CASE("one race at a time", "[speculation]") {
+    JobManager jobs;
+    (void)jobs.CreateJob("k", 500, 7);
+    REQUIRE(jobs.Grant(kAlice, kNow, kLease, 500).has_value());
+
+    CHECK(jobs.IssueSpeculative(kBob, kNow, kLease, 0.0).has_value());
+    // A second replica would triple the cost for no extra speedup.
+    CHECK_FALSE(jobs.IssueSpeculative(kCarol, kNow, kLease, 0.0).has_value());
+}
+
+TEST_CASE("the first result wins and the loser is CANCELLED", "[speculation]") {
+    JobManager jobs;
+    const JobId job = jobs.CreateJob("k", 500, 7);
+    const auto original = jobs.Grant(kAlice, kNow, kLease, 500);
+    REQUIRE(original.has_value());
+    const auto replica = jobs.IssueSpeculative(kBob, kNow, kLease, 0.0);
+    REQUIRE(replica.has_value());
+
+    // Bob wins.
+    REQUIRE(jobs.Submit(kBob, replica->id));
+    REQUIRE(jobs.Finish(replica->id, true));
+    const auto revoked = jobs.CancelSiblingsOf(replica->id);
+
+    REQUIRE(revoked.size() == 1);
+    CHECK(revoked[0].task == original->id);
+    CHECK(revoked[0].holder == kAlice);
+    CHECK(revoked[0].wasted_units == 500);
+
+    // CANCELLED, not Rejected. Alice lost a race she was entered into without
+    // being asked; Rejected means a wrong answer and costs reputation.
+    CHECK(jobs.Find(original->id)->state == TaskState::Cancelled);
+    CHECK(jobs.wasted_units() == 500);
+
+    // NOT requeued — the range is done. Putting it back would hand finished
+    // work to somebody else.
+    CHECK(jobs.queued() == 0);
+    CHECK(jobs.JobComplete(job));
+}
+
+TEST_CASE("a cancelled loser does not hold the job open", "[speculation]") {
+    JobManager jobs;
+    const JobId job = jobs.CreateJob("k", 500, 7);
+    const auto original = jobs.Grant(kAlice, kNow, kLease, 500);
+    const auto replica = jobs.IssueSpeculative(kBob, kNow, kLease, 0.0);
+    REQUIRE(original);
+    REQUIRE(replica);
+
+    REQUIRE(jobs.Submit(kAlice, original->id));
+    REQUIRE(jobs.Finish(original->id, true));
+    CHECK_FALSE(jobs.JobComplete(job));   // Bob's replica still live
+
+    (void)jobs.CancelSiblingsOf(original->id);
+    CHECK(jobs.Find(replica->id)->state == TaskState::Cancelled);
+    CHECK(jobs.JobComplete(job));
+}
+
+TEST_CASE("a sibling that expires after the group finished stays terminal",
+          "[speculation]") {
+    JobManager jobs;
+    const JobId job = jobs.CreateJob("k", 500, 7);
+    const auto original = jobs.Grant(kAlice, kNow, 1000, 500);
+    const auto replica = jobs.IssueSpeculative(kBob, kNow, 1000, 0.0);
+    REQUIRE(original);
+    REQUIRE(replica);
+
+    REQUIRE(jobs.Submit(kBob, replica->id));
+    REQUIRE(jobs.Finish(replica->id, true));
+    (void)jobs.CancelSiblingsOf(replica->id);
+
+    // THE 2.18 INTERACTION. The sweep runs after the group is done; the
+    // cancelled sibling must NOT be resurrected into the queue, or a finished
+    // job would sprout work again and never complete.
+    CHECK(jobs.SweepExpiredLeases(kNow + 5000).empty());
+    CHECK(jobs.Find(original->id)->state == TaskState::Cancelled);
+    CHECK(jobs.JobComplete(job));
+}
+
+TEST_CASE("wasted work is counted, not hidden", "[speculation]") {
+    JobManager jobs;
+    (void)jobs.CreateJob("k", 900, 7);
+    const auto a = jobs.Grant(kAlice, kNow, kLease, 300);
+    const auto b = jobs.Grant(kBob, kNow, kLease, 300);
+    const auto c = jobs.Grant(kCarol, kNow, kLease, 300);
+    REQUIRE(a); REQUIRE(b); REQUIRE(c);
+
+    const auto spec = jobs.IssueSpeculative(kDave, kNow, kLease, 0.0);
+    REQUIRE(spec.has_value());
+    REQUIRE(jobs.Submit(kDave, spec->id));
+    REQUIRE(jobs.Finish(spec->id, true));
+    (void)jobs.CancelSiblingsOf(spec->id);
+
+    // E5 reports this as the COST side of speculation. A policy whose cost is
+    // not measured is one nobody can argue with.
+    CHECK(jobs.wasted_units() == 300);
 }

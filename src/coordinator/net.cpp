@@ -83,10 +83,40 @@ void Server::Sweep() {
     for (const WorkerId lost : fleet_.FindLost(now_ms, config_.worker_timeout_ms)) {
         const std::size_t released = jobs_.ReleaseAllHeldBy(lost);
         fleet_.Leave(lost);
+        Unregister(lost);
         spdlog::info("worker_lost worker={} released={} penalty=none", lost.hi(),
                      released);
     }
+
+    // 2.17 — PUSH pending revokes (D-0046).
+    //
+    // This must happen here rather than on the loser's next inbound message,
+    // because a worker executing a task it has already lost the race for sends
+    // nothing at all. Piggybacking delivered the stop AFTER the wasted work was
+    // finished, which is a mechanism that reports a saving it does not make.
+    //
+    // Same reasoning as the expiry pass directly above: anything the
+    // coordinator must say on its own initiative belongs on the timer.
+    std::size_t revoked = 0;
+    for (auto& [worker, conn] : live_) {
+        if (conn.session == nullptr) {
+            continue;
+        }
+        for (const auto& frame : conn.session->DrainRevokes()) {
+            conn.send(frame);
+            ++revoked;
+        }
+    }
+    if (revoked > 0) {
+        spdlog::info("revoke_push count={}", revoked);
+    }
 }
+
+void Server::Register(WorkerId id, Session* session, SendFn send) {
+    live_[id] = LiveConn{session, std::move(send)};
+}
+
+void Server::Unregister(WorkerId id) { live_.erase(id); }
 
 void Server::Run() {
     std::uint64_t next_conn_id = 1;
@@ -237,9 +267,35 @@ void Server::Run() {
                                                uWS::OpCode::BINARY);
                                   },
                                   [ws] { ws->end(1002, "fatal"); });
+
+                    // Register once the handshake has established an identity
+                    // (D-0046). Done AFTER the frame, not in `.open`, because
+                    // `worker_id` is unknown until `Hello` arrives — and keyed
+                    // by worker rather than connection because that is what a
+                    // pending revoke is addressed to.
+                    if (const WorkerId id = data->session->worker_id();
+                        id != WorkerId{}) {
+                        this->Register(id, data->session.get(),
+                                       [ws](std::span<const std::byte> frame) {
+                                           ws->send(std::string_view(
+                                                        static_cast<const char*>(
+                                                            static_cast<const void*>(
+                                                                frame.data())),
+                                                        frame.size()),
+                                                    uWS::OpCode::BINARY);
+                                       });
+                    }
                 },
 
-                .close = [](auto* ws, int code, std::string_view /*message*/) {
+                .close = [this](auto* ws, int code, std::string_view /*message*/) {
+                    // Unregister BEFORE the session is destroyed. This handler
+                    // runs for every way a connection can end, which is the
+                    // whole reason `live_` may hold a raw `Session*` at all
+                    // (D-0046) — miss a path here and the sweep writes through
+                    // a dangling pointer.
+                    if (ws->getUserData()->session) {
+                        this->Unregister(ws->getUserData()->session->worker_id());
+                    }
                     // Release held leases immediately (R8) rather than waiting
                     // out the lease — we already know the worker is gone.
                     if (ws->getUserData()->session) {

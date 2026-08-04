@@ -44,12 +44,45 @@ protocol::Status JobManager::Apply(Task& task, TaskEvent ev) {
 }
 
 std::optional<Task> JobManager::Grant(WorkerId worker, std::uint64_t now_ms,
-                                      std::uint32_t lease_ms, std::uint64_t units) {
+                                      std::uint32_t lease_ms, std::uint64_t units,
+                                      std::span<const AssetId> cached) {
+    // 2.16 — CACHE AFFINITY. Which queued task needs a bulk input this worker
+    // already holds? Today no job has an `input_ref` and no worker has a cache,
+    // so `needs` is all-nullopt, `PreferCached` returns nullopt, and the loop
+    // below runs in plain queue order. Inert by DATA, not by code (D-0047).
+    std::vector<std::optional<AssetId>> needs;
+    needs.reserve(queue_.size());
+    for (const TaskId id : queue_) {
+        const auto found = tasks_.find(id);
+        const Job* job = found != tasks_.end() ? FindJob(found->second.job) : nullptr;
+        needs.push_back(job != nullptr ? job->input_ref : std::nullopt);
+    }
+    const std::optional<std::size_t> preferred = PreferCached(needs, cached);
+
     // REQUEUED WORK FIRST. Work that has already failed once is the work most
     // at risk of being forgotten at the tail of a job. A requeued task keeps
     // its original size — re-sizing it would leave a hole in the keyspace or
     // overlap a live task, and neither would be caught by anything.
-    for (auto it = queue_.begin(); it != queue_.end(); ++it) {
+    //
+    // Affinity picks WITHIN this order, never replaces it: the preferred entry
+    // is tried first, then everything else in the order it was queued. A task
+    // that has already been requeued once does not become less urgent because
+    // some other worker happens to hold its input.
+    std::vector<std::size_t> order;
+    order.reserve(queue_.size());
+    if (preferred) {
+        order.push_back(*preferred);
+    }
+    for (std::size_t i = 0; i < queue_.size(); ++i) {
+        if (!preferred || i != *preferred) {
+            order.push_back(i);
+        }
+    }
+
+    for (const std::size_t idx : order) {
+        // Re-resolved every iteration: `queue_.erase` below invalidates
+        // iterators, and the only exit after an erase is `return`.
+        auto it = queue_.begin() + static_cast<std::ptrdiff_t>(idx);
         auto found = tasks_.find(*it);
         if (found == tasks_.end()) {
             continue;
@@ -249,6 +282,11 @@ const Job* JobManager::PeekNextJob() const noexcept {
     return nullptr;
 }
 
+Job* JobManager::MutableJob(JobId id) noexcept {
+    const auto it = jobs_.find(id);
+    return it == jobs_.end() ? nullptr : &it->second;
+}
+
 const Job* JobManager::FindJob(JobId id) const noexcept {
     const auto it = jobs_.find(id);
     return it == jobs_.end() ? nullptr : &it->second;
@@ -260,6 +298,127 @@ std::vector<TaskId> JobManager::HeldBy(WorkerId worker) const {
         if (task.state == TaskState::Leased && task.holder == worker) {
             out.push_back(id);
         }
+    }
+    return out;
+}
+
+double JobManager::CompletionFraction(JobId job_id) const {
+    const auto it = jobs_.find(job_id);
+    if (it == jobs_.end() || it->second.total_units == 0) {
+        return 0.0;
+    }
+    std::uint64_t done = 0;
+    for (const TaskId id : it->second.tasks) {
+        const Task* t = Find(id);
+        // ACCEPTED only. A cancelled or rejected task's range still needs
+        // doing, and counting it would make a job look nearly finished while
+        // keyspace remains unsearched.
+        if (t != nullptr && t->state == TaskState::Accepted && t->replica_of == TaskId{}) {
+            done += t->unit_count;
+        }
+    }
+    return static_cast<double>(done) / static_cast<double>(it->second.total_units);
+}
+
+std::optional<Task> JobManager::IssueSpeculative(WorkerId worker, std::uint64_t now_ms,
+                                                 std::uint32_t lease_ms,
+                                                 double threshold) {
+    for (auto& [job_id, job] : jobs_) {
+        // Only near the end. Early duplication is pure waste; it pays only when
+        // a straggler holding one of the last tasks would otherwise dominate
+        // the job's wall time.
+        if (!job.keyspace_exhausted() || CompletionFraction(job_id) < threshold) {
+            continue;
+        }
+        for (const TaskId id : job.tasks) {
+            auto found = tasks_.find(id);
+            if (found == tasks_.end()) {
+                continue;
+            }
+            Task& original = found->second;
+            if (original.state != TaskState::Leased) {
+                continue;
+            }
+            // Only ORIGINALS may be raced. A replica is itself a Leased task,
+            // so without this it becomes a candidate too — and replicas of
+            // replicas multiply: three workers on one range, then four, each
+            // costing a full duplicate of the work.
+            if (original.replica_of != TaskId{}) {
+                continue;
+            }
+            // Never race a worker against itself — invariant 6. A worker
+            // agreeing with itself is not evidence, and here it would not even
+            // be faster.
+            if (original.holder == worker ||
+                !protocol::CheckReplicaAssignment(original.prior_workers, worker)) {
+                continue;
+            }
+            // Already has a live replica; one race is enough.
+            const bool has_live_replica = std::ranges::any_of(
+                job.tasks, [&](TaskId t) {
+                    const Task* c = Find(t);
+                    return c != nullptr && c->replica_of == id && !IsTerminal(c->state);
+                });
+            if (has_live_replica) {
+                continue;
+            }
+
+            Task replica;
+            replica.id = TaskId{0, next_id_++};
+            replica.job = job_id;
+            replica.replica_of = id;
+            replica.start_unit = original.start_unit;
+            replica.unit_count = original.unit_count;
+            replica.state = TaskState::Leased;
+            replica.holder = worker;
+            replica.lease_expires_at_ms = now_ms + lease_ms;
+
+            job.tasks.push_back(replica.id);
+            const Task copy = replica;
+            tasks_.emplace(replica.id, std::move(replica));
+            return copy;
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<JobManager::Revocation> JobManager::CancelSiblingsOf(TaskId task_id) {
+    std::vector<Revocation> out;
+    const Task* winner = Find(task_id);
+    if (winner == nullptr) {
+        return out;
+    }
+    // The whole family: the original and every replica of it. Which one won
+    // does not matter — the range is done.
+    const TaskId root = winner->replica_of == TaskId{} ? task_id : winner->replica_of;
+
+    const Job* job = FindJob(winner->job);
+    if (job == nullptr) {
+        return out;
+    }
+    for (const TaskId id : job->tasks) {
+        if (id == task_id) {
+            continue;
+        }
+        auto it = tasks_.find(id);
+        if (it == tasks_.end()) {
+            continue;
+        }
+        Task& sibling = it->second;
+        const bool same_family = (id == root) || (sibling.replica_of == root);
+        if (!same_family || IsTerminal(sibling.state)) {
+            continue;
+        }
+        if (!Apply(sibling, TaskEvent::Cancel)) {
+            continue;
+        }
+        wasted_units_ += sibling.unit_count;
+        out.push_back(Revocation{id, sibling.holder, sibling.unit_count});
+        sibling.holder = WorkerId{};
+        sibling.lease_expires_at_ms = 0;
+        // NOT requeued. The range is done — putting it back would hand
+        // already-finished work to somebody else.
+        std::erase(queue_, id);
     }
     return out;
 }

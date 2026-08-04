@@ -328,9 +328,12 @@ void TaskLoop::HandleRevoke(const wire::Revoke& revoke) {
     const protocol::TaskId id{*revoke.task_id()};
 
     // Drop it from the queue if it has not started. A task already running is
-    // left to finish — the result will be discarded by the coordinator, and
-    // aborting mid-dispatch buys nothing since chunking already bounds how long
-    // that takes (R4).
+    // left to finish — the result is discarded silently by the coordinator
+    // (2.10), and aborting mid-dispatch buys nothing since chunking already
+    // bounds how long that takes (R4).
+    //
+    // With speculation (2.17) this is now the COMMON case rather than an
+    // exception: a revoke means somebody else already finished this range.
     std::erase_if(queue_, [&](const PendingTask& t) { return t.id == id; });
     std::erase(held_, id);
     Log("info", "task revoked");

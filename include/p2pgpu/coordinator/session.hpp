@@ -65,12 +65,29 @@ public:
     [[nodiscard]] bool handshaked() const noexcept { return handshaked_; }
     [[nodiscard]] WorkerId worker_id() const noexcept { return worker_id_; }
 
+    /// Take the revokes another connection's win queued for THIS worker (2.17).
+    ///
+    /// Public because the TRANSPORT drains it on the sweep timer, not this
+    /// session on its own reply path (D-0046). A worker that has lost a race is
+    /// mid-task and therefore silent, so waiting for it to speak delivers the
+    /// stop only after the work it was meant to cancel is already finished.
+    ///
+    /// The session still only ever QUEUES: it holds no socket and decides no
+    /// timing, which is what keeps it transport-free and unit-testable.
+    [[nodiscard]] std::vector<std::vector<std::byte>> DrainRevokes();
+
 private:
+    /// The actual routing. `OnMessage` wraps this so revokes are appended to
+    /// every reply without each handler having to remember.
+    [[nodiscard]] Reaction Dispatch(const protocol::VerifiedFrame& frame,
+                                    std::uint64_t now_ms);
+
     [[nodiscard]] Reaction OnHello(const wire::Hello& hello);
     [[nodiscard]] Reaction OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t now_ms);
     [[nodiscard]] Reaction OnProgress(const wire::Progress& progress, std::uint64_t now_ms);
     [[nodiscard]] Reaction OnRelease(const wire::Release& release);
     [[nodiscard]] Reaction OnGoodbye();
+
     [[nodiscard]] Reaction OnBenchmarkResult(const wire::BenchmarkResult& result);
     [[nodiscard]] Reaction OnThrottle(const wire::Throttle& throttle);
     [[nodiscard]] Reaction OnResultHeader(const wire::ResultHeader& header,

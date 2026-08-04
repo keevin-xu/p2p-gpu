@@ -90,6 +90,29 @@ Behaviors MassDeparture(std::uint32_t index, std::uint32_t fleet, Dice& dice) {
     return b;
 }
 
+// ── stragglers ───────────────────────────────────────────────────────────
+// THE E5 INSTRUMENT. A fifth of the fleet reports a score 20x its real speed,
+// so the coordinator sizes tasks for a machine that no longer exists.
+//
+// This profile exists because `heterogeneous` does NOT produce stragglers:
+// adaptive sizing gives every worker a task scaled to its own measured speed,
+// so a slow-but-honest machine finishes in the same ~2 s as a fast one. Measured
+// — a 12-worker heterogeneous run completed 1108 tasks with speculation never
+// firing once.
+//
+// What speculation actually insures against is a worker whose speed CHANGES
+// after the grant: another app starts, the laptop unplugs, a phone throttles.
+// That is what this models, and E5 measures what the window costs before the
+// EWMA correction catches up.
+Behaviors Stragglers(std::uint32_t index, std::uint32_t fleet, Dice& dice) {
+    Behaviors b;
+    b.slow_factor = std::clamp(dice.lognormal(0.5), 0.5, 4.0);
+    if (fleet > 0 && index < (fleet + 4) / 5) {
+        b.score_inflation = 20.0;
+    }
+    return b;
+}
+
 // ── malformed_frames ─────────────────────────────────────────────────────
 // THE HOSTILE PROFILE, step 2.5. Live-fire counterpart to the Phase 1 fuzzer:
 // fuzzing proved the parser is safe in isolation; this proves the SERVER stays
@@ -107,13 +130,15 @@ Behaviors Malformed(std::uint32_t index, std::uint32_t fleet, Dice& dice) {
     return b;
 }
 
-constexpr std::array<Profile, 6> kProfiles{{
+constexpr std::array<Profile, 7> kProfiles{{
     {"default", "all honest, mild speed spread — the control group", &Default},
     {"heterogeneous", "log-normal speeds, ~20x spread, all honest (E5)", &Heterogeneous},
     {"byzantine_10pct", "10% of workers lie on 30% of their tasks (E4)", &Byzantine10},
     {"flaky_network", "high latency, flapping, some never renew — nobody malicious",
      &FlakyNetwork},
     {"mass_departure", "half the fleet leaves mid-task (E3)", &MassDeparture},
+    {"stragglers", "a fifth report a 20x-inflated score, so their tasks run long (E5)",
+     &Stragglers},
     {"malformed_frames", "a quarter send hostile frames; the server must stay up (2.5)",
      &Malformed},
 }};

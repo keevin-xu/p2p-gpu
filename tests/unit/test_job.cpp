@@ -234,3 +234,101 @@ TEST_CASE("JobComplete counts terminal states, not an empty queue", "[job]") {
     CHECK(jobs.Find(t2->id)->state == TaskState::Rejected);
     CHECK(jobs.JobComplete(job));
 }
+
+// ── 2.16 — cache affinity (D-0047) ───────────────────────────────────────
+//
+// The point of these two tests is that the preference is REAL code with an
+// empty input, not a stub. The first proves the default path is untouched; the
+// second proves the preference actually fires when there is something to prefer
+// — which is the assertion a stub could not pass, and the reason this project
+// does not ship inert hooks (see `never_renews_lease`, 2.6-2.10).
+
+TEST_CASE("with no cached assets the queue order is untouched", "[job][affinity]") {
+    JobManager jobs;
+    const auto job = jobs.CreateJob("k", 3000, /*seed=*/1);
+    const WorkerId w1{1, 1};
+    const WorkerId w2{2, 2};
+
+    const auto a = jobs.Grant(w1, kNow, 1000, 1000);
+    const auto b = jobs.Grant(w2, kNow, 1000, 1000);
+    REQUIRE(a);
+    REQUIRE(b);
+    REQUIRE(jobs.Requeue(a->id, TaskEvent::Release));
+    REQUIRE(jobs.Requeue(b->id, TaskEvent::Release));
+
+    // No worker has a cache and the job has no input_ref, so `Grant` must hand
+    // back the head of the queue exactly as before affinity existed.
+    const WorkerId w3{3, 3};
+    const auto got = jobs.Grant(w3, kNow, 1000, 1000);
+    REQUIRE(got);
+    CHECK(got->id == a->id);
+    CHECK(job == got->job);
+}
+
+TEST_CASE("a worker is preferred for a task whose input it already holds",
+          "[job][affinity]") {
+    JobManager jobs;
+    const auto plain = jobs.CreateJob("k", 1000, /*seed=*/1);
+    const auto with_asset = jobs.CreateJob("k", 1000, /*seed=*/2);
+
+    AssetId asset{};
+    asset[0] = std::byte{0xAB};
+    jobs.MutableJob(with_asset)->input_ref = asset;
+
+    const WorkerId w1{1, 1};
+    const WorkerId w2{2, 2};
+    const auto a = jobs.Grant(w1, kNow, 1000, 1000);
+    const auto b = jobs.Grant(w2, kNow, 1000, 1000);
+    REQUIRE(a);
+    REQUIRE(b);
+
+    // WHICH job gets carved first is unspecified — `jobs_` is an unordered_map
+    // — so sort the two out by their job rather than assuming. Asserting the
+    // container's iteration order would be a test that passes on this build and
+    // fails on the next libc++.
+    const auto& t_asset = a->job == with_asset ? a : b;
+    const auto& t_plain = a->job == with_asset ? b : a;
+    REQUIRE(t_plain->job == plain);
+
+    // Queue the PLAIN task first, so plain queue order would return it and only
+    // affinity can produce the other answer.
+    REQUIRE(jobs.Requeue(t_plain->id, TaskEvent::Release));
+    REQUIRE(jobs.Requeue(t_asset->id, TaskEvent::Release));
+
+    const std::array<AssetId, 1> cached{asset};
+    const WorkerId w3{3, 3};
+    const auto got = jobs.Grant(w3, kNow, 1000, 1000, cached);
+    REQUIRE(got);
+    // The SECOND queue entry, chosen over the head, because this worker holds
+    // its input. Without the affinity path this is `t_plain` and fails.
+    CHECK(got->id == t_asset->id);
+
+    // And the skipped task is still queued — affinity reorders, never drops.
+    const WorkerId w4{4, 4};
+    const auto rest = jobs.Grant(w4, kNow, 1000, 1000);
+    REQUIRE(rest);
+    CHECK(rest->id == t_plain->id);
+}
+
+TEST_CASE("affinity does not override the requeued-before-fresh rule",
+          "[job][affinity]") {
+    JobManager jobs;
+    const auto job = jobs.CreateJob("k", 10000, /*seed=*/1);
+
+    AssetId asset{};
+    asset[0] = std::byte{0x77};
+    jobs.MutableJob(job)->input_ref = asset;
+
+    const WorkerId w1{1, 1};
+    const auto first = jobs.Grant(w1, kNow, 1000, 1000);
+    REQUIRE(first);
+    REQUIRE(jobs.Requeue(first->id, TaskEvent::Release));
+
+    // A worker holding the asset still gets the REQUEUED task, not a fresh
+    // carve — D-0043's ordering wins, and affinity only picks within it.
+    const std::array<AssetId, 1> cached{asset};
+    const WorkerId w2{2, 2};
+    const auto got = jobs.Grant(w2, kNow, 1000, 1000, cached);
+    REQUIRE(got);
+    CHECK(got->id == first->id);
+}

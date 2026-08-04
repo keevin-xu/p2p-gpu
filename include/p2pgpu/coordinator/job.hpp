@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "p2pgpu/coordinator/affinity.hpp"
 #include "p2pgpu/coordinator/task_state.hpp"
 #include "p2pgpu/protocol/error.hpp"
 #include "p2pgpu/protocol/ids.hpp"
@@ -41,6 +42,13 @@ struct Task {
     /// worker clocks are never trusted (PROTOCOL.md §5).
     std::uint64_t lease_expires_at_ms = 0;
 
+    /// Set when this task is a speculative replica of another (2.17, D-0045).
+    /// Nil for an original. Two tasks over one range is what is ACTUALLY true —
+    /// two workers are computing the same thing — and modelling it as one task
+    /// with two holders would make "who holds this lease" ambiguous, which is
+    /// the question invariants 5 and 6 exist to answer.
+    TaskId replica_of;
+
     /// Workers that have already computed this task or a sibling replica.
     /// Invariant 6 forbids granting a replica to any of them: a worker agreeing
     /// with itself is not evidence.
@@ -59,6 +67,13 @@ struct Job {
     /// hands the slow ones work they cannot finish inside a lease.
     std::uint64_t total_units = 0;
     std::uint64_t next_unit = 0;
+
+    /// The bulk input every task of this job reads, if any (2.16).
+    ///
+    /// Always absent today: nothing creates assets until Phase 6. It is a real
+    /// field rather than a placeholder so the affinity path in `Grant` is the
+    /// same code before and after assets exist (D-0047).
+    std::optional<AssetId> input_ref;
 
     /// Tasks carved so far. Grows as the job runs; empty at creation.
     std::vector<TaskId> tasks;
@@ -95,9 +110,13 @@ public:
     ///
     /// Enforces invariant 6: never granted to a worker that already computed it
     /// or a sibling.
+    /// `cached` is the requesting worker's held bulk inputs (2.16). Defaulted
+    /// empty because nothing produces assets yet — see D-0047 for why the
+    /// preference is implemented rather than stubbed.
     [[nodiscard]] std::optional<Task> Grant(WorkerId worker, std::uint64_t now_ms,
                                             std::uint32_t lease_ms,
-                                            std::uint64_t units);
+                                            std::uint64_t units,
+                                            std::span<const AssetId> cached = {});
 
     /// Invariant 5 on its own, WITHOUT any state change.
     ///
@@ -164,6 +183,13 @@ public:
 
     [[nodiscard]] const Task* Find(TaskId id) const noexcept;
     [[nodiscard]] const Job* FindJob(JobId id) const noexcept;
+
+    /// Mutable access to a job's own metadata (2.16 sets `input_ref`).
+    ///
+    /// Deliberately NOT a way to edit task state: everything about a task's
+    /// lifecycle goes through Grant/Submit/Requeue so the state machine stays
+    /// the only thing that moves a task (D-0011).
+    [[nodiscard]] Job* MutableJob(JobId id) noexcept;
     [[nodiscard]] std::vector<TaskId> HeldBy(WorkerId worker) const;
     /// Tasks waiting to be re-granted. NOT the same as "work left" — fresh
     /// keyspace is not in the queue until it has been carved and come back.
@@ -190,6 +216,42 @@ public:
     /// --exit-when-complete harness (step 1.26).
     [[nodiscard]] bool AllComplete() const;
 
+    // ── Speculation (2.17) ───────────────────────────────────────────────
+
+    /// Issue a speculative replica of an outstanding task to `worker`, if the
+    /// job is at least `threshold` complete by units.
+    ///
+    /// Only fires near the end, because that is the only time it pays: a
+    /// straggler holding one of the last tasks can double a job's wall time,
+    /// while the same duplication early on is pure waste.
+    ///
+    /// Never to a worker that already holds or has computed the task
+    /// (invariant 6) — a worker racing itself is not a race.
+    [[nodiscard]] std::optional<Task> IssueSpeculative(WorkerId worker,
+                                                       std::uint64_t now_ms,
+                                                       std::uint32_t lease_ms,
+                                                       double threshold = 0.95);
+
+    /// Cancel every live sibling of `task` — the group is done.
+    ///
+    /// Returns (task, holder) pairs so the caller can send `Revoke`. Cancelled,
+    /// NOT rejected: losing a race carries no penalty (D-0045).
+    struct Revocation {
+        TaskId task;
+        WorkerId holder;
+        std::uint64_t wasted_units = 0;
+    };
+    [[nodiscard]] std::vector<Revocation> CancelSiblingsOf(TaskId task);
+
+    /// Units duplicated by speculation and then discarded. E5 reports this as
+    /// the COST side — a speculation policy whose cost is not measured is one
+    /// nobody can argue with.
+    [[nodiscard]] std::uint64_t wasted_units() const noexcept { return wasted_units_; }
+
+    /// Fraction of the job's keyspace that has reached a terminal accepted
+    /// state. Drives the speculation threshold.
+    [[nodiscard]] double CompletionFraction(JobId job) const;
+
 private:
     [[nodiscard]] protocol::Status Apply(Task& task, TaskEvent ev);
 
@@ -197,6 +259,7 @@ private:
     std::unordered_map<JobId, Job> jobs_;
     std::vector<TaskId> queue_;
     std::uint64_t next_id_ = 1;
+    std::uint64_t wasted_units_ = 0;
 };
 
 }  // namespace p2pgpu::coordinator

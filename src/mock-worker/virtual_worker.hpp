@@ -46,6 +46,7 @@ struct WorkerStats {
     std::uint32_t tasks_abandoned = 0;
     std::uint32_t reconnects = 0;
     std::uint32_t malformed_sent = 0;
+    std::uint32_t tasks_revoked = 0;
 };
 
 class VirtualWorker {

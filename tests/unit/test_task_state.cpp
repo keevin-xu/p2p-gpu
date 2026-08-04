@@ -1,7 +1,7 @@
 // T1 — task lifecycle state machine (step 1.13). THE CORRECTNESS CORE.
 //
 // The phase file requires every legal transition tested AND every illegal one
-// asserted to fail. There are 6 states x 9 events = 54 pairs, so this does not
+// asserted to fail. There are 7 states x 10 events = 70 pairs, so this does not
 // hand-list them: it enumerates the full cross product and checks each against
 // a table of the nine legal transitions from ARCHITECTURE.md §5.
 //
@@ -11,6 +11,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <string_view>
 #include <optional>
 
 #include "p2pgpu/coordinator/task_state.hpp"
@@ -19,22 +20,32 @@ using namespace p2pgpu::coordinator;
 
 namespace {
 
-// Every state and event, so the cross product below is complete. If either enum
-// grows, `Advance` stops compiling (no default: arm) — and these arrays are the
-// second place to update, which the count assertions below make impossible to
-// forget.
+// Every state and event, so the cross product below is complete.
 constexpr std::array kStates{TaskState::Queued,       TaskState::Leased,
                              TaskState::Validating,   TaskState::NeedsReplica,
-                             TaskState::Accepted,     TaskState::Rejected};
+                             TaskState::Accepted,     TaskState::Rejected,
+                             TaskState::Cancelled};
 
 constexpr std::array kEvents{TaskEvent::Grant,        TaskEvent::Renew,
                              TaskEvent::Submit,       TaskEvent::LeaseExpired,
                              TaskEvent::Release,      TaskEvent::Accept,
                              TaskEvent::Disagreement, TaskEvent::IssueReplica,
-                             TaskEvent::Reject};
+                             TaskEvent::Reject,       TaskEvent::Cancel};
 
-static_assert(kStates.size() == 6, "a state was added — update this table");
-static_assert(kEvents.size() == 9, "an event was added — update this table");
+// ── THESE ARRAYS MUST STAY COMPLETE, AND THIS IS WHAT ENFORCES IT ────────
+// A plain `size() == N` assertion does NOT catch an enum growing — it only
+// catches someone editing the array, which is the easy case. `Cancelled` was
+// added to TaskState and the old assertion sailed straight past it.
+//
+// These do catch it. The enumerators are contiguous from 0, so casting the
+// array's size yields the first value PAST the enum; `ToString` answers "?" for
+// anything it does not know. If a state is added and this table is not updated,
+// that cast lands on the new enumerator, ToString returns its real name, and
+// the build fails here.
+static_assert(ToString(static_cast<TaskState>(kStates.size())) == std::string_view{"?"},
+              "a TaskState was added — add it to kStates and to kLegal below");
+static_assert(ToString(static_cast<TaskEvent>(kEvents.size())) == std::string_view{"?"},
+              "a TaskEvent was added — add it to kEvents and to kLegal below");
 
 /// THE NINE LEGAL TRANSITIONS, transcribed from the ARCHITECTURE.md §5 diagram.
 /// Anything absent here must be rejected.
@@ -54,6 +65,13 @@ constexpr std::array kLegal{
     Legal{TaskState::Validating,   TaskEvent::Reject,       TaskState::Rejected},
     Legal{TaskState::Validating,   TaskEvent::Disagreement, TaskState::NeedsReplica},
     Legal{TaskState::NeedsReplica, TaskEvent::IssueReplica, TaskState::Queued},
+    // Speculation (2.17 / D-0045). A sibling finished first, so this holder's
+    // work is superseded — from wherever it had got to. NOT Rejected: losing a
+    // race you were entered into without being asked is not misconduct, and
+    // Rejected costs reputation.
+    Legal{TaskState::Leased,       TaskEvent::Cancel,       TaskState::Cancelled},
+    Legal{TaskState::Validating,   TaskEvent::Cancel,       TaskState::Cancelled},
+    Legal{TaskState::NeedsReplica, TaskEvent::Cancel,       TaskState::Cancelled},
 };
 
 std::optional<TaskState> LookupLegal(TaskState from, TaskEvent ev) {
@@ -65,7 +83,7 @@ std::optional<TaskState> LookupLegal(TaskState from, TaskEvent ev) {
 
 }  // namespace
 
-TEST_CASE("every one of the 54 (state, event) pairs behaves as specified",
+TEST_CASE("every one of the 70 (state, event) pairs behaves as specified",
           "[task_state]") {
     int legal_seen = 0;
     int illegal_seen = 0;
@@ -90,8 +108,8 @@ TEST_CASE("every one of the 54 (state, event) pairs behaves as specified",
         }
     }
 
-    CHECK(legal_seen == 9);
-    CHECK(illegal_seen == 45);
+    CHECK(legal_seen == 12);    // 9 original + 3 Cancel edges (D-0045)
+    CHECK(illegal_seen == 58);  // 7 x 10 - 12
     CHECK(legal_seen + illegal_seen ==
           static_cast<int>(kStates.size() * kEvents.size()));
 }

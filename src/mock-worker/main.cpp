@@ -105,10 +105,12 @@ int main(int argc, char** argv) {
         total.tasks_abandoned += s.tasks_abandoned;
         total.reconnects += s.reconnects;
         total.malformed_sent += s.malformed_sent;
+        total.tasks_revoked += s.tasks_revoked;
         w->Stop();
     }
-    spdlog::info("fleet done: completed={} lied={} abandoned={} reconnects={} malformed={}",
+    spdlog::info("fleet done: completed={} lied={} abandoned={} reconnects={} "
+                 "malformed={} revoked={}",
                  total.tasks_completed, total.tasks_lied_about, total.tasks_abandoned,
-                 total.reconnects, total.malformed_sent);
+                 total.reconnects, total.malformed_sent, total.tasks_revoked);
     return 0;
 }

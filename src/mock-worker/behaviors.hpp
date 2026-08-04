@@ -48,6 +48,24 @@ struct Behaviors {
     /// result. THE BYZANTINE INSTRUMENT (E4).
     double lies_probabilistically = 0.0;
 
+    /// Reports a benchmark score this many times its ACTUAL speed.
+    ///
+    /// THE STRAGGLER INSTRUMENT (E5). Adaptive sizing eliminates stragglers by
+    /// construction — every worker gets a task sized to ~target_ms for its own
+    /// measured speed — so a fleet where scores are honest produces no slow
+    /// tail at all, and speculation never fires.
+    ///
+    /// What speculation actually insures against is a worker whose speed
+    /// CHANGES after the grant: another application starts, the laptop drops to
+    /// battery, a phone thermally throttles. Inflating the reported score is the
+    /// cleanest way to model that — the coordinator sizes for a machine that no
+    /// longer exists.
+    ///
+    /// Note the EWMA correction (2.13) will fix this within a few tasks, which
+    /// is the point: speculation covers the window BEFORE the estimator catches
+    /// up, and E5 measures how much that window costs.
+    double score_inflation = 1.0;
+
     /// Added to every message this worker sends. Simulates a distant peer.
     std::uint32_t high_latency_ms = 0;
 

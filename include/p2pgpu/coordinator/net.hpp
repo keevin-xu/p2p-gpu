@@ -11,6 +11,7 @@
 
 #include <functional>
 #include <span>
+#include <unordered_map>
 
 #include "p2pgpu/coordinator/job.hpp"
 #include "p2pgpu/coordinator/kernel_registry.hpp"
@@ -73,8 +74,28 @@ private:
     void OnFrame(Session& session, std::uint64_t conn_id, std::uint32_t& rejected,
                  std::string_view bytes, const SendFn& send, const CloseFn& close);
 
-    /// One pass of expiry + loss detection. Called from the single sweep timer.
+    /// One pass of expiry + loss detection + revoke delivery. Called from the
+    /// single sweep timer.
     void Sweep();
+
+    /// A live connection, once its worker identity is known.
+    ///
+    /// This exists so the coordinator can SPEAK FIRST (D-0046). Everything else
+    /// here is request/response — a worker sends, a session replies — and a
+    /// revoke is the one message that must reach a worker that is deliberately
+    /// silent, because it is busy computing the work we want it to abandon.
+    struct LiveConn {
+        Session* session = nullptr;
+        SendFn send;
+    };
+
+    /// Registered on handshake, erased on close. Raw `Session*` is safe only
+    /// because the close handler runs for every way a connection can end and is
+    /// the sole owner's teardown — see `Register`/`Unregister`.
+    std::unordered_map<protocol::WorkerId, LiveConn> live_;
+
+    void Register(protocol::WorkerId id, Session* session, SendFn send);
+    void Unregister(protocol::WorkerId id);
 
     Config config_;
     const KernelRegistry& kernels_;

@@ -124,6 +124,22 @@ Reaction Session::NonFatal(wire::ErrorCode code, const char* message) {
 }
 
 Reaction Session::OnMessage(const protocol::VerifiedFrame& frame, std::uint64_t now_ms) {
+    Reaction r = Dispatch(frame, now_ms);
+    // Opportunistic ONLY. The sweep timer is what actually delivers revokes
+    // (D-0046); if this worker happens to be talking to us anyway, it gets them
+    // a little sooner. This was once the sole delivery path, which meant the
+    // stop reached a worker only after it finished the work being cancelled —
+    // a busy worker sends nothing, and that is precisely the worker being
+    // revoked. Draining twice is safe: whichever runs first empties the queue.
+    if (handshaked_) {
+        for (auto& rev : DrainRevokes()) {
+            r.replies.push_back(std::move(rev));
+        }
+    }
+    return r;
+}
+
+Reaction Session::Dispatch(const protocol::VerifiedFrame& frame, std::uint64_t now_ms) {
     now_ms_ = now_ms;
     const wire::Envelope& env = *frame.envelope();
 
@@ -375,32 +391,53 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
         // Sized for THIS worker, now (2.12). The kernel's R5 floor comes from
         // the manifest and is a hard minimum the sizer may not clamp under
         // (D-0029) — which is why the job has to be identified BEFORE sizing.
+        //
+        // A null `next_job` means no job has keyspace left to carve. That is NOT
+        // a reason to stop: it is the precondition for speculation (2.17), which
+        // by definition only runs once there is nothing fresh to hand out. An
+        // early `break` here made `IssueSpeculative` below structurally
+        // unreachable — a 12-worker heterogeneous run issued 1108 tasks and
+        // exactly 0 replicas, which is what exposed it.
+        std::optional<Task> task;
         const Job* next_job = jobs_.PeekNextJob();
-        if (next_job == nullptr) {
-            break;   // nothing left anywhere
+        if (next_job != nullptr) {
+            const KernelSpec* next_spec = kernels_.Find(next_job->kernel_id);
+
+            // ops/sec -> units/sec for THIS kernel. `flop_per_unit` is the
+            // manifest's count of arithmetic ops per work unit (D-0029(a) rules
+            // that the R5 gate counts integer ops too, which is what makes one
+            // device number comparable across kernels at all).
+            const double ops_per_unit =
+                (next_spec != nullptr && next_spec->flop_per_unit > 0)
+                    ? static_cast<double>(next_spec->flop_per_unit)
+                    : 1.0;
+
+            SizingInputs sizing;
+            sizing.score = rec->score_ops_per_sec / ops_per_unit;
+            sizing.correction = rec->correction;
+            sizing.throttle = rec->throttle;
+            sizing.target_ms = kTargetTaskMs;
+            sizing.lease_ms = lease_ms_;
+            sizing.r5_min_units = next_spec != nullptr ? next_spec->r5_min_units : 0;
+            sizing.remaining_units = next_job->remaining_units();
+
+            // 2.16 — the worker's cached assets ride along so `Grant` can
+            // prefer a task whose input it already holds. Empty until Phase 6
+            // (D-0047).
+            task = jobs_.Grant(worker_id_, now_ms, lease_ms_, ComputeTaskSize(sizing),
+                               rec->cached_assets);
         }
-        const KernelSpec* next_spec = kernels_.Find(next_job->kernel_id);
 
-        // ops/sec -> units/sec for THIS kernel. `flop_per_unit` is the
-        // manifest's count of arithmetic ops per work unit (D-0029(a) rules that
-        // the R5 gate counts integer ops too, which is what makes one device
-        // number comparable across kernels at all).
-        const double ops_per_unit =
-            (next_spec != nullptr && next_spec->flop_per_unit > 0)
-                ? static_cast<double>(next_spec->flop_per_unit)
-                : 1.0;
-
-        SizingInputs sizing;
-        sizing.score = rec->score_ops_per_sec / ops_per_unit;
-        sizing.correction = rec->correction;
-        sizing.throttle = rec->throttle;
-        sizing.target_ms = kTargetTaskMs;
-        sizing.lease_ms = lease_ms_;
-        sizing.r5_min_units = next_spec != nullptr ? next_spec->r5_min_units : 0;
-        sizing.remaining_units = next_job->remaining_units();
-
-        const auto task = jobs_.Grant(worker_id_, now_ms, lease_ms_,
-                                      ComputeTaskSize(sizing));
+        if (!task) {
+            // Nothing left to carve. Near the end of a job, race a straggler
+            // instead of idling (2.17) — the tail is what dominates completion
+            // time on a heterogeneous fleet.
+            task = jobs_.IssueSpeculative(worker_id_, now_ms, lease_ms_);
+            if (task) {
+                spdlog::info("speculative conn_id={} task={} replica_of={}", conn_id_,
+                             task->id.lo(), task->replica_of.lo());
+            }
+        }
         if (!task) {
             break;
         }
@@ -477,8 +514,14 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
         // the observed duration — never against the worker's self-reported
         // gpu_ms, which is telemetry a worker chooses (invariant 8).
         if (WorkerRecord* mrec = fleet_.Mutable(worker_id_); mrec != nullptr) {
+            // From the GRANTED task's kernel, not the one sizing looked at: a
+            // speculative replica can belong to a different job than
+            // `PeekNextJob` named, and predicting against the wrong
+            // `flop_per_unit` would poison the correction EWMA (2.13).
+            const double granted_ops_per_unit =
+                spec->flop_per_unit > 0 ? static_cast<double>(spec->flop_per_unit) : 1.0;
             mrec->predicted_ms = 1000.0 * static_cast<double>(task->unit_count) /
-                                 (rec->score_ops_per_sec / ops_per_unit);
+                                 (rec->score_ops_per_sec / granted_ops_per_unit);
             mrec->granted_at_ms = now_ms;
         }
     }
@@ -487,6 +530,26 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
                   conn_id_, req.max_tasks(), granted, rec->score_ops_per_sec,
                   rec->correction);
     return Reaction{std::move(out)};
+}
+
+std::vector<std::vector<std::byte>> Session::DrainRevokes() {
+    std::vector<std::vector<std::byte>> out;
+    WorkerRecord* rec = fleet_.Mutable(worker_id_);
+    if (rec == nullptr || rec->pending_revokes.empty()) {
+        return out;
+    }
+    for (const TaskId task : rec->pending_revokes) {
+        out.push_back(protocol::EncodeMessage(
+            wire::Body::Revoke, [&](flatbuffers::FlatBufferBuilder& fbb) {
+                const wire::Uuid tid = task.to_wire();
+                wire::RevokeBuilder b(fbb);
+                b.add_task_id(&tid);
+                b.add_reason(wire::RevokeReason::SpeculativeLoser);
+                return b.Finish();
+            }));
+    }
+    rec->pending_revokes.clear();
+    return out;
 }
 
 Reaction Session::OnProgress(const wire::Progress& progress, std::uint64_t now_ms) {
@@ -665,6 +728,17 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
     // better than implying a check that does not exist yet.
     if (const auto s = jobs_.Finish(task_id, /*accepted=*/true); !s) {
         return NonFatal(wire::ErrorCode::Internal, "task could not be finalised");
+    }
+
+    // FIRST RESULT WINS (2.17). Every live sibling is cancelled — not
+    // rejected, and not requeued: the range is done, and the losing worker did
+    // nothing wrong.
+    for (const auto& rev : jobs_.CancelSiblingsOf(task_id)) {
+        if (WorkerRecord* loser = fleet_.Mutable(rev.holder); loser != nullptr) {
+            loser->pending_revokes.push_back(rev.task);
+        }
+        spdlog::info("speculation_won task={} cancelled={} wasted_units={}",
+                     task_id.lo(), rev.task.lo(), rev.wasted_units);
     }
 
     completed_.push_back(task_id);

@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "p2pgpu/coordinator/affinity.hpp"
 #include "p2pgpu/protocol/ids.hpp"
 
 namespace p2pgpu::coordinator {
@@ -59,6 +60,24 @@ struct WorkerRecord {
     /// factor is computed from what we observed, not what we were told.
     double predicted_ms = 0.0;
     std::uint64_t granted_at_ms = 0;
+
+    /// Tasks this worker must stop working on (2.17). Queued here because the
+    /// winner is on a DIFFERENT connection, and a Session can only reply on its
+    /// own socket — so a revoke rides along on this worker's next reply.
+    ///
+    /// Latency is bounded by the renewal interval (~3 s), which is acceptable:
+    /// the cost of a late revoke is a little wasted compute, and the worker's
+    /// result is discarded silently when it arrives (2.10).
+    std::vector<protocol::TaskId> pending_revokes;
+
+    /// Bulk inputs this worker already holds (2.16). Empty until Phase 6
+    /// distributes assets; `Grant` prefers tasks needing one of these.
+    ///
+    /// NOT yet populated from anything the worker says. A self-reported cache
+    /// is unverifiable, and a worker claiming to hold every asset would be
+    /// preferred for everything (R11) — Phase 6 owns making the claim
+    /// checkable.
+    std::vector<AssetId> cached_assets;
 };
 
 class Fleet {
