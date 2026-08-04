@@ -37,14 +37,22 @@ std::uint64_t ComputeTaskSize(const SizingInputs& in) noexcept {
         return 0;   // paused by the user (R7); not an error, just no work
     }
 
+    // 0. THE PROBE (D-0050). Before a worker's first completed task the only
+    //    thing known about it is a score it reported about itself, and E5
+    //    measured what believing that costs: every task over 10 s was a
+    //    worker's FIRST task, predicted 2000 ms against ~41000 ms actual.
+    //    Divided here rather than clamped later so the lease clamp, the R5
+    //    floor and the remaining cap all still apply in their fixed order.
+    const double probe = in.cold_start ? static_cast<double>(kProbeDivisor) : 1.0;
+
     // 1. What this worker should manage in target_ms.
     const double seconds = static_cast<double>(in.target_ms) / 1000.0;
-    double units = seconds * in.score * throttle / correction;
+    double units = seconds * in.score * throttle / (correction * probe);
 
     // 2. Clamp to what fits in the lease, with headroom.
     const double lease_seconds =
         (static_cast<double>(in.lease_ms) / 1000.0) * kLeaseHeadroom;
-    const double lease_cap = lease_seconds * in.score * throttle / correction;
+    const double lease_cap = lease_seconds * in.score * throttle / (correction * probe);
     units = std::min(units, lease_cap);
 
     if (!(units >= 1.0) || !std::isfinite(units)) {

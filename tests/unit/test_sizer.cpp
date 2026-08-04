@@ -149,3 +149,73 @@ TEST_CASE("degenerate samples are ignored, not absorbed", "[sizer]") {
     CHECK(UpdateCorrection(before, std::numeric_limits<double>::quiet_NaN(), 1.0) == before);
     CHECK(UpdateCorrection(before, 1.0, std::numeric_limits<double>::infinity()) == before);
 }
+
+// ── D-0050 — the first grant is a probe ──────────────────────────────────
+//
+// E5 measured that every task over 10 s was a worker's FIRST task, predicted
+// 2000 ms against ~41000 ms actual. These pin the fix and, more importantly,
+// pin that it does not disturb the rule ORDER it sits in front of.
+
+TEST_CASE("a worker's first task is divided by the probe divisor", "[sizer]") {
+    SizingInputs in;
+    in.score = 1.0e6;
+    in.target_ms = 2000;
+    in.lease_ms = 30000;
+    in.remaining_units = 1'000'000'000;
+
+    in.cold_start = false;
+    const std::uint64_t warm = ComputeTaskSize(in);
+    in.cold_start = true;
+    const std::uint64_t probe = ComputeTaskSize(in);
+
+    REQUIRE(warm > 0);
+    CHECK(probe == warm / kProbeDivisor);
+}
+
+TEST_CASE("the probe bounds a wildly inflated score", "[sizer]") {
+    // A worker claiming 20x its real speed. The probe does not detect the lie —
+    // nothing here can — it bounds what believing it costs, which is the point.
+    SizingInputs honest;
+    honest.score = 1.0e6;
+    honest.target_ms = 2000;
+    honest.lease_ms = 30000;
+    honest.remaining_units = 1'000'000'000;
+
+    SizingInputs liar = honest;
+    liar.score = 20.0e6;
+    liar.cold_start = true;
+
+    // Real time the liar's first task takes, at its ACTUAL 1e6 units/sec.
+    const double actual_s = static_cast<double>(ComputeTaskSize(liar)) / 1.0e6;
+    liar.cold_start = false;
+    const double unbounded_s = static_cast<double>(ComputeTaskSize(liar)) / 1.0e6;
+
+    CHECK(unbounded_s > 30.0);   // ~40 s — the E5 tail
+    CHECK(actual_s < 6.0);       // ~5 s
+}
+
+TEST_CASE("the R5 floor still wins over the probe", "[sizer]") {
+    // Rule ORDER is the design (D-0043). The probe divides the throughput term
+    // and everything after it still applies — a probe must never become a new
+    // way to grant sub-R5 work.
+    SizingInputs in;
+    in.score = 1.0e6;
+    in.target_ms = 2000;
+    in.lease_ms = 30000;
+    in.r5_min_units = 4'000'000;   // deliberately above the probe size
+    in.remaining_units = 1'000'000'000;
+    in.cold_start = true;
+
+    CHECK(ComputeTaskSize(in) == in.r5_min_units);
+}
+
+TEST_CASE("the probe never exceeds what is left", "[sizer]") {
+    SizingInputs in;
+    in.score = 1.0e9;
+    in.target_ms = 2000;
+    in.lease_ms = 30000;
+    in.remaining_units = 500;
+    in.cold_start = true;
+
+    CHECK(ComputeTaskSize(in) == 500);
+}

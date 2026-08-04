@@ -55,12 +55,25 @@ struct SizingInputs {
 
     /// Units left in the job's keyspace. The last task takes whatever remains.
     std::uint64_t remaining_units = 0;
+
+    /// True until this worker has COMPLETED something (D-0050).
+    ///
+    /// Before a worker's first result the only information about it is a score
+    /// it reported about itself. E5 measured what that costs: every task over
+    /// 10 s was a worker's FIRST task, predicted 2000 ms and actual ~41000 ms,
+    /// while the worst second task was 2054 ms. The tail is a COLD-START
+    /// problem exactly one task deep, and speculation cannot fix it — a replica
+    /// inherits the oversized `unit_count` and cannot win the race.
+    bool cold_start = false;
 };
 
 /// Compute a task size, in work units.
 ///
 /// Rules, in the order they apply — the order is the design:
 ///
+///   0. **divide by `kProbeDivisor` if `cold_start`** (D-0050). Converts an
+///      unbounded unknown — an unverifiable self-reported score — into a
+///      bounded one, at a cost of one short task per worker.
 ///   1. `target_ms x score x correction x throttle`
 ///   2. **clamp to the lease** — with headroom, using the same half-open
 ///      reading as the expiry sweep. A task sized to exactly fill its lease
@@ -76,6 +89,16 @@ struct SizingInputs {
 ///
 /// Returns 0 when nothing should be granted — no keyspace left, or a worker
 /// with no usable score.
+/// How much smaller a worker's first task is (D-0050).
+///
+/// 8 because 2.26 measures the estimator as within 3% after ONE observation, so
+/// the exposure is one task either way and only its size is in question. At
+/// measured sizes this makes an honest worker's probe ~4.2e5 units — just above
+/// the R5 floor of 4.0e5, so it is not clamped away — and a 20x-inflated
+/// worker's ~5 s instead of ~41 s. Bigger divisors buy little more tail and
+/// start colliding with the floor, which would make every first task identical.
+inline constexpr std::uint64_t kProbeDivisor = 8;
+
 [[nodiscard]] std::uint64_t ComputeTaskSize(const SizingInputs& in) noexcept;
 
 /// Update a worker's correction factor from one completed task (2.13).

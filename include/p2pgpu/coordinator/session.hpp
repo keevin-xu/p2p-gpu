@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "p2pgpu/coordinator/event_log.hpp"
 #include "p2pgpu/coordinator/job.hpp"
 #include "p2pgpu/coordinator/fleet.hpp"
 #include "p2pgpu/coordinator/kernel_registry.hpp"
@@ -76,6 +77,16 @@ public:
     /// timing, which is what keeps it transport-free and unit-testable.
     [[nodiscard]] std::vector<std::vector<std::byte>> DrainRevokes();
 
+    /// Dev-only experiment instrumentation (2.23-2.26). Null in every test and
+    /// in any coordinator run without `--events-csv`.
+    void SetEventLog(EventLog* log) noexcept { events_ = log; }
+
+    /// E5's CONTROL CONDITION (2.25). Speculation on/off is the single variable
+    /// that experiment changes, so it is a switch rather than a rebuild — two
+    /// binaries differing in more than the thing under test is how a measured
+    /// difference gets attributed to the wrong cause.
+    void SetSpeculation(bool on) noexcept { speculation_ = on; }
+
 private:
     /// The actual routing. `OnMessage` wraps this so revokes are appended to
     /// every reply without each handler having to remember.
@@ -106,6 +117,8 @@ private:
     std::uint64_t conn_id_ = 0;
     std::uint32_t lease_ms_ = 30000;
     ReferenceStats* reference_stats_ = nullptr;
+    EventLog* events_ = nullptr;
+    bool speculation_ = true;
 
     bool handshaked_ = false;
     WorkerId worker_id_;

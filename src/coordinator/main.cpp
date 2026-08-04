@@ -28,6 +28,10 @@ int main(int argc, char** argv) {
     app.add_option("--port", cfg.port, "WebSocket / HTTP port")->capture_default_str();
     app.add_option("--manifest", cfg.manifest, "kernel manifest")->capture_default_str();
     app.add_option("--kernel-dir", cfg.kernel_dir, "WGSL directory")->capture_default_str();
+    app.add_option("--events-csv", cfg.events_csv,
+                   "DEV: per-event CSV for the 2.23-2.26 experiments");
+    app.add_flag("!--no-speculation", cfg.speculation,
+                 "disable speculative re-execution (E5's control condition)");
     app.add_option("--store", cfg.store_path,
                    "SQLite file for durable state; empty (default) disables it");
     app.add_option("--log-level", cfg.log_level,
@@ -166,9 +170,23 @@ int main(int argc, char** argv) {
                      "as evidence that results are validated (Phase 3 does that).");
     }
 
+    std::unique_ptr<p2pgpu::coordinator::EventLog> events;
+    if (!cfg.events_csv.empty()) {
+        auto opened = p2pgpu::coordinator::EventLog::Open(cfg.events_csv);
+        if (!opened) {
+            spdlog::error("{}", opened.error().message);
+            return 1;
+        }
+        events = *std::move(opened);
+        spdlog::warn("DEV: writing per-event CSV to {}", cfg.events_csv);
+    }
+    if (!cfg.speculation) {
+        spdlog::warn("speculation DISABLED (E5 control condition)");
+    }
+
     p2pgpu::coordinator::Server server(cfg, *registry, jobs, fleet,
                                        verify_reference ? &ref_stats : nullptr,
-                                       store.get());
+                                       store.get(), events.get());
 
     // Runs from inside the event loop when every task is terminal, under
     // --exit-when-complete. The summary has to be printed there rather than

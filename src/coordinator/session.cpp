@@ -420,6 +420,10 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
             sizing.lease_ms = lease_ms_;
             sizing.r5_min_units = next_spec != nullptr ? next_spec->r5_min_units : 0;
             sizing.remaining_units = next_job->remaining_units();
+            // D-0050 — cold start until this worker has completed something.
+            // `tasks_completed` is OUR count of accepted results, not anything
+            // the worker claims, so a worker cannot skip its own probe.
+            sizing.cold_start = (rec->tasks_completed == 0);
 
             // 2.16 — the worker's cached assets ride along so `Grant` can
             // prefer a task whose input it already holds. Empty until Phase 6
@@ -432,7 +436,8 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
             // Nothing left to carve. Near the end of a job, race a straggler
             // instead of idling (2.17) — the tail is what dominates completion
             // time on a heterogeneous fleet.
-            task = jobs_.IssueSpeculative(worker_id_, now_ms, lease_ms_);
+            task = speculation_ ? jobs_.IssueSpeculative(worker_id_, now_ms, lease_ms_)
+                                : std::nullopt;
             if (task) {
                 spdlog::info("speculative conn_id={} task={} replica_of={}", conn_id_,
                              task->id.lo(), task->replica_of.lo());
@@ -523,6 +528,10 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
             mrec->predicted_ms = 1000.0 * static_cast<double>(task->unit_count) /
                                  (rec->score_ops_per_sec / granted_ops_per_unit);
             mrec->granted_at_ms = now_ms;
+            if (events_ != nullptr) {
+                events_->Grant(now_ms, task->id, worker_id_, task->unit_count,
+                               mrec->predicted_ms, task->replica_of != TaskId{});
+            }
         }
     }
 
@@ -737,6 +746,9 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
         if (WorkerRecord* loser = fleet_.Mutable(rev.holder); loser != nullptr) {
             loser->pending_revokes.push_back(rev.task);
         }
+        if (events_ != nullptr) {
+            events_->Cancel(now_ms_, rev.task, rev.holder, rev.wasted_units);
+        }
         spdlog::info("speculation_won task={} cancelled={} wasted_units={}",
                      task_id.lo(), rev.task.lo(), rev.wasted_units);
     }
@@ -751,9 +763,14 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
     if (WorkerRecord* rec = fleet_.Mutable(worker_id_);
         rec != nullptr && rec->predicted_ms > 0.0 && rec->granted_at_ms > 0) {
         const double actual_ms = static_cast<double>(now_ms_ - rec->granted_at_ms);
-        rec->correction = UpdateCorrection(rec->correction, rec->predicted_ms, actual_ms);
+        // Captured BEFORE the reset below. 2.26 plots predicted against actual,
+        // and reading `rec->predicted_ms` after it is zeroed would log 0 for
+        // every task — a convergence plot made entirely of a bookkeeping
+        // artifact, which would look like a finding rather than a bug.
+        const double predicted_ms = rec->predicted_ms;
+        rec->correction = UpdateCorrection(rec->correction, predicted_ms, actual_ms);
         spdlog::debug("sizing conn_id={} predicted={:.0f}ms actual={:.0f}ms corr={:.2f}",
-                      conn_id_, rec->predicted_ms, actual_ms, rec->correction);
+                      conn_id_, predicted_ms, actual_ms, rec->correction);
         rec->predicted_ms = 0.0;
 
         // 2.21 — observed throughput, accumulated from the SAME measurement the
@@ -762,6 +779,10 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
         if (const Task* done = jobs_.Find(task_id); done != nullptr) {
             rec->units_completed += done->unit_count;
             rec->observed_ms_total += actual_ms;
+            if (events_ != nullptr) {
+                events_->Accept(now_ms_, task_id, worker_id_, done->unit_count,
+                                actual_ms, predicted_ms, rec->correction);
+            }
         }
     }
     spdlog::info("result conn_id={} task={} bytes={} accepted", conn_id_,

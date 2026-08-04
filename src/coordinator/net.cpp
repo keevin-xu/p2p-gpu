@@ -46,9 +46,10 @@ struct Server::SseClients {
 };
 
 Server::Server(Config config, const KernelRegistry& kernels, JobManager& jobs,
-               Fleet& fleet, ReferenceStats* reference_stats, Store* store)
+               Fleet& fleet, ReferenceStats* reference_stats, Store* store,
+               EventLog* events)
     : config_(std::move(config)), kernels_(kernels), jobs_(jobs), fleet_(fleet),
-      reference_stats_(reference_stats), store_(store),
+      reference_stats_(reference_stats), store_(store), events_(events),
       sse_(std::make_unique<SseClients>()) {}
 
 Server::~Server() = default;
@@ -93,6 +94,9 @@ void Server::Sweep() {
                                                static_cast<double>(config_.lease_ms));
             rec->predicted_ms = 0.0;
         }
+        if (events_ != nullptr) {
+            events_->Expire(now_ms, e.task, e.holder, e.unit_count);
+        }
     }
     if (!expired.empty()) {
         // info, not warn. An expired lease is the NORMAL case for a volunteer
@@ -108,6 +112,9 @@ void Server::Sweep() {
         const std::size_t released = jobs_.ReleaseAllHeldBy(lost);
         fleet_.Leave(lost);
         Unregister(lost);
+        if (events_ != nullptr) {
+            events_->WorkerLost(now_ms, lost);
+        }
         spdlog::info("worker_lost worker={} released={} penalty=none", lost.hi(),
                      released);
     }
@@ -337,6 +344,8 @@ void Server::Run() {
                     data->session = std::make_unique<Session>(
                         this->jobs_, this->kernels_, this->fleet_, data->conn_id,
                         this->config_.lease_ms, this->reference_stats_);
+                    data->session->SetEventLog(this->events_);
+                    data->session->SetSpeculation(this->config_.speculation);
                     // Correlation fields from CONVENTIONS.md §6. worker_id is
                     // unknown until Hello arrives, so conn_id carries the trace
                     // until then — without it, a frame rejected during the

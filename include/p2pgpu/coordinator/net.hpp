@@ -51,6 +51,15 @@ struct Config {
     std::string kernel_dir = "kernels";
     std::string log_level = "info";
 
+    /// Per-event CSV for the 2.23-2.26 experiments. Empty disables it.
+    /// DEV ONLY, like --verify-reference: a coordinator serving real volunteers
+    /// does not write a row per task to disk.
+    std::string events_csv;
+
+    /// E5's control condition (2.25). Speculation is the ONE variable that
+    /// experiment changes, so it is a switch rather than a second binary.
+    bool speculation = true;
+
     /// SQLite file for durable state (2.19). Empty disables persistence
     /// entirely, which is what every test and mock run uses — a harness that
     /// silently accumulated a database between runs would make each run depend
@@ -66,7 +75,7 @@ public:
     /// owns it, so the lifetime is obvious at the one place both are created.
     Server(Config config, const KernelRegistry& kernels, JobManager& jobs,
            Fleet& fleet, ReferenceStats* reference_stats = nullptr,
-           Store* store = nullptr);
+           Store* store = nullptr, EventLog* events = nullptr);
 
     /// Out-of-line so `SseClients` may stay incomplete in this header.
     ~Server();
@@ -132,6 +141,7 @@ private:
     Fleet& fleet_;
     ReferenceStats* reference_stats_ = nullptr;
     Store* store_ = nullptr;
+    EventLog* events_ = nullptr;
     OnCompleteFn on_complete_;
 };
 
