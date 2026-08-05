@@ -153,4 +153,36 @@ QuorumResult Decide(const KernelSpec& spec, const QuorumConfig& cfg,
     return r;
 }
 
+std::uint32_t RequiredAgreementFor(const QuorumConfig& cfg, const ReputationTable& rep,
+                                   WorkerId worker, std::uint64_t now_ms) {
+    switch (cfg.policy) {
+        case ReplicationPolicy::None:
+            return 1;
+        case ReplicationPolicy::Fixed2x:
+            // E4's control condition: everyone, always, regardless of record.
+            // This is the number the adaptive policy has to beat (3.6).
+            return cfg.required_agreement;
+        case ReplicationPolicy::Adaptive:
+            break;
+    }
+
+    // Non-const lookup would create an entry for every worker asked about;
+    // `ScoreOf` returns the prior for an unknown one instead, which is the
+    // right answer and allocates nothing.
+    const Reputation* r = rep.Find(worker);
+    const bool probation = r != nullptr &&
+                           (r->on_probation || r->blacklisted_until_ms > now_ms);
+    if (probation) {
+        // The worker most worth checking is the one we just stopped trusting.
+        return cfg.max_replicas;
+    }
+    if (rep.ScoreOf(worker) >= rep.config().trusted_at) {
+        // No replication. THE point of 3.8 — a long correct record is the
+        // evidence, and a Beta score means a single lucky result cannot get
+        // here (D-0055).
+        return 1;
+    }
+    return cfg.required_agreement;
+}
+
 }  // namespace p2pgpu::coordinator

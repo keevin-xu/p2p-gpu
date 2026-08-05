@@ -20,6 +20,7 @@
 
 #include "p2pgpu/coordinator/job.hpp"
 #include "p2pgpu/coordinator/kernel_registry.hpp"
+#include "p2pgpu/coordinator/reputation.hpp"
 
 namespace p2pgpu::coordinator {
 
@@ -89,5 +90,27 @@ struct QuorumResult {
 /// `Tolerant` (D-0053).
 [[nodiscard]] QuorumResult Decide(const KernelSpec& spec, const QuorumConfig& cfg,
                                   std::span<const Task::Submission> submissions);
+
+/// How many agreeing answers this worker's result needs (3.8).
+///
+/// **This is the function that moves overhead from 2x toward 1x**, and it is
+/// BOINC's technique: replicate the unproven, trust the established.
+///
+///   - blacklisted or on probation -> the maximum. A worker returning from a
+///     ban is exactly the one to check, and probation would be meaningless
+///     otherwise.
+///   - score >= `trusted_at` -> 1, i.e. no replication at all. The long record
+///     IS the evidence; demanding a second opinion from a worker with two
+///     hundred correct results buys almost nothing and doubles its cost.
+///   - otherwise -> the configured requirement.
+///
+/// A Beta score is what makes the middle branch safe: 1/1 correct scores 0.60,
+/// not 1.0, so a lucky newcomer cannot reach `trusted_at` and skip validation
+/// (D-0055). With a naive success ratio this policy would trust anyone who got
+/// their first task right — which is precisely the opening a liar wants.
+[[nodiscard]] std::uint32_t RequiredAgreementFor(const QuorumConfig& cfg,
+                                                 const ReputationTable& rep,
+                                                 WorkerId worker,
+                                                 std::uint64_t now_ms);
 
 }  // namespace p2pgpu::coordinator

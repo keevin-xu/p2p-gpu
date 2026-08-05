@@ -320,6 +320,7 @@ if(NOT P2PGPU_WASM)
         src/coordinator/affinity.cpp
         src/coordinator/event_log.cpp
         src/coordinator/quorum.cpp
+        src/coordinator/reputation.cpp
         src/coordinator/store.cpp
         src/coordinator/job.cpp
         src/coordinator/session.cpp
