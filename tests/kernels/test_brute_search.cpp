@@ -128,6 +128,29 @@ kernels::BruteSearchResult RunGolden(const kernels::BruteSearchParams& in,
     return ParseResult(outcome->output);
 }
 
+/// Like RunGolden but returns the stats too, for the K4 limits tests (4.3).
+std::pair<kernels::BruteSearchResult, TaskStats> RunWithStats(
+    const kernels::BruteSearchParams& in, std::uint64_t start_unit,
+    std::uint64_t units, std::uint64_t units_per_chunk) {
+    static const std::string wgsl = ReadKernel("brute_search.wgsl");
+    const auto params = AsBytes(in);
+    const auto init = AsBytes(kernels::BruteSearchResult{});
+
+    TaskRequest req;
+    req.wgsl = wgsl;
+    req.entry_point = "main";
+    req.params = params;
+    req.start_unit = start_unit;
+    req.unit_count = units;
+    req.output_bytes = sizeof(kernels::BruteSearchResult);
+    req.workgroup_size = 256;
+    req.output_init = init;
+
+    const auto outcome = RunTask(TheGpu().ctx, req, units_per_chunk);
+    REQUIRE(outcome.has_value());
+    return {ParseResult(outcome->output), outcome->stats};
+}
+
 }  // namespace
 
 TEST_CASE("brute_search finds matches and the reductions agree", "[kernel][brute_search]") {
@@ -424,4 +447,148 @@ TEST_CASE("brute_search_v1 GPU matches the committed golden answers",
         CHECK(r.match_xor == g.match_xor);
         CHECK(r.min_match == g.min_match);
     }
+}
+
+// ── 4.2 — state leaks between chunks and between tasks ───────────────────
+//
+// 1.19 already proved 1, 4 and 256 chunks give bitwise-identical output. What
+// that does NOT cover is whether anything SURVIVES a boundary: residue in the
+// output buffer, a stale binding, a pipeline reused with the wrong params.
+//
+// The current kernel is reduction-only, so a leak would have to be dramatic to
+// show. **Phase 5 changes that** — on-node accumulation means chunks
+// deliberately read what earlier chunks wrote, and at that point "did anything
+// leak" and "did accumulation work" become the same question and stop being
+// separable. These pin the answer while it is still unambiguous.
+
+TEST_CASE("a chunk count that does not divide the range is still exact",
+          "[kernel][brute_search]") {
+    // 1<<20 units in chunks of 300000: three full chunks and a short tail.
+    // Every previous invariance test used a divisor, so the tail path — the one
+    // most likely to double-count or skip a boundary unit — was never taken.
+    constexpr std::uint64_t kUnits = 1u << 20;
+    const auto whole = RunSearch(kUnits, 0);
+    const auto ragged = RunSearch(kUnits, 300000);
+
+    CHECK(ragged.found_count == whole.found_count);
+    CHECK(ragged.match_xor == whole.match_xor);
+    CHECK(ragged.min_match == whole.min_match);
+}
+
+TEST_CASE("a single-unit chunk size is still exact", "[kernel][brute_search]") {
+    // The pathological end of the range. Slow, so a small total — the point is
+    // that a chunk carrying one unit still contributes exactly once.
+    constexpr std::uint64_t kUnits = 4096;
+    const auto whole = RunSearch(kUnits, 0);
+    const auto per_unit = RunSearch(kUnits, 1);
+
+    CHECK(per_unit.found_count == whole.found_count);
+    CHECK(per_unit.match_xor == whole.match_xor);
+    CHECK(per_unit.min_match == whole.min_match);
+}
+
+TEST_CASE("running the same task twice gives the same answer",
+          "[kernel][brute_search]") {
+    // Nothing accumulates across TASKS. If the output buffer were reused
+    // without re-initialisation, the second run's found_count would be double
+    // and min_match would be sticky — which is precisely D-0040's bug
+    // (`output_init` unset pinned min_match at 0 forever), caught then by the
+    // CPU reference rather than by anything structural.
+    constexpr std::uint64_t kUnits = 1u << 18;
+    const auto first = RunSearch(kUnits, 0);
+    const auto second = RunSearch(kUnits, 0);
+
+    CHECK(second.found_count == first.found_count);
+    CHECK(second.match_xor == first.match_xor);
+    CHECK(second.min_match == first.min_match);
+}
+
+TEST_CASE("a different task on the same device sees no residue",
+          "[kernel][brute_search]") {
+    // Task A over a range with matches, then task B over a DISJOINT range,
+    // on the same device and pipeline. B must equal what B computes alone.
+    //
+    // The failure this would catch is a shared output buffer or a stale
+    // binding: B would inherit A's found_count or min_match, and the answer
+    // would be wrong in a way that looks plausible.
+    kernels::BruteSearchParams p{};
+    p.base_hi = 0;
+    p.seed = 42;
+    p.target_bits = 0x234;
+    p.mask = 0xFFF;
+    p.rounds = 8;
+
+    const auto b_alone = RunGolden(p, 2'000'000, 500'000);
+
+    (void)RunGolden(p, 0, 1'000'000);          // task A, plenty of matches
+    const auto b_after_a = RunGolden(p, 2'000'000, 500'000);
+
+    CHECK(b_after_a.found_count == b_alone.found_count);
+    CHECK(b_after_a.match_xor == b_alone.match_xor);
+    CHECK(b_after_a.min_match == b_alone.min_match);
+}
+
+// ── 4.3 — K4 limits ──────────────────────────────────────────────────────
+//
+// K4 says read the device's limits at runtime and tile to fit, never hardcode.
+// `RunTask` clamps a chunk to `maxComputeWorkgroupsPerDimension *
+// workgroup_size`, which on this Mac is ~16.7M units — so ordinary runs never
+// come near it and the clamp has never executed.
+//
+// Tested against the REAL limit rather than an injected fake one: a fake limit
+// tests the code path, a real one tests the code path AND that we read the
+// limit correctly. The bug K4 exists to prevent is using a spec default instead
+// of the queried value, and only the real limit can catch that.
+
+TEST_CASE("a chunk larger than the device allows is clamped, not rejected",
+          "[kernel][brute_search][limits]") {
+    kernels::BruteSearchParams p{};
+    p.base_hi = 0;
+    p.seed = 42;
+    p.target_bits = 0x234;
+    p.mask = 0xFFF;
+    p.rounds = 8;
+
+    // Ask for the whole range in ONE dispatch, far past any device's per-
+    // dimension ceiling. The host must silently tile it.
+    constexpr std::uint64_t kUnits = 1u << 22;
+    const auto [clamped, stats] = RunWithStats(p, 0, kUnits, /*chunk=*/1ull << 40);
+
+    // Same answer as an ordinary chunked run — clamping must not lose or
+    // duplicate a unit.
+    const auto [normal, nstats] = RunWithStats(p, 0, kUnits, 1u << 16);
+    CHECK(clamped.found_count == normal.found_count);
+    CHECK(clamped.match_xor == normal.match_xor);
+    CHECK(clamped.min_match == normal.min_match);
+
+    // And it really did dispatch — a zero-dispatch "success" would pass every
+    // equality above if both runs returned the initial buffer.
+    CHECK(stats.dispatches >= 1);
+    CHECK(nstats.dispatches > stats.dispatches);
+}
+
+TEST_CASE("a range beyond one dispatch's ceiling still completes",
+          "[kernel][brute_search][limits]") {
+    // maxComputeWorkgroupsPerDimension is 65535 on most hardware, so with a
+    // 256-wide workgroup one dispatch covers ~16.7M units. A range past that
+    // CANNOT be a single dispatch, whatever chunk size is requested — this is
+    // the tiling K4 demands, and nothing else in the suite crosses the line.
+    kernels::BruteSearchParams p{};
+    p.base_hi = 0;
+    p.seed = 11;
+    p.target_bits = 0x55;
+    p.mask = 0xFFu;
+    p.rounds = 8;
+
+    constexpr std::uint64_t kUnits = 20'000'000;   // > 65535 * 256
+    const auto [r, stats] = RunWithStats(p, 0, kUnits, /*chunk=*/0);
+
+    CHECK(stats.dispatches >= 2);   // it had to tile
+    CHECK(r.found_count > 0);       // and it actually searched
+
+    // Cross-check against an explicitly chunked run over the same range.
+    const auto [chunked, cstats] = RunWithStats(p, 0, kUnits, 1'000'000);
+    CHECK(chunked.found_count == r.found_count);
+    CHECK(chunked.match_xor == r.match_xor);
+    CHECK(chunked.min_match == r.min_match);
 }
