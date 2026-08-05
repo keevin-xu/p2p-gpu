@@ -31,6 +31,19 @@ namespace p2pgpu::coordinator {
 /// buffer something absurd before our checks ever run.
 inline constexpr std::uint32_t kMaxFrameBytes = 16 * 1024 * 1024;
 
+/// Rejected-frame thresholds — step 3.12. CONNECTION hygiene, never reputation
+/// (3.11): a peer sending malformed frames is broken or probing, and neither is
+/// evidence about the results it computes.
+///
+/// Calibrated against the 2.5 soak rather than guessed: 40 hostile workers sent
+/// 100,833 malformed frames in 300 s and the coordinator stayed up, so a
+/// legitimate client is nowhere near 16 unless something is genuinely wrong.
+///
+/// Per-connection and reset on reconnect, deliberately — this is hygiene, not
+/// punishment, and a client that reconnects with fixed code should be served.
+inline constexpr std::uint32_t kRejectedFramesNoWork = 16;
+inline constexpr std::uint32_t kRejectedFramesDisconnect = 64;
+
 struct Config {
     int port = 8080;
     /// How long a granted lease lives, on the COORDINATOR's clock. Configurable

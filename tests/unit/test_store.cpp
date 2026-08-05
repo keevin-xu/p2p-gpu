@@ -10,6 +10,7 @@
 #include <memory>
 #include <string_view>
 
+#include "p2pgpu/coordinator/reputation.hpp"
 #include "p2pgpu/coordinator/store.hpp"
 
 using namespace p2pgpu::coordinator;
@@ -271,4 +272,64 @@ TEST_CASE("a corrupt state value does not become an out-of-range enum", "[store]
     // Whatever came back, it is a state the machine knows how to print — which
     // is the same oracle the loader uses.
     CHECK(ToString(state->tasks.front().state) != std::string_view{"?"});
+}
+
+// ── 3.13 — reputation survives a restart ─────────────────────────────────
+
+TEST_CASE("worker standing round-trips through the store", "[store][reputation]") {
+    auto store = OpenMemory();
+    const WorkerId alice{7, 7};
+
+    {
+        ReputationTable rep;
+        for (int i = 0; i < 30; ++i) {
+            rep.RecordAccepted(alice);
+        }
+        rep.RecordRejected(alice, 2.0);
+
+        std::vector<RecoveredReputation> rows;
+        const auto& r = *rep.Find(alice);
+        rows.push_back(RecoveredReputation{alice, r.alpha, r.beta, r.accepted,
+                                           r.rejected, r.spot_check_failures,
+                                           r.blacklisted_until_ms, r.on_probation,
+                                           "tok-abc"});
+        REQUIRE(store->FlushReputation(rows));
+    }
+
+    const auto state = store->LoadAll();
+    REQUIRE(state);
+    REQUIRE(state->reputation.size() == 1);
+    const auto& got = state->reputation.front();
+    CHECK(got.id == alice);
+    CHECK(got.accepted == 30);
+    CHECK(got.rejected == 1);
+    CHECK(got.token == "tok-abc");
+    // The SCORE is what 3.8 acts on, so it is the thing that must survive —
+    // a restart that silently reset every worker to the prior would replicate
+    // the whole fleet at maximum again.
+    CHECK(got.alpha / (got.alpha + got.beta) > 0.85);
+}
+
+TEST_CASE("a blacklist survives a restart", "[store][reputation]") {
+    auto store = OpenMemory();
+    const WorkerId liar{9, 9};
+
+    {
+        ReputationTable rep;
+        for (int i = 0; i < 12; ++i) {
+            rep.RecordRejected(liar, 4.0);
+        }
+        REQUIRE(rep.MaybeBlacklist(liar, kNow));
+        const auto& r = *rep.Find(liar);
+        REQUIRE(store->FlushReputation({RecoveredReputation{
+            liar, r.alpha, r.beta, r.accepted, r.rejected, r.spot_check_failures,
+            r.blacklisted_until_ms, r.on_probation, ""}}));
+    }
+
+    const auto state = store->LoadAll();
+    REQUIRE(state);
+    REQUIRE(state->reputation.size() == 1);
+    // Restarting the coordinator must not be a way to clear a ban — otherwise
+    // a deploy is an amnesty.
+    CHECK(state->reputation.front().blacklisted_until_ms > kNow);
 }

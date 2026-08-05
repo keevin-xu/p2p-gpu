@@ -50,6 +50,20 @@ CREATE TABLE IF NOT EXISTS tasks (
   replica_lo   INTEGER NOT NULL,
   PRIMARY KEY (id_hi, id_lo)
 );
+CREATE TABLE IF NOT EXISTS reputation (
+  id_hi         INTEGER NOT NULL,
+  id_lo         INTEGER NOT NULL,
+  alpha         REAL    NOT NULL,
+  beta          REAL    NOT NULL,
+  accepted      INTEGER NOT NULL,
+  rejected      INTEGER NOT NULL,
+  spot_failures INTEGER NOT NULL,
+  blacklisted_until_ms INTEGER NOT NULL,
+  on_probation  INTEGER NOT NULL,
+  token         TEXT    NOT NULL,
+  PRIMARY KEY (id_hi, id_lo)
+);
+CREATE INDEX IF NOT EXISTS reputation_token ON reputation(token);
 CREATE TABLE IF NOT EXISTS task_prior_workers (
   task_hi      INTEGER NOT NULL,
   task_lo      INTEGER NOT NULL,
@@ -144,12 +158,28 @@ protocol::Result<std::unique_ptr<Store>> Store::Open(const std::string& path) {
     }
     store->upsert_task_ = *task_stmt;
 
+    auto rep_stmt = Prepare(db, "INSERT INTO reputation "
+                                "(id_hi,id_lo,alpha,beta,accepted,rejected,"
+                                "spot_failures,blacklisted_until_ms,on_probation,token) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?) "
+                                "ON CONFLICT(id_hi,id_lo) DO UPDATE SET "
+                                "alpha=excluded.alpha, beta=excluded.beta, "
+                                "accepted=excluded.accepted, rejected=excluded.rejected, "
+                                "spot_failures=excluded.spot_failures, "
+                                "blacklisted_until_ms=excluded.blacklisted_until_ms, "
+                                "on_probation=excluded.on_probation");
+    if (!rep_stmt) {
+        return rep_stmt.error();
+    }
+    store->upsert_rep_ = *rep_stmt;
+
     return store;
 }
 
 Store::~Store() {
     sqlite3_finalize(upsert_job_);
     sqlite3_finalize(upsert_task_);
+    sqlite3_finalize(upsert_rep_);
     sqlite3_close(db_);
 }
 
@@ -228,6 +258,34 @@ protocol::Status Store::Flush(const std::vector<Job>& jobs,
     return Exec(db_, "COMMIT;");
 }
 
+protocol::Status Store::FlushReputation(const std::vector<RecoveredReputation>& rows) {
+    if (rows.empty()) {
+        return {};
+    }
+    if (const auto s = Exec(db_, "BEGIN IMMEDIATE;"); !s) {
+        return s;
+    }
+    for (const auto& r : rows) {
+        sqlite3_reset(upsert_rep_);
+        BindU64(upsert_rep_, 1, r.id.hi());
+        BindU64(upsert_rep_, 2, r.id.lo());
+        sqlite3_bind_double(upsert_rep_, 3, r.alpha);
+        sqlite3_bind_double(upsert_rep_, 4, r.beta);
+        BindU64(upsert_rep_, 5, r.accepted);
+        BindU64(upsert_rep_, 6, r.rejected);
+        BindU64(upsert_rep_, 7, r.spot_check_failures);
+        BindU64(upsert_rep_, 8, r.blacklisted_until_ms);
+        BindU64(upsert_rep_, 9, r.on_probation ? 1 : 0);
+        sqlite3_bind_text(upsert_rep_, 10, r.token.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(upsert_rep_) != SQLITE_DONE) {
+            const std::string detail = sqlite3_errmsg(db_);
+            (void)Exec(db_, "ROLLBACK;");
+            return MakeError(ErrorCode::Internal, "reputation write failed: " + detail);
+        }
+    }
+    return Exec(db_, "COMMIT;");
+}
+
 protocol::Result<RecoveredState> Store::LoadAll() {
     RecoveredState state;
 
@@ -284,6 +342,30 @@ protocol::Result<RecoveredState> Store::LoadAll() {
         state.tasks.push_back(std::move(task));
     }
     sqlite3_finalize(*task_q);
+
+    auto rep_q = Prepare(db_, "SELECT id_hi,id_lo,alpha,beta,accepted,rejected,"
+                              "spot_failures,blacklisted_until_ms,on_probation,token "
+                              "FROM reputation");
+    if (!rep_q) {
+        return rep_q.error();
+    }
+    while (sqlite3_step(*rep_q) == SQLITE_ROW) {
+        RecoveredReputation r;
+        r.id = protocol::WorkerId{ColumnU64(*rep_q, 0), ColumnU64(*rep_q, 1)};
+        r.alpha = sqlite3_column_double(*rep_q, 2);
+        r.beta = sqlite3_column_double(*rep_q, 3);
+        r.accepted = static_cast<std::uint32_t>(ColumnU64(*rep_q, 4));
+        r.rejected = static_cast<std::uint32_t>(ColumnU64(*rep_q, 5));
+        r.spot_check_failures = static_cast<std::uint32_t>(ColumnU64(*rep_q, 6));
+        r.blacklisted_until_ms = ColumnU64(*rep_q, 7);
+        r.on_probation = ColumnU64(*rep_q, 8) != 0;
+        const auto* tok = sqlite3_column_text(*rep_q, 9);
+        r.token = tok != nullptr
+                      ? std::string(static_cast<const char*>(static_cast<const void*>(tok)))
+                      : std::string{};
+        state.reputation.push_back(std::move(r));
+    }
+    sqlite3_finalize(*rep_q);
 
     auto pw_q = Prepare(db_, "SELECT task_hi,task_lo,worker_hi,worker_lo "
                              "FROM task_prior_workers");

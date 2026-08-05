@@ -33,6 +33,20 @@ struct sqlite3_stmt;
 
 namespace p2pgpu::coordinator {
 
+/// One worker's persisted standing (3.13).
+struct RecoveredReputation {
+    protocol::WorkerId id;
+    double alpha = 0.0;
+    double beta = 0.0;
+    std::uint32_t accepted = 0;
+    std::uint32_t rejected = 0;
+    std::uint32_t spot_check_failures = 0;
+    std::uint64_t blacklisted_until_ms = 0;
+    bool on_probation = false;
+    /// The `resume_token` this worker may present to reclaim this record.
+    std::string token;
+};
+
 /// Everything needed to rebuild a `JobManager` after a restart.
 ///
 /// Deliberately plain data rather than a live `JobManager`: recovery has to
@@ -41,6 +55,7 @@ namespace p2pgpu::coordinator {
 struct RecoveredState {
     std::vector<Job> jobs;
     std::vector<Task> tasks;
+    std::vector<RecoveredReputation> reputation;
     /// Highest id seen. Ids must not be reissued after a restart or a new task
     /// could collide with a persisted one and silently inherit its history.
     std::uint64_t next_id = 1;
@@ -69,6 +84,12 @@ public:
     [[nodiscard]] protocol::Status Flush(const std::vector<Job>& jobs,
                                          const std::vector<Task>& tasks);
 
+    /// Persist worker standing (3.13). Same discipline as tasks: the durable
+    /// record stays BEHIND memory, so a restart can only lose a little scoring,
+    /// never invent it (D-0048).
+    [[nodiscard]] protocol::Status FlushReputation(
+        const std::vector<RecoveredReputation>& rows);
+
     /// Read everything back.
     ///
     /// Applies NO policy — leases come back exactly as they were written, and
@@ -85,6 +106,7 @@ private:
     /// flush would re-parse the same two statements every 300 ms.
     sqlite3_stmt* upsert_job_ = nullptr;
     sqlite3_stmt* upsert_task_ = nullptr;
+    sqlite3_stmt* upsert_rep_ = nullptr;
 };
 
 /// Rebuild a `JobManager` from `state`, applying the recovery policy (2.20).

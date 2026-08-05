@@ -8,6 +8,7 @@
 #include "p2pgpu/coordinator/net.hpp"
 
 #include "p2pgpu/coordinator/sizer.hpp"
+#include "p2pgpu/protocol/encode.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -453,6 +454,26 @@ void Server::OnFrame(Session& session, std::uint64_t conn_id, std::uint32_t& rej
     if (!verified) {
         ++rejected;
         ++rejected_frames_total_;
+
+        // 3.12 — escalate. Nothing here touches reputation: the peer may be a
+        // broken client, and blaming its RESULTS for its framing is how an
+        // honest-but-buggy worker gets blacklisted (3.11).
+        if (rejected >= kRejectedFramesDisconnect) {
+            spdlog::warn("rate_limit conn_id={} rejected={} action=disconnect",
+                         conn_id, rejected);
+            const auto frame = protocol::EncodeMessage(
+                wire::Body::Error, [](flatbuffers::FlatBufferBuilder& fbb) {
+                    auto msg = fbb.CreateString("too many malformed frames");
+                    wire::ErrorBuilder eb(fbb);
+                    eb.add_code(wire::ErrorCode::RateLimited);
+                    eb.add_message(msg);
+                    eb.add_fatal(true);
+                    return eb.Finish();
+                });
+            send(frame);
+            close();
+            return;
+        }
         // A Verifier rejection is always warn WITH the diagnostic detail
         // (CONVENTIONS.md §6): it is the primary signal for protocol bugs and
         // the first sign of an actual attack.

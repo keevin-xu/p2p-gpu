@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "p2pgpu/coordinator/event_log.hpp"
+#include "p2pgpu/coordinator/reputation.hpp"
 #include "p2pgpu/coordinator/job.hpp"
 #include "p2pgpu/coordinator/fleet.hpp"
 #include "p2pgpu/coordinator/kernel_registry.hpp"
@@ -87,6 +88,16 @@ public:
     /// difference gets attributed to the wrong cause.
     void SetSpeculation(bool on) noexcept { speculation_ = on; }
 
+    /// 3.12 — the transport counted enough malformed frames to stop serving
+    /// this connection, without disconnecting it yet. Backoff, not eviction:
+    /// a broken client that starts framing correctly is served again, and
+    /// nothing here reaches reputation (3.11).
+    void SetThrottledForAbuse(bool on) noexcept { abusive_ = on; }
+
+    /// 3.7/3.10 — reputation, when the coordinator supplies it. Null in tests
+    /// and in any run without replication.
+    void SetReputation(ReputationTable* rep) noexcept { reputation_ = rep; }
+
 private:
     /// The actual routing. `OnMessage` wraps this so revokes are appended to
     /// every reply without each handler having to remember.
@@ -118,6 +129,8 @@ private:
     std::uint32_t lease_ms_ = 30000;
     ReferenceStats* reference_stats_ = nullptr;
     EventLog* events_ = nullptr;
+    ReputationTable* reputation_ = nullptr;
+    bool abusive_ = false;
     bool speculation_ = true;
 
     bool handshaked_ = false;

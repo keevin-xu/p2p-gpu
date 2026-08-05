@@ -385,6 +385,23 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
         return {};
     }
 
+    // 3.12 — this CONNECTION has been sending malformed frames. No work, but
+    // no disconnect and no reputation change: the peer is broken or probing,
+    // and neither says anything about the results it computes (3.11).
+    if (abusive_) {
+        spdlog::debug("lease conn_id={} refused reason=frame_rate_limited", conn_id_);
+        return {};
+    }
+
+    // 3.10 — blacklisted workers get no work. Never permanent: the cooldown
+    // releases them onto probation, where 3.8 replicates them at maximum until
+    // they earn a score back.
+    if (reputation_ != nullptr && reputation_->IsBlacklisted(worker_id_, now_ms)) {
+        spdlog::info("lease conn_id={} refused reason=blacklisted score={:.2f}",
+                     conn_id_, reputation_->ScoreOf(worker_id_));
+        return {};
+    }
+
     std::vector<std::vector<std::byte>> out;
     std::uint32_t granted = 0;
     for (std::uint32_t i = 0; i < want; ++i) {
