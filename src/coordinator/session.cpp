@@ -474,6 +474,34 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
                                rec->cached_assets);
         }
 
+        // 3.9 — sometimes hand out a range we already know the answer to.
+        //
+        // AFTER the normal grant, replacing it: the spot-check must be
+        // indistinguishable from real work, so it has to look exactly like the
+        // task it displaces. The displaced range is not lost — it was never
+        // carved, because the cursor only advances on a real grant.
+        if (task && spot_checks_ != nullptr && reputation_ != nullptr) {
+            const double score = reputation_->ScoreOf(worker_id_);
+            // Seeded from the task id so injection is replayable — an
+            // experiment whose injections cannot be replayed produces
+            // anecdotes (2.3's rule).
+            const std::uint64_t h = task->id.lo() * 2654435761ULL;
+            const double roll = static_cast<double>(h % 10000) / 10000.0;
+            if (const auto pick = spot_checks_->Maybe(score, roll, h >> 16)) {
+                if (const auto probe = jobs_.IssueKnownRange(
+                        worker_id_, now_ms, lease_ms_, pick->start_unit,
+                        pick->unit_count)) {
+                    // Give the real task back before replacing it, or the range
+                    // is silently dropped from the job.
+                    (void)jobs_.Requeue(task->id, TaskEvent::Release);
+                    spot_checks_->MarkIssued(probe->id, pick->expected_checksum);
+                    task = probe;
+                    spdlog::debug("spot_check issued task={} worker={} score={:.2f}",
+                                  probe->id.lo(), worker_id_.hi(), score);
+                }
+            }
+        }
+
         if (!task) {
             // Nothing left to carve. Near the end of a job, race a straggler
             // instead of idling (2.17) — the tail is what dominates completion
@@ -785,6 +813,34 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
         }
     }
 
+    // ── SPOT-CHECK (3.9) ─────────────────────────────────────────────────
+    //
+    // We already know the answer, so ONE result convicts — no second worker,
+    // no replication. That is what makes this the only defence available in
+    // the regime adaptive replication creates: at `trusted_at` a worker's
+    // result is accepted from a single submission, so a worker that behaves
+    // until trusted and then defects is otherwise invisible (D-0059).
+    if (spot_checks_ != nullptr) {
+        if (const auto expected = spot_checks_->ExpectedFor(task_id)) {
+            const bool correct = header.checksum() == *expected;
+            spot_checks_->Forget(task_id);
+            if (!correct && reputation_ != nullptr) {
+                // Doubled penalty (3.9): there is no honest disagreement with
+                // an answer we already hold, so this is far stronger evidence
+                // than losing a vote.
+                reputation_->RecordRejected(worker_id_, 4.0, /*spot_check=*/true);
+                spdlog::warn("SPOT-CHECK FAILED task={} worker={} score={:.2f}",
+                             task_id.lo(), worker_id_.hi(),
+                             reputation_->ScoreOf(worker_id_));
+                if (reputation_->MaybeBlacklist(worker_id_, now_ms_)) {
+                    spdlog::warn("blacklisted worker={} via spot-check", worker_id_.hi());
+                }
+            } else if (correct && reputation_ != nullptr) {
+                reputation_->RecordAccepted(worker_id_);
+            }
+        }
+    }
+
     // ── VALIDATION (3.4/3.5) ─────────────────────────────────────────────
     //
     // The checksum proved the bytes arrived intact. It says NOTHING about
@@ -892,6 +948,20 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
                 spdlog::error("ACCEPTED A WRONG ANSWER task={} worker={} — validation "
                               "did not catch this",
                               task_id.lo(), worker_id_.hi());
+            }
+        }
+
+        // 3.9 — remember this range's verified answer so it can be re-issued
+        // as a spot-check later.
+        //
+        // ONLY when a quorum actually agreed. Seeding the pool from a single
+        // unvalidated result would enshrine one worker's answer as ground truth
+        // and then convict everyone who disagreed with it — one liar becomes a
+        // fleet of blacklisted honest workers.
+        if (spot_checks_ != nullptr && q.agreeing.size() >= 2) {
+            if (const Task* done = jobs_.Find(task_id); done != nullptr) {
+                spot_checks_->Remember(done->start_unit, done->unit_count,
+                                       header.checksum());
             }
         }
 

@@ -31,6 +31,9 @@ int main(int argc, char** argv) {
     app.add_option("--replication", cfg.replication,
                    "none | fixed2x | adaptive (steps 3.6/3.8)")
         ->capture_default_str();
+    app.add_flag("--spot-checks", cfg.spot_checks,
+                 "inject known-answer tasks (3.9). Strongly recommended with "
+                 "--replication adaptive");
     app.add_option("--events-csv", cfg.events_csv,
                    "DEV: per-event CSV for the 2.23-2.26 experiments");
     app.add_flag("!--no-speculation", cfg.speculation,

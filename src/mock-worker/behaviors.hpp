@@ -66,6 +66,20 @@ struct Behaviors {
     /// up, and E5 measures how much that window costs.
     double score_inflation = 1.0;
 
+    /// Behave for this many tasks, then start lying (3.18).
+    ///
+    /// THE ADVERSARY ADAPTIVE REPLICATION INVITES. Every other liar here lies
+    /// from its first task, so it never earns trust and is replicated forever.
+    /// This one earns trust deliberately and then defects — and at
+    /// `trusted_at`, `RequiredAgreementFor` returns 1, meaning a trusted
+    /// worker's result is accepted from a SINGLE submission with no validation
+    /// at all.
+    ///
+    /// Harmless while adaptive was accidentally running at 2x (D-0058): every
+    /// result was checked anyway. Once steady state is genuinely 1.0x, this is
+    /// the hole, and spot-checking is the only thing that can see it.
+    std::uint32_t honest_tasks_before_lying = 0;
+
     /// Colluding liars agree on their lie (3.16).
     ///
     /// THE ATTACK NAIVE QUORUM CANNOT SEE. Independent liars produce different

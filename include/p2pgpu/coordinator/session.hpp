@@ -16,6 +16,7 @@
 #include "p2pgpu/coordinator/event_log.hpp"
 #include "p2pgpu/coordinator/quorum.hpp"
 #include "p2pgpu/coordinator/reputation.hpp"
+#include "p2pgpu/coordinator/spot_check.hpp"
 #include "p2pgpu/coordinator/job.hpp"
 #include "p2pgpu/coordinator/fleet.hpp"
 #include "p2pgpu/coordinator/kernel_registry.hpp"
@@ -104,6 +105,10 @@ public:
     /// work would make those numbers incomparable (D-0054).
     void SetQuorum(QuorumConfig cfg) noexcept { quorum_ = cfg; }
 
+    /// Known-answer injection (3.9). Shared across connections, because a pool
+    /// per session would only ever hold answers this worker itself produced.
+    void SetSpotChecks(SpotCheckPool* pool) noexcept { spot_checks_ = pool; }
+
 private:
     /// The actual routing. `OnMessage` wraps this so revokes are appended to
     /// every reply without each handler having to remember.
@@ -137,6 +142,7 @@ private:
     EventLog* events_ = nullptr;
     ReputationTable* reputation_ = nullptr;
     QuorumConfig quorum_{};
+    SpotCheckPool* spot_checks_ = nullptr;
     bool abusive_ = false;
     bool speculation_ = true;
 

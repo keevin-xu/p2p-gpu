@@ -335,7 +335,15 @@ void VirtualWorker::BeginTask(Pending task) {
     }
     auto result = kernels::BruteSearchReference(p);
 
-    const bool lying = dice_.chance(behaviors_.lies_probabilistically);
+    // Defect only after the record is built (3.18). Counted against tasks
+    // COMPLETED, not tasks granted, because trust is earned by accepted
+    // results — the worker is modelling the coordinator's own threshold.
+    const bool sleeper_still_honest =
+        behaviors_.honest_tasks_before_lying > 0 &&
+        stats_.tasks_completed < behaviors_.honest_tasks_before_lying;
+
+    const bool lying = !sleeper_still_honest &&
+                       dice_.chance(behaviors_.lies_probabilistically);
     const bool garbage = dice_.chance(behaviors_.returns_garbage);
     if (lying || garbage) {
         // PLAUSIBLE, not obviously broken. A liar that returns zeros is caught

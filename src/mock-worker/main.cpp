@@ -40,10 +40,13 @@ int main(int argc, char** argv) {
     double nominal_ms = 600.0;
     double liar_fraction = -1.0;
     bool collude = false;
+    std::uint32_t sleeper_after = 0;
 
     CLI::App app{"p2pgpu mock worker fleet"};
     app.add_option("--liar-fraction", liar_fraction,
                    "override the profile's share of lying workers (E4 sweep)");
+    app.add_option("--sleeper-after", sleeper_after,
+                   "liars behave for N tasks first, then defect (3.18)");
     app.add_flag("--collude", collude,
                  "liars return IDENTICAL wrong answers, defeating naive quorum (3.16)");
     app.add_option("--ms-per-mega-unit", nominal_ms,
@@ -109,6 +112,9 @@ int main(int argc, char** argv) {
             const auto liars =
                 static_cast<std::uint32_t>(std::llround(liar_fraction * count));
             behaviors.lies_probabilistically = (i < liars) ? 1.0 : 0.0;
+        }
+        if (sleeper_after > 0 && behaviors.lies_probabilistically > 0.0) {
+            behaviors.honest_tasks_before_lying = sleeper_after;
         }
         if (collude && behaviors.lies_probabilistically > 0.0) {
             // One key for the whole fleet: every liar fabricates identically.

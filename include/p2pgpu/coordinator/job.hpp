@@ -220,6 +220,23 @@ public:
     /// re-form with one more vote and stall the task forever.
     [[nodiscard]] protocol::Status RestartValidation(TaskId task);
 
+    /// Issue a task over a SPECIFIC range whose answer is already known (3.9).
+    ///
+    /// Deliberately identical to a normal grant in every observable way — same
+    /// message, same shape, nothing on the wire says "you are being tested". If
+    /// a worker could tell, it would compute these honestly and cheat on
+    /// everything else, producing confident evidence of honesty from exactly
+    /// the workers this exists to catch (D-0055).
+    ///
+    /// It does NOT advance the job cursor: this range has already been
+    /// computed and accepted, so counting it again would make the job report
+    /// progress it has not made.
+    [[nodiscard]] std::optional<Task> IssueKnownRange(WorkerId worker,
+                                                      std::uint64_t now_ms,
+                                                      std::uint32_t lease_ms,
+                                                      std::uint64_t start_unit,
+                                                      std::uint64_t unit_count);
+
     /// Return a task to the queue without penalty (R8 — absence is not malice).
     [[nodiscard]] protocol::Status Requeue(TaskId task, TaskEvent why);
 

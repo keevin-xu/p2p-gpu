@@ -382,6 +382,41 @@ protocol::Status JobManager::RequestReplica(TaskId task_id) {
     return {};
 }
 
+std::optional<Task> JobManager::IssueKnownRange(WorkerId worker, std::uint64_t now_ms,
+                                                std::uint32_t lease_ms,
+                                                std::uint64_t start_unit,
+                                                std::uint64_t unit_count) {
+    if (jobs_.empty() || unit_count == 0) {
+        return std::nullopt;
+    }
+    // Attach to whichever job owns this keyspace. With one job this is exact;
+    // with several the caller supplies a range that came from a completed task,
+    // so the first job containing it is the right one.
+    for (auto& [job_id, job] : jobs_) {
+        if (start_unit + unit_count > job.total_units) {
+            continue;
+        }
+        Task t;
+        t.id = TaskId{0, next_id_++};
+        t.job = job_id;
+        t.start_unit = start_unit;
+        t.unit_count = unit_count;
+        t.state = TaskState::Leased;
+        t.holder = worker;
+        t.lease_expires_at_ms = now_ms + lease_ms;
+
+        // NOT added to `job.tasks`, and the cursor is NOT advanced. This range
+        // is already accounted for by the task that originally computed it —
+        // counting it twice would make JobComplete wait on a task that carries
+        // no new work, and inflate every task count in the metrics.
+        const Task copy = t;
+        tasks_.emplace(t.id, std::move(t));
+        MarkTaskDirty(copy.id);
+        return copy;
+    }
+    return std::nullopt;
+}
+
 protocol::Status JobManager::RestartValidation(TaskId task_id) {
     auto it = tasks_.find(task_id);
     if (it == tasks_.end()) {

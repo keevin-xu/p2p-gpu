@@ -62,7 +62,17 @@ Server::Server(Config config, const KernelRegistry& kernels, JobManager& jobs,
     } else if (config_.replication != "none") {
         spdlog::error("unknown --replication '{}'; using none", config_.replication);
     }
-    spdlog::info("replication policy={}", ToString(quorum_.policy));
+    spdlog::info("replication policy={} spot_checks={}", ToString(quorum_.policy),
+                 config_.spot_checks ? "on" : "off");
+    if (quorum_.policy == ReplicationPolicy::Adaptive && !config_.spot_checks) {
+        // Said out loud, because the combination is a real hole rather than a
+        // tuning choice: at `trusted_at` a worker's result is accepted from a
+        // single submission, so a worker that behaves until trusted and then
+        // defects is invisible. Measured at 155 corrupted results accepted
+        // with zero blacklists (D-0059).
+        spdlog::warn("adaptive replication WITHOUT spot-checks: trusted workers are "
+                     "not validated at all. Add --spot-checks.");
+    }
 }
 
 Server::~Server() = default;
@@ -361,6 +371,9 @@ void Server::Run() {
                     data->session->SetSpeculation(this->config_.speculation);
                     data->session->SetReputation(&this->reputation_);
                     data->session->SetQuorum(this->quorum_);
+                    if (this->config_.spot_checks) {
+                        data->session->SetSpotChecks(&this->spot_checks_);
+                    }
                     // Correlation fields from CONVENTIONS.md §6. worker_id is
                     // unknown until Hello arrives, so conn_id carries the trace
                     // until then — without it, a frame rejected during the
