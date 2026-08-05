@@ -103,6 +103,31 @@ kernels::BruteSearchResult RunSearch(std::uint64_t units, std::uint64_t units_pe
     return ParseResult(outcome->output);
 }
 
+/// Run brute_search_v1 over an ARBITRARY range with arbitrary parameters, for
+/// the golden checks (4.1). `RunSearch` above always starts at 0 and hardcodes
+/// the seed/mask, which is right for chunk-invariance and wrong for pinning
+/// specific answers.
+kernels::BruteSearchResult RunGolden(const kernels::BruteSearchParams& in,
+                                     std::uint64_t start_unit, std::uint64_t units) {
+    static const std::string wgsl = ReadKernel("brute_search.wgsl");
+    const auto params = AsBytes(in);
+    const auto init = AsBytes(kernels::BruteSearchResult{});
+
+    TaskRequest req;
+    req.wgsl = wgsl;
+    req.entry_point = "main";
+    req.params = params;
+    req.start_unit = start_unit;
+    req.unit_count = units;
+    req.output_bytes = sizeof(kernels::BruteSearchResult);
+    req.workgroup_size = 256;
+    req.output_init = init;
+
+    const auto outcome = RunTask(TheGpu().ctx, req, units);
+    REQUIRE(outcome.has_value());
+    return ParseResult(outcome->output);
+}
+
 }  // namespace
 
 TEST_CASE("brute_search finds matches and the reductions agree", "[kernel][brute_search]") {
@@ -358,4 +383,45 @@ TEST_CASE("GPU matches the reference over an offset range", "[kernel][reference]
     CHECK(gpu.min_match == cpu.min_match);
     CHECK(gpu.match_xor == cpu.match_xor);
     CHECK(gpu.min_match >= kStart);   // the offset really was applied
+}
+
+// ── 4.1 — golden answers, on real hardware ───────────────────────────────
+//
+// The same constants `tests/unit/test_golden.cpp` pins against the CPU
+// reference, now against the GPU. Together they close the loop the existing
+// tests leave open: those compare the GPU to the reference, and both can be
+// edited to agree on something new. A committed constant cannot be.
+//
+// Separate from the CPU file because this needs a real adapter and CI has none
+// (`kernel_*` is excluded there), so the CPU half is the part that guards every
+// commit.
+TEST_CASE("brute_search_v1 GPU matches the committed golden answers",
+          "[kernel][brute_search][golden]") {
+    struct Golden {
+        std::uint32_t start_lo, unit_count, base_hi, seed, target_bits, mask, rounds;
+        std::uint32_t found_count, match_xor, min_match;
+    };
+    constexpr Golden kGolden[] = {
+        {0u,          1000000u, 0u, 42u, 0x234u,  0xFFFu,   8u, 277u, 0x00008007u, 0x000004E0u},
+        {500000u,     250000u,  0u,  7u, 0x0u,    0xFFFFu,  8u,   1u, 0x000801FAu, 0x000801FAu},
+        {0u,          1048576u, 1u, 99u, 0x2BCDu, 0x3FFFFu, 8u,   6u, 0x0000B115u, 0x00015F25u},
+        // Wraps past 2^32 — the kernel adds in u32 and must wrap identically.
+        {4000000000u, 100000u,  0u,  3u, 0x555u,  0x7FFu,   8u,  45u, 0xEE6B7631u, 0xEE6B2A01u},
+    };
+
+    for (const Golden& g : kGolden) {
+        kernels::BruteSearchParams p{};
+        p.base_hi = g.base_hi;
+        p.seed = g.seed;
+        p.target_bits = g.target_bits;
+        p.mask = g.mask;
+        p.rounds = g.rounds;
+        // start_lo/unit_count are the CHUNK WINDOW and RunTask overwrites them
+        // from start_unit/unit_count (D-0033), so they are passed there.
+        const auto r = RunGolden(p, g.start_lo, g.unit_count);
+        INFO("seed=" << g.seed << " start_lo=" << g.start_lo);
+        CHECK(r.found_count == g.found_count);
+        CHECK(r.match_xor == g.match_xor);
+        CHECK(r.min_match == g.min_match);
+    }
 }
