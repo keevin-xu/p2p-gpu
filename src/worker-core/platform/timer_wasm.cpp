@@ -21,6 +21,13 @@ void Yield() {
     emscripten_sleep(0);
 }
 
+void SleepMs(std::uint32_t ms) {
+    // ASYNCIFY unwinds here and resumes after the timer, so the event loop keeps
+    // running throughout — which is required, not merely polite: during device
+    // recovery it is the event loop that delivers the new device (D-0051).
+    emscripten_sleep(ms);
+}
+
 std::chrono::steady_clock::time_point Now() {
     return std::chrono::steady_clock::now();
 }

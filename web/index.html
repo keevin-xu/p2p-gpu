@@ -149,6 +149,14 @@
         <button id="bench" disabled>Throughput (0.11)</button>
       </p>
 
+      <p>
+        <!-- Deliberately breaks R4. Separated from the others and labelled so
+             it cannot be clicked by accident: it can freeze the display and
+             reset the GPU driver, which is the point, but not something to
+             discover mid-demo. -->
+        <button id="tdr" disabled>⚠ TDR probe (0.16) — may reset the GPU driver</button>
+      </p>
+
       <pre id="log">(output appears here)</pre>
     </main>
 

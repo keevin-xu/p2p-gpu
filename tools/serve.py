@@ -29,24 +29,81 @@ import socketserver
 class Handler(http.server.SimpleHTTPRequestHandler):
     # Where POSTed reports land. Set from main() so it does not depend on the
     # served directory.
+    token = ""
     results_dir = "results"
 
     def _browser_tag(self) -> str:
-        """Short browser name from the User-Agent.
+        """Short `browser-platform` tag from the User-Agent.
 
-        Order matters: Chrome's UA contains "Safari", and Edge's contains both
-        "Chrome" and "Safari", so the most specific match has to win. Getting
-        this backwards would file every Chrome result under "safari".
+        Order matters for the browser: Chrome's UA contains "Safari", and
+        Edge's contains both "Chrome" and "Safari", so the most specific match
+        has to win. Getting this backwards would file every Chrome result under
+        "safari".
+
+        PLATFORM IS PART OF THE TAG, and that is not cosmetic. It was browser-
+        only until step 0.16, when Chrome on a Windows/NVIDIA machine posted its
+        throughput and **silently overwrote the Mac Chrome run** — same browser,
+        completely different GPU, same filename. The whole point of that session
+        was comparing two vendors, and the mechanism for collecting the data
+        destroyed one side of the comparison.
+
+        Recovered from git that time. A tag that cannot distinguish the two
+        machines in a cross-vendor experiment is not a tag.
         """
         ua = self.headers.get("User-Agent", "")
+        browser = "unknown"
         for needle, tag in (("Edg/", "edge"),
                             ("OPR/", "opera"),
                             ("Firefox/", "firefox"),
                             ("Chrome/", "chrome"),
                             ("Safari/", "safari")):
             if needle in ua:
-                return tag
-        return "unknown"
+                browser = tag
+                break
+
+        platform = "unknown"
+        for needle, tag in (("Windows", "windows"),
+                            ("Android", "android"),
+                            ("iPhone", "ios"), ("iPad", "ios"),
+                            ("Mac OS X", "macos"),
+                            ("Linux", "linux")):
+            if needle in ua:
+                platform = tag
+                break
+
+        return f"{browser}-{platform}"
+
+    def _token_ok(self) -> bool:
+        """Shared-secret gate. DEV ONLY, and weaker than it looks.
+
+        Enabled only when --token is passed, so a normal loopback run is
+        completely unaffected. It exists for the one case where this server is
+        reachable by someone other than you — a tunnel, or --host 0.0.0.0 on a
+        shared network — because `do_POST` below WRITES FILES with no
+        authentication of any kind.
+
+        GATES THE WRITE PATH ONLY, never GET. A browser loading index.html
+        fetches ui.js and the .wasm through RELATIVE urls, which do not carry
+        the parent page's query string — so gating GET 403s the page's own
+        subresources and the app never starts. Found the hard way, mid-session.
+
+        Gating only POST is also the right threat model: everything served here
+        is public code (the coordinator serves the same WGSL to the world by
+        design). The thing worth protecting is `results/`, which is where the
+        measurements live and which POST can overwrite.
+
+        HONEST LIMITS: over plain HTTP the token travels in cleartext, so it
+        stops casual and accidental access, not anyone watching the wire. It is
+        only meaningfully private over a tunnel that terminates TLS.
+        """
+        if not Handler.token:
+            return True
+        _, _, query = self.path.partition("?")
+        for part in query.split("&"):
+            key, _, value = part.partition("=")
+            if key == "token" and value == Handler.token:
+                return True
+        return False
 
     def do_POST(self):  # noqa: N802 - name fixed by BaseHTTPRequestHandler
         """Capture the browser's step-0.9 report so it can be diffed offline.
@@ -57,6 +114,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         hand. It is unauthenticated and writes to a fixed filename, which is
         fine for a loopback-only dev server and would not be anywhere else.
         """
+        if not self._token_ok():
+            # 403, not 404: the endpoint's existence is not the secret, and a
+            # misleading error here would send you debugging the wrong thing.
+            self.send_error(403, "missing or bad ?token=")
+            return
+
         path, _, query = self.path.partition("?")
         if path != "/report":
             self.send_error(404)
@@ -129,9 +192,15 @@ def main() -> int:
                         help="bind address. Default is loopback only. Use "
                              "--host 0.0.0.0 to let ANOTHER MACHINE on your "
                              "network reach it (step 0.16).")
+    parser.add_argument("--token", default="",
+                        help="require ?token=... on every request. OFF by "
+                             "default, so a normal localhost run is unchanged. "
+                             "Use it whenever this server is reachable by "
+                             "anyone else (a tunnel, or --host 0.0.0.0).")
     args = parser.parse_args()
 
     Handler.results_dir = os.path.abspath(args.results)
+    Handler.token = args.token
 
     if not os.path.isdir(args.dir):
         print(f"error: {args.dir} does not exist — run `cmake --build build/wasm` first")
@@ -140,8 +209,15 @@ def main() -> int:
     handler = functools.partial(Handler, directory=args.dir)
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer((args.host, args.port), handler) as httpd:
-        print(f"serving {args.dir} at http://{args.host}:{args.port}")
+        suffix = f"/?token={args.token}" if args.token else ""
+        print(f"serving {args.dir} at http://{args.host}:{args.port}{suffix}")
         print("  COOP/COEP enabled (cross-origin isolated)")
+        if args.token:
+            # Printed complete so it can be copied rather than assembled by
+            # hand — a token typo presents as a blank page, which is a
+            # miserable thing to debug on someone else's machine.
+            print(f"  token REQUIRED — open exactly: "
+                  f"http://{args.host}:{args.port}/?token={args.token}")
         if args.host not in ("127.0.0.1", "localhost"):
             # Say this plainly. The POST handler writes files and does no
             # authentication whatsoever — fine on loopback, a real exposure on

@@ -447,6 +447,168 @@ extern "C" EMSCRIPTEN_KEEPALIVE int p2pgpu_run_chunking() {
     return 0;
 }
 
+/// TDR probe — step 0.16, and the ONLY thing here that breaks a hard rule on
+/// purpose.
+///
+/// R4 forbids any single dispatch representing more than ~250 ms of work,
+/// because Windows' watchdog kills GPU work blocking ~2 s and resets the
+/// driver. **That premise has never been observed.** macOS has no such
+/// watchdog, so every measurement this project has taken of R4 has measured
+/// only the cost of obeying it, never the consequence of breaking it.
+///
+/// This deliberately breaks it, in escalating steps, until either the device is
+/// lost or we are so far past the stated 2 s threshold that not firing is
+/// itself the finding. Two things get validated that nothing else can:
+///
+///   1. **R4's premise** — that a long dispatch actually does trigger TDR, and
+///      roughly where the boundary sits on real hardware.
+///   2. **Device-loss recovery** (0.14, D-0022), which has never once been
+///      exercised by a real driver reset. `TaskLoop` has no test for it at all
+///      (`results/G2_EVIDENCE.md` §2), so this probe is the only evidence that
+///      code path works.
+///
+/// ESCALATING rather than one big guess, because the workload that takes 2 s is
+/// a property of the card. The 2026-08-04 session measured a GTX 1650 Super at
+/// 258 ms for the baseline workload, so ~8x should reach the watchdog — but a
+/// faster card needs more and a slower one less, and a single guess would
+/// either miss the threshold or overshoot it so far the result says nothing
+/// about where it is.
+///
+/// DEV-ONLY and reachable solely from its own button. Nothing in the worker's
+/// real task path can call this, and R4 remains in force everywhere else.
+extern "C" EMSCRIPTEN_KEEPALIVE int p2pgpu_run_tdr_probe() {
+    namespace platform = p2pgpu::worker::platform;
+
+    const std::string wgsl = ReadFile("/kernels/calibrate.wgsl");
+    if (wgsl.empty()) {
+        platform::Log("error", "could not read embedded calibrate.wgsl");
+        return 1;
+    }
+
+    platform::GpuContext ctx;
+    if (!platform::AcquireDevice(ctx)) {
+        platform::Log("error", "no WebGPU device available");
+        return 1;
+    }
+
+    constexpr std::uint32_t kInvocations = 1u << 21;
+    constexpr std::uint32_t kBaseIterations = 32768;   // ~258 ms on a 1650 Super
+    // 1x .. 64x. The last step is ~16 s of work on that card — eight times the
+    // stated watchdog. If nothing has fired by then, the threshold is not where
+    // R4 says it is, and that is a finding worth having.
+    const std::vector<std::uint32_t> kMultipliers{1, 2, 4, 8, 16, 32, 64};
+
+    platform::Log("warn",
+                  "TDR PROBE: deliberately violating R4 (single dispatch > 250 ms). "
+                  "The display may freeze or flicker; a driver reset is the POINT.");
+
+    std::string csv =
+        "# p2pgpu step 0.16 - TDR probe (browser)\n"
+        "# DELIBERATELY violates R4 to test its premise. Dev-only.\n"
+        "multiplier,iterations,max_chunk_ms,device_lost\n";
+
+    bool lost = false;
+    double last_ms = 0.0;
+    std::uint32_t prev_mult = 0;
+    for (const std::uint32_t mult : kMultipliers) {
+        const std::uint32_t iters = kBaseIterations * mult;
+        // ONE chunk: the whole point is a single uninterrupted dispatch.
+        const auto samples = p2pgpu::worker::RunChunkingSpike(
+            ctx, wgsl, kInvocations, iters, std::vector<std::uint32_t>{1});
+
+        // Checked BEFORE reading samples: a lost device is exactly the case
+        // where the run returns nothing, and treating "no samples" as a plain
+        // error would report the success condition as a failure.
+        if (platform::DeviceIsLost()) {
+            lost = true;
+            csv += std::to_string(mult) + "," + std::to_string(iters) + ",," + "1\n";
+            // `last_ms` is the PREVIOUS multiplier's measurement, so the
+            // estimate for this step scales by the ratio between them — not by
+            // `mult`. The 2026-08-05 run logged "~30541 ms" for a step that was
+            // really ~3.8 s, which would have gone straight into the writeup.
+            const double est_ms = prev_mult > 0
+                                      ? last_ms * (static_cast<double>(mult) /
+                                                   static_cast<double>(prev_mult))
+                                      : 0.0;
+            platform::Log("warn", "TDR FIRED at multiplier=" + std::to_string(mult) +
+                                      " (~" + std::to_string(est_ms) +
+                                      " ms of work, extrapolated) — device lost");
+            break;
+        }
+        if (samples.empty()) {
+            platform::Log("error", "no samples at multiplier=" + std::to_string(mult));
+            break;
+        }
+
+        last_ms = samples.front().max_chunk_ms;
+        prev_mult = mult;
+        csv += std::to_string(mult) + "," + std::to_string(iters) + "," +
+               std::to_string(last_ms) + ",0\n";
+        platform::Log("info", "tdr_probe multiplier=" + std::to_string(mult) +
+                                  " max_chunk_ms=" + std::to_string(last_ms) +
+                                  " device_lost=no");
+    }
+
+    if (!lost) {
+        platform::Log("info",
+                      "no TDR after " + std::to_string(last_ms) +
+                          " ms in ONE dispatch. R4's 250 ms ceiling is "
+                          "conservative on this device — record the number, do "
+                          "NOT conclude TDR cannot happen.");
+        csv += "# result=no_tdr max_single_dispatch_ms=" + std::to_string(last_ms) + "\n";
+        platform::ReleaseDevice(ctx);
+    } else {
+        // THE RECOVERY TEST. This is the only place a real driver reset has
+        // ever met the 0.14 re-acquire path.
+        csv += "# result=tdr_fired\n";
+        platform::ReleaseDevice(ctx);
+
+        // RETRY THE WAY PRODUCTION DOES (D-0051). The 2026-08-05 run acquired
+        // exactly once, immediately, and reported NOT RECOVERED — which was
+        // partly the probe's own shortcut rather than the system's behaviour.
+        // A probe whose recovery test is weaker than the real path measures the
+        // probe.
+        //
+        // Same schedule as DeviceSession::Recover: 6 attempts, doubling from
+        // 100 ms, ~6.3 s total, because a driver reset takes seconds.
+        constexpr int kAttempts = 6;
+        constexpr std::uint32_t kFirstBackoffMs = 100;
+        // Same short per-attempt timeout production uses, so the probe measures
+        // the real schedule rather than a more patient one (D-0051).
+        constexpr std::uint32_t kAcquireTimeoutMs = 1500;
+        bool recovered = false;
+        int used = 0;
+        platform::GpuContext again;
+        for (int attempt = 1; attempt <= kAttempts; ++attempt) {
+            used = attempt;
+            if (platform::AcquireDevice(again, kAcquireTimeoutMs)) {
+                recovered = true;
+                break;
+            }
+            const std::uint32_t backoff_ms =
+                kFirstBackoffMs << static_cast<unsigned>(attempt - 1);
+            platform::Log("warn", "re-acquire attempt " + std::to_string(attempt) +
+                                      " failed; retrying in " +
+                                      std::to_string(backoff_ms) + " ms");
+            platform::SleepMs(backoff_ms);
+        }
+        csv += std::string("# recovered_after_tdr=") + (recovered ? "yes" : "no") + "\n";
+        csv += "# recovery_attempts_used=" + std::to_string(used) + "\n";
+        platform::Log(recovered ? "info" : "error",
+                      recovered
+                          ? "RECOVERED: re-acquired after TDR on attempt " +
+                                std::to_string(used) + " (0.14 + D-0051 work)"
+                          : "NOT RECOVERED after " + std::to_string(kAttempts) +
+                                " attempts over ~6.3 s");
+        if (recovered) {
+            platform::ReleaseDevice(again);
+        }
+    }
+
+    g_report = csv;
+    return lost ? 0 : 0;
+}
+
 /// Step 0.11 in the browser (reached via step 0.13's Safari run).
 ///
 /// The native number is 1,874 GFLOP/s, and the browser measured *faster* than

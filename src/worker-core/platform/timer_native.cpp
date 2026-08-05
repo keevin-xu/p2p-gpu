@@ -8,6 +8,8 @@
 
 #if !defined(__EMSCRIPTEN__)
 
+#include <chrono>
+#include <thread>
 #include "p2pgpu/worker/platform.hpp"
 
 #include <cstdio>
@@ -18,6 +20,12 @@ void Yield() {
     // Native has no event loop to return to, and dispatch pacing is the
     // caller's business. Deliberately NOT a sleep — that would inflate the
     // idle_ms/gpu_ms split that EVALUATION.md E2 depends on.
+}
+
+void SleepMs(std::uint32_t ms) {
+    // Native has no event loop to protect, so a plain sleep is correct here —
+    // the browser's version is the one with a constraint (D-0051).
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
 }
 
 std::chrono::steady_clock::time_point Now() {

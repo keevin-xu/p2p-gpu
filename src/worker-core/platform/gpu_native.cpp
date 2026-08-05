@@ -107,7 +107,7 @@ void DeviceThunk(WGPURequestDeviceStatus status, WGPUDevice device,
 
 }  // namespace
 
-bool AcquireDevice(GpuContext& out) {
+bool AcquireDevice(GpuContext& out, std::uint32_t timeout_ms) {
     out = GpuContext{};
 
     out.instance = wgpuCreateInstance(nullptr);
@@ -126,7 +126,7 @@ bool AcquireDevice(GpuContext& out) {
     adapter_cb.userdata1 = &adapter_result;
 
     (void)wgpuInstanceRequestAdapter(out.instance, nullptr, adapter_cb);
-    if (!WaitUntil(out, [&] { return adapter_result.done; }) ||
+    if (!WaitUntil(out, [&] { return adapter_result.done; }, timeout_ms) ||
         adapter_result.adapter == nullptr) {
         // No adapter is a capability, not a crash — a blocklisted driver or an
         // unsupported machine lands here (docs/RISKS.md §1).
@@ -159,7 +159,7 @@ bool AcquireDevice(GpuContext& out) {
     device_cb.userdata1 = &device_result;
 
     (void)wgpuAdapterRequestDevice(out.adapter, &desc, device_cb);
-    if (!WaitUntil(out, [&] { return device_result.done; }) ||
+    if (!WaitUntil(out, [&] { return device_result.done; }, timeout_ms) ||
         device_result.device == nullptr) {
         Log("error", "device request failed");
         ReleaseDevice(out);

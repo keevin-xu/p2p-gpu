@@ -447,7 +447,7 @@ else()
         # the R7 surface added in step 1.23 — the only three things a user can
         # do, and every one reachable ONLY from a click or a slider. The rest
         # are the Phase 0 diagnostic buttons.
-        -sEXPORTED_FUNCTIONS=_main,_p2pgpu_start,_p2pgpu_stop,_p2pgpu_set_throttle,_p2pgpu_run_smoke_test,_p2pgpu_run_chunking,_p2pgpu_run_bench,_p2pgpu_report
+        -sEXPORTED_FUNCTIONS=_main,_p2pgpu_start,_p2pgpu_stop,_p2pgpu_set_throttle,_p2pgpu_run_smoke_test,_p2pgpu_run_chunking,_p2pgpu_run_bench,_p2pgpu_run_tdr_probe,_p2pgpu_report
         # HEAPU8 is REQUIRED BY datachannel-wasm, not by us (step 1.23).
         #
         # Its websocket.js does `new Uint8Array(Module['HEAPU8'].buffer, ...)`

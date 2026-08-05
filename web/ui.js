@@ -41,6 +41,7 @@
 
   var smokeBtn = document.getElementById("smoke");
   var chunkBtn = document.getElementById("chunk");
+  var tdrBtn = document.getElementById("tdr");
   var benchBtn = document.getElementById("bench");
 
   var statusEl = document.getElementById("status");
@@ -82,8 +83,13 @@
   function post(name) {
     var report = worker.ccall("p2pgpu_report", "string", [], []);
     if (!report) { return; }
-    fetch("/report?name=" + encodeURIComponent(name),
-          { method: "POST", body: report })
+    // Carry the dev server's ?token= through to the POST, so it only has to be
+    // typed once — in the address bar. Absent in every normal run, because the
+    // token is off unless serve.py was started with --token.
+    var token = new URLSearchParams(location.search).get("token");
+    var url = "/report?name=" + encodeURIComponent(name) +
+              (token ? "&token=" + encodeURIComponent(token) : "");
+    fetch(url, { method: "POST", body: report })
       .then(function () { append("[dev] posted results/ (" + name + ", browser-tagged)"); })
       .catch(function () { append("[dev] POST failed — copy the text above"); });
   }
@@ -100,6 +106,7 @@
   function setDiagnosticsEnabled(on) {
     smokeBtn.disabled = !on;
     chunkBtn.disabled = !on;
+    tdrBtn.disabled = !on;
     benchBtn.disabled = !on;
   }
 
@@ -200,6 +207,42 @@
         startBtn.disabled = false;
         smokeBtn.textContent = "Smoke test (0.6)";
         if (rc === 0) { post("0.9-browser.txt"); }
+      });
+  });
+
+  // ⚠ Deliberately violates R4 — see p2pgpu_run_tdr_probe in worker-browser.
+  // Confirm first: this can freeze the display and reset the GPU driver, and a
+  // user who clicked it not knowing that would reasonably think we broke their
+  // machine.
+  tdrBtn.addEventListener("click", function () {
+    if (worker === null) { return; }
+    if (!window.confirm(
+          "This deliberately sends GPU work far longer than the 250 ms limit, " +
+          "to test whether Windows' watchdog resets the driver.\n\n" +
+          "The screen may freeze or flicker for a few seconds, and the GPU " +
+          "driver may restart. That is the expected outcome, not a failure.\n\n" +
+          "Close anything you have unsaved in other apps first. Continue?")) {
+      return;
+    }
+    setDiagnosticsEnabled(false);
+    startBtn.disabled = true;
+    tdrBtn.textContent = "Running… (display may freeze)";
+    setStatus("● TDR probe running — a driver reset here is the POINT", "running");
+
+    worker
+      .ccall("p2pgpu_run_tdr_probe", "number", [], [], { async: true })
+      .then(function (rc) {
+        // No PASS/FAIL. Either outcome is a real result: a reset validates R4's
+        // premise and exercises device-loss recovery, no reset bounds how
+        // conservative the 250 ms ceiling is. Calling one of them "fail" would
+        // invite re-running until the preferred answer appeared.
+        setStatus(rc === 0 ? "✓ TDR probe finished — read the log for which outcome"
+                           : "✗ TDR probe could not run — see output",
+                  rc === 0 ? "pass" : "fail");
+        setDiagnosticsEnabled(true);
+        startBtn.disabled = false;
+        tdrBtn.textContent = "⚠ TDR probe (0.16) — may reset the GPU driver";
+        if (rc === 0) { post("0.16-tdr-probe.txt"); }
       });
   });
 

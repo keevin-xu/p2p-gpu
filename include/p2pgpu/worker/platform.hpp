@@ -92,7 +92,15 @@ struct AdapterDescription {
 /// Acquire a GPU device. Returns false if unavailable — a blocklisted driver
 /// or unsupported browser is a *capability*, not a crash (docs/RISKS.md §1).
 /// Callers report it and decline gracefully.
-[[nodiscard]] bool AcquireDevice(GpuContext& out);
+/// `timeout_ms` bounds EACH internal wait (adapter, then device), so the worst
+/// case is roughly twice it. Defaulted for normal startup, where being patient
+/// costs nothing.
+///
+/// Recovery passes something much shorter (D-0051). After a driver reset the
+/// patience that matters is the BACKOFF BETWEEN attempts, not a long wait
+/// inside one — a dead adapter fails fast, and six attempts at the 5 s default
+/// would put worst-case recovery near a minute while the worker sits idle.
+[[nodiscard]] bool AcquireDevice(GpuContext& out, std::uint32_t timeout_ms = 5000);
 
 /// Release everything in `ctx` and null it out. Safe on a partially-built
 /// context, so it doubles as the cleanup path for a failed acquisition.
@@ -154,6 +162,22 @@ void MarkDeviceLost();
 /// Native: a no-op or short sleep. WASM: returns to the Emscripten main loop.
 /// NEVER busy-wait — on WASM that freezes the tab.
 void Yield();
+
+/// Wait roughly `ms` milliseconds WITHOUT blocking the host's event loop.
+///
+/// Distinct from `Yield()`, which surrenders one turn and returns immediately —
+/// `Yield()` waits for no measurable time, which is fine between dispatches and
+/// useless when something outside the process needs a moment.
+///
+/// The case that forced this: a GPU driver reset takes SECONDS (0.16 observed
+/// one), and `DeviceSession::Recover` was retrying three times with `Yield()`
+/// between, so every attempt landed within milliseconds of the loss and all
+/// three failed (D-0051).
+///
+/// On the browser this must not be a busy-wait or a blocking sleep: the event
+/// loop is what delivers the new device, so blocking it would prevent the
+/// recovery being waited for.
+void SleepMs(std::uint32_t ms);
 
 /// Monotonic clock for local elapsed-time measurement only.
 ///

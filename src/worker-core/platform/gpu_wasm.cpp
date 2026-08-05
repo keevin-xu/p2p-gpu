@@ -16,6 +16,8 @@
 
 #if defined(__EMSCRIPTEN__)
 
+#include <chrono>
+
 #include "p2pgpu/worker/platform.hpp"
 #include "p2pgpu/worker/wgpu_util.hpp"
 
@@ -115,7 +117,7 @@ void DeviceThunk(WGPURequestDeviceStatus status, WGPUDevice device,
 
 }  // namespace
 
-bool AcquireDevice(GpuContext& out) {
+bool AcquireDevice(GpuContext& out, std::uint32_t timeout_ms) {
     out = GpuContext{};
 
     out.instance = wgpuCreateInstance(nullptr);
@@ -132,7 +134,7 @@ bool AcquireDevice(GpuContext& out) {
     adapter_cb.userdata1 = &adapter_result;
 
     (void)wgpuInstanceRequestAdapter(out.instance, nullptr, adapter_cb);
-    if (!WaitUntil(out, [&] { return adapter_result.done; }) ||
+    if (!WaitUntil(out, [&] { return adapter_result.done; }, timeout_ms) ||
         adapter_result.adapter == nullptr) {
         // requestAdapter returning null is the documented outcome on a
         // blocklisted driver/GPU pair. A capability, not a crash — report it
@@ -166,7 +168,7 @@ bool AcquireDevice(GpuContext& out) {
     device_cb.userdata1 = &device_result;
 
     (void)wgpuAdapterRequestDevice(out.adapter, &desc, device_cb);
-    if (!WaitUntil(out, [&] { return device_result.done; }) ||
+    if (!WaitUntil(out, [&] { return device_result.done; }, timeout_ms) ||
         device_result.device == nullptr) {
         Log("error", "device request failed");
         ReleaseDevice(out);
@@ -196,19 +198,27 @@ bool WaitUntil(const GpuContext& ctx, const std::function<bool()>& done,
     // event loop (ASYNCIFY) and resumes when the timer fires — which is what
     // lets the browser actually run the promise callbacks we are waiting on.
     // A spin loop would hang the tab forever waiting on work it is preventing.
-    std::uint32_t waited_ms = 0;
-    const std::uint32_t step_ms = 1;
+    //
+    // MEASURED AGAINST A CLOCK, not by accumulating the sleeps we asked for.
+    // The previous version did `waited_ms += step_ms` with `step_ms = 1`, but
+    // browsers clamp nested setTimeout to ~4 ms, so 5000 iterations billed
+    // themselves 5 s and burned ~20 s of wall clock. Every timeout in this
+    // layer was therefore ~4x longer than it claimed — and the native
+    // WaitUntil already used a real deadline, so the same call meant different
+    // things on the two targets (R2). Found chasing a TDR recovery that looked
+    // hung and was merely slow (D-0051).
+    const auto deadline = Now() + std::chrono::milliseconds(timeout_ms);
+    constexpr std::uint32_t kStepMs = 1;
 
     while (!done()) {
         wgpuInstanceProcessEvents(ctx.instance);
         if (done()) {
             break;
         }
-        if (waited_ms >= timeout_ms) {
+        if (Now() >= deadline) {
             return false;
         }
-        emscripten_sleep(step_ms);
-        waited_ms += step_ms;
+        emscripten_sleep(kStepMs);
     }
     return true;
 }

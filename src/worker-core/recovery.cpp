@@ -14,7 +14,29 @@ using platform::Log;
 /// uninstalled, eGPU unplugged) must give up and say so — a worker that retries
 /// forever looks alive to the coordinator while contributing nothing, which is
 /// worse than one that disconnects cleanly.
-constexpr int kMaxRecoveryAttempts = 3;
+/// Six attempts at 100/200/400/800/1600/3200 ms — about 6.3 s of total
+/// patience (D-0051).
+///
+/// Three attempts with `Yield()` between them was the previous policy, and
+/// `Yield()` waits for no measurable time, so all three landed within
+/// milliseconds of the loss. 0.16 observed a real Windows TDR: the adapter
+/// keeps returning DXGI_ERROR_DEVICE_REMOVED while the driver resets, which
+/// takes SECONDS. The old policy could not have recovered from the exact event
+/// it was written for.
+constexpr int kMaxRecoveryAttempts = 6;
+constexpr std::uint32_t kFirstBackoffMs = 100;
+
+/// Per-attempt acquire timeout during recovery — short on purpose.
+///
+/// A dead adapter fails fast; a live one answers in well under a second. The
+/// patience that matters after a driver reset is the BACKOFF BETWEEN attempts,
+/// not a long wait inside one. At the 5 s default, six attempts x two internal
+/// waits is a ~60 s worst case with the worker idle throughout — against a 20 s
+/// lease, that is several lease durations of silent absence.
+///
+/// 1.5 s keeps the whole schedule near ~25 s worst case while leaving the
+/// backoff to do the waiting.
+constexpr std::uint32_t kRecoveryAcquireTimeoutMs = 1500;
 
 }  // namespace
 
@@ -70,7 +92,7 @@ bool DeviceSession::Recover() {
     platform::ReleaseDevice(ctx_);
 
     for (int attempt = 1; attempt <= kMaxRecoveryAttempts; ++attempt) {
-        if (platform::AcquireDevice(ctx_)) {
+        if (platform::AcquireDevice(ctx_, kRecoveryAcquireTimeoutMs)) {
             platform::OnDeviceLost([this] { HandleLost(); });
             healthy_ = true;
             ++recoveries_;
@@ -82,13 +104,20 @@ bool DeviceSession::Recover() {
             return true;
         }
 
+        // Doubling backoff, not a fixed yield. A driver mid-reset needs
+        // SECONDS, and `Yield()` surrenders one event-loop turn — the previous
+        // policy therefore waited for nothing at all (D-0051).
+        //
+        // `SleepMs` is non-blocking on the browser: it returns to the event
+        // loop and resumes later, which matters because that loop is what
+        // delivers the new device. Blocking it would prevent the recovery being
+        // waited for.
+        const std::uint32_t backoff_ms =
+            kFirstBackoffMs << static_cast<unsigned>(attempt - 1);
         Log("warn", "device re-acquisition attempt " + std::to_string(attempt) +
-                        " of " + std::to_string(kMaxRecoveryAttempts) + " failed");
-
-        // Yield between attempts rather than sleeping. A driver mid-reset needs
-        // a moment, and on the browser this is the ONLY safe way to wait — a
-        // sleep would block the event loop that has to deliver the new device.
-        platform::Yield();
+                        " of " + std::to_string(kMaxRecoveryAttempts) +
+                        " failed; retrying in " + std::to_string(backoff_ms) + " ms");
+        platform::SleepMs(backoff_ms);
     }
 
     healthy_ = false;
