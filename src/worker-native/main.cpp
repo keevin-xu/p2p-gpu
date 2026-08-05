@@ -129,6 +129,7 @@ int DumpAdapter(const platform::GpuContext& ctx) {
   "device": "%s",
   "description": "%s",
   "backend": "%s",
+  "is_software": %s,
   "features": [%s],
   "limits": {
     "maxStorageBufferBindingSize": %llu,
@@ -141,7 +142,8 @@ int DumpAdapter(const platform::GpuContext& ctx) {
 )",
                 Escape(a.vendor).c_str(), Escape(a.architecture).c_str(),
                 Escape(a.device).c_str(), Escape(a.description).c_str(),
-                Escape(a.backend).c_str(), features.c_str(),
+                Escape(a.backend).c_str(), a.is_software ? "true" : "false",
+                features.c_str(),
                 static_cast<unsigned long long>(a.max_storage_buffer_binding_size),
                 static_cast<unsigned long long>(a.max_buffer_size),
                 a.max_compute_workgroups_per_dim,

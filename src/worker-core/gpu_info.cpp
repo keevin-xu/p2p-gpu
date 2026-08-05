@@ -26,6 +26,8 @@ AdapterDescription DescribeAdapter(const GpuContext& ctx) {
         out.device       = wgpu::FromStr(info.device);
         out.description  = wgpu::FromStr(info.description);
         out.backend      = wgpu::BackendName(info.backendType);
+        // WGPUAdapterType_CPU is the spec's word for "this is not a GPU".
+        out.is_software  = (info.adapterType == WGPUAdapterType_CPU);
         wgpuAdapterInfoFreeMembers(info);
     }
 
@@ -50,6 +52,15 @@ AdapterDescription DescribeAdapter(const GpuContext& ctx) {
         }
     }
 
+    if (out.is_software) {
+        // Loud, and on every acquisition rather than once at startup: the whole
+        // failure mode is a number from this adapter being quoted later as if
+        // it came from hardware, and by then nobody is reading startup logs.
+        Log("warn",
+            "SOFTWARE ADAPTER (" + out.backend + "/" + out.device +
+                "). Valid for correctness only — NEVER for vendor, determinism "
+                "or throughput claims (EVALUATION.md honesty rule, RISKS.md R-D).");
+    }
     return out;
 }
 

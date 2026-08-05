@@ -1,13 +1,21 @@
-# p2pgpu CI — step 1.29, D-0036.
+# p2pgpu CI — step 1.29 (D-0036), extended by step 4.4.
 #
 # ┌─ WHAT THIS DOES NOT COVER ──────────────────────────────────────────────┐
-# │ GitHub runners have NO GPU. `kernel_tests` is excluded here, and with it │
-# │ every claim about kernel correctness, chunk invariance on real hardware, │
-# │ cross-vendor determinism, and all timing.                               │
+# │ GitHub runners have NO GPU. Step 4.4 added the kernel tests against      │
+# │ lavapipe, Mesa's CPU implementation of Vulkan — which is a real adapter  │
+# │ and therefore real coverage of kernel CORRECTNESS: compilation, chunk    │
+# │ invariance, the golden answers, K4 tiling.                              │
 # │                                                                         │
-# │ A green run means the PROTOCOL layer is memory-safe and the             │
-# │ coordinator's logic holds. It does NOT mean the kernels work. Getting a  │
-# │ GPU (or an honest substitute) into CI is step 4.4.                      │
+# │ It is NOT hardware. A software adapter is ONE implementation, so it      │
+# │ cannot show the cross-vendor divergence R6 is about, and its speed is    │
+# │ this runner's CPU. Nothing from it may support a claim about vendors,    │
+# │ determinism or throughput (EVALUATION.md honesty rule, RISKS.md R-D) —   │
+# │ `DescribeAdapter` logs a warning on every acquisition so a number from   │
+# │ here cannot quietly become evidence later.                              │
+# │                                                                         │
+# │ A green run means the protocol layer is memory-safe, the coordinator's   │
+# │ logic holds, and the kernels compute the right answers on SOME adapter.  │
+# │ Real-hardware kernel results still come from a developer machine.       │
 # └─────────────────────────────────────────────────────────────────────────┘
 #
 # ubuntu-latest, deliberately, not macOS. Matching the dev machine is the
@@ -284,6 +292,42 @@ jobs:
       # banner at the top of this file.
       - name: Test (GPU tests excluded — no adapter on CI runners)
         run: ctest --preset native-debug --output-on-failure -E '^kernel_'
+
+      # ── 4.4 — GPU tests against a SOFTWARE adapter ───────────────────
+      #
+      # lavapipe is Mesa's CPU implementation of Vulkan. It gives wgpu-native a
+      # real adapter on a runner that has no GPU, which makes the kernel tests
+      # runnable on every commit for the first time.
+      #
+      # WHAT THIS IS AND IS NOT. It is CORRECTNESS: does the WGSL compile, does
+      # chunking still agree, do the golden answers still hold, does K4 tiling
+      # fire. It is NOT evidence about vendors, determinism or throughput — a
+      # software adapter is ONE implementation, so it cannot exhibit the
+      # cross-vendor divergence R6 is about, and its speed is a property of this
+      # runner's CPU. `EVALUATION.md`'s honesty rule and `RISKS.md` R-D both bar
+      # it from those claims, and `DescribeAdapter` logs a warning on every
+      # acquisition so a number from here cannot be quoted later as hardware.
+      #
+      # continue-on-error: the software stack is the least stable thing in this
+      # workflow, and a lavapipe packaging change must not turn every PR red on
+      # a signal that is a bonus rather than a requirement. The hardware kernel
+      # tests still run locally and are what gate a release.
+      - name: Install lavapipe (software Vulkan)
+        run: |
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools libvulkan1
+          vulkaninfo --summary 2>/dev/null | head -30 || true
+
+      - name: Which adapter did we get?
+        continue-on-error: true
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: ./build/native-debug/worker-native adapter || true
+
+      - name: GPU kernel tests (software adapter)
+        continue-on-error: true
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: ctest --preset native-debug --output-on-failure -R '^kernel_'
 
       - name: R2 seam check
         run: python3 tools/check_seam.py

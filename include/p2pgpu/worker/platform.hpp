@@ -75,6 +75,20 @@ struct AdapterDescription {
     std::string description;
     std::string backend;
 
+    /// True when the adapter is a CPU/software implementation (lavapipe, WARP,
+    /// SwiftShader) rather than real hardware.
+    ///
+    /// EXISTS TO PREVENT A CATEGORY ERROR. Step 4.4 runs the kernel tests in CI
+    /// against a software adapter because the runners have no GPU, and that is
+    /// legitimate for CORRECTNESS. It is worthless — actively misleading — for
+    /// anything about vendors, determinism or throughput: a software adapter
+    /// has one implementation, so it cannot exhibit the cross-vendor divergence
+    /// R6 is about, and its speed is a property of the runner's CPU.
+    ///
+    /// `EVALUATION.md`'s honesty rule and `RISKS.md` R-D both say so; this flag
+    /// is what lets the code enforce it rather than the reader remember it.
+    bool is_software = false;
+
     /// Optional WebGPU features actually granted on the device, e.g.
     /// "timestamp-query", "shader-f16", "subgroups". K6: every one of these
     /// must have a fallback path — a worker lacking a feature still contributes.
