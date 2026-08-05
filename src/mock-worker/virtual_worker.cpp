@@ -222,6 +222,18 @@ void VirtualWorker::OnFrame(std::span<const std::byte> bytes) {
     const wire::Envelope& env = *verified->envelope();
     if (env.body_type() == wire::Body::Welcome) {
         handshaked_ = true;
+        // 3.13 — keep the resume token across a flap, so a reconnecting mock
+        // reclaims its reputation instead of arriving as a stranger.
+        //
+        // The mock is a SEPARATE protocol client from `worker-core` (D-0042),
+        // so it does not inherit `TaskLoop`'s handling — and without this the
+        // only fleet large enough to exercise reconnection could not exercise
+        // it at all. Exit criterion 6 says "survives restart AND reconnect";
+        // this is the reconnect half.
+        if (const auto* w = env.body_as_Welcome();
+            w != nullptr && w->session_token() != nullptr) {
+            resume_token_ = w->session_token()->str();
+        }
         return;
     }
     if (env.body_type() == wire::Body::BenchmarkRequest) {
@@ -410,8 +422,11 @@ void VirtualWorker::SendHello() {
             cb.add_supports_webrtc(false);
             auto caps = cb.Finish();
 
+            auto resume = fbb.CreateString(resume_token_);
+
             wire::HelloBuilder hb(fbb);
             hb.add_protocol_version(protocol::kProtocolVersion);
+            hb.add_resume_token(resume);
             hb.add_capabilities(caps);
             return hb.Finish();
         });

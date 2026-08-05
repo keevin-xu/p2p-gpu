@@ -3,7 +3,10 @@
 #include "p2pgpu/coordinator/reputation.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <random>
+#include <sstream>
 
 namespace p2pgpu::coordinator {
 
@@ -26,6 +29,49 @@ double SeverityFromDeviation(std::uint32_t max_ulp, double max_rel) {
     const double rel = std::max(max_rel, 1e-9);
     const double decades = std::log10(rel) + 9.0;   // 1e-9 -> 0, 1.0 -> 9
     return std::clamp(0.5 + decades * 0.4, 0.5, 4.0);
+}
+
+std::string ReputationTable::MintToken(WorkerId id) {
+    // std::random_device, not mt19937 seeded from the clock. A token derived
+    // from a predictable seed is guessable, and a guessable token hands an
+    // attacker somebody else's reputation (D-0056).
+    //
+    // 128 bits: enough that guessing is not a strategy, and short enough to sit
+    // in a string field without comment.
+    static std::random_device rd;
+    std::uniform_int_distribution<std::uint64_t> dist;
+    const std::uint64_t hi = (static_cast<std::uint64_t>(rd()) << 32) ^ rd();
+    const std::uint64_t lo = (static_cast<std::uint64_t>(rd()) << 32) ^ rd();
+
+    std::ostringstream os;
+    os << std::hex << hi << lo;
+    std::string token = os.str();
+
+    // Replace any previous token for this worker, so an old one cannot be
+    // reused after a reconnect issued a new one.
+    if (const auto it = tokens_.find(id); it != tokens_.end()) {
+        by_token_.erase(it->second);
+    }
+    by_token_[token] = id;
+    tokens_[id] = token;
+    return token;
+}
+
+std::optional<WorkerId> ReputationTable::ResolveToken(const std::string& token) const {
+    if (token.empty()) {
+        return std::nullopt;
+    }
+    const auto it = by_token_.find(token);
+    return it == by_token_.end() ? std::nullopt : std::optional<WorkerId>{it->second};
+}
+
+void ReputationTable::Adopt(WorkerId id, const Reputation& rep,
+                            const std::string& token) {
+    workers_[id] = rep;
+    if (!token.empty()) {
+        by_token_[token] = id;
+        tokens_[id] = token;
+    }
 }
 
 const Reputation* ReputationTable::Find(WorkerId id) const {

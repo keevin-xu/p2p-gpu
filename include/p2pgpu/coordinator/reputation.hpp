@@ -21,6 +21,7 @@
 // result was wrong.
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -83,6 +84,26 @@ class ReputationTable {
 public:
     explicit ReputationTable(ReputationConfig cfg = {}) : cfg_(cfg) {}
 
+    /// Mint a resume token for `id` (3.13). 128 bits from a CSPRNG.
+    ///
+    /// A GUESSABLE TOKEN IS A REPUTATION-THEFT PRIMITIVE: resume restores the
+    /// worker's accumulated standing, so anyone who can predict one inherits
+    /// it. It is also a bearer credential — whoever holds it IS that worker —
+    /// which is acceptable only because the control plane is TLS in deployment
+    /// (D-0056).
+    [[nodiscard]] std::string MintToken(WorkerId id);
+
+    /// The worker behind a token, if any (3.13).
+    ///
+    /// An unknown token returns nullopt and is NOT an error: tokens expire,
+    /// coordinators restart, and a worker presenting a stale one simply gets a
+    /// new identity. Treating it as an error would break exactly the honest
+    /// reconnects this exists for.
+    [[nodiscard]] std::optional<WorkerId> ResolveToken(const std::string& token) const;
+
+    /// Restore persisted standing (3.13), including its token.
+    void Adopt(WorkerId id, const Reputation& rep, const std::string& token);
+
     /// The worker computed a result that was ACCEPTED.
     ///
     /// `deviation_ulp` is how far it was from the agreed answer — 0 for bitwise
@@ -124,6 +145,10 @@ public:
 private:
     ReputationConfig cfg_;
     std::unordered_map<WorkerId, Reputation> workers_;
+    /// token -> worker. Reverse index so resume is a lookup rather than a scan
+    /// over every worker on every handshake.
+    std::unordered_map<std::string, WorkerId> by_token_;
+    std::unordered_map<WorkerId, std::string> tokens_;
 };
 
 /// Severity from a comparator deviation (3.2 -> 3.7).

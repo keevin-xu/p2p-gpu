@@ -245,6 +245,27 @@ Reaction Session::OnHello(const wire::Hello& hello) {
 
     handshaked_ = true;
     worker_id_ = WorkerId{conn_id_, 0};
+
+    // 3.13 — resume a prior identity, if the worker offers a token we minted.
+    //
+    // An unknown or absent token is NOT an error: tokens expire, coordinators
+    // restart, and a browser tab that has been closed for a week simply starts
+    // fresh. Rejecting it would break exactly the honest reconnects this
+    // exists for.
+    //
+    // AND IT DOES NOT MAKE BANS ENFORCEABLE (D-0056). A token is presented
+    // voluntarily — an honest worker offers it to keep a hundred correct
+    // results, a blacklisted one just omits it and arrives as a newcomer. What
+    // stops that being profitable is that a newcomer is worth nothing: it
+    // scores the prior and 3.8 replicates it until it has a record.
+    if (reputation_ != nullptr && hello.resume_token() != nullptr) {
+        const std::string token = hello.resume_token()->str();
+        if (const auto prior = reputation_->ResolveToken(token)) {
+            worker_id_ = *prior;
+            spdlog::info("handshake conn_id={} RESUMED worker={} score={:.2f}",
+                         conn_id_, worker_id_.hi(), reputation_->ScoreOf(worker_id_));
+        }
+    }
     // Stamp with the CURRENT time, not 0. A zero here means
     // `0 + timeout < now` on the very first sweep, so every worker is declared
     // lost within a second of connecting — and because it holds no leases yet,
@@ -304,7 +325,11 @@ Reaction Session::OnHello(const wire::Hello& hello) {
             // MUST be from a CSPRNG when it arrives: a guessable token is a
             // reputation-theft primitive, since resume restores the worker's
             // accumulated standing.
-            auto token = fbb.CreateString("");
+            // 3.13 — a real 128-bit CSPRNG token now. Minted per handshake and
+            // bound to this worker id, so a reconnect that presents it keeps
+            // its standing rather than starting over.
+            auto token = fbb.CreateString(
+                reputation_ != nullptr ? reputation_->MintToken(worker_id_) : std::string{});
             const wire::Uuid wid = worker_id_.to_wire();
 
             wire::WelcomeBuilder wb(fbb);

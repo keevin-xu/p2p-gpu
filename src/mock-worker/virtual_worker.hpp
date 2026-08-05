@@ -118,6 +118,8 @@ private:
     bool running_ = false;
     bool connected_ = false;
     bool handshaked_ = false;
+    /// Resume token from the last Welcome (3.13). Survives a flap.
+    std::string resume_token_;
     bool lease_outstanding_ = false;
     std::deque<Pending> in_flight_;
     std::chrono::steady_clock::time_point next_action_;

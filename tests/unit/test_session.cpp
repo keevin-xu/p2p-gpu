@@ -561,3 +561,114 @@ TEST_CASE("a queued revoke is deliverable with no inbound frame from the loser",
     // evidence for it is the live run in `results/2.15-2.18-speculation.md`
     // where the fleet's `revoked` count went from 0 to non-zero.
 }
+
+// ── 3.13 — reputation survives a RECONNECT ───────────────────────────────
+//
+// Phase 3 exit criterion 6 is "reputation survives restart and reconnect".
+// The restart half is `test_store.cpp`; this is the reconnect half, and it is
+// tested here rather than against a live fleet because a flap fires with
+// probability 0.003 per poll — waiting for one is not a test.
+
+namespace {
+
+std::vector<std::byte> HelloWithToken(const std::string& token) {
+    return protocol::EncodeMessage(wire::Body::Hello,
+                                   [&](flatbuffers::FlatBufferBuilder& fbb) {
+                                       auto t = fbb.CreateString(token);
+                                       wire::HelloBuilder b(fbb);
+                                       b.add_protocol_version(protocol::kProtocolVersion);
+                                       b.add_resume_token(t);
+                                       return b.Finish();
+                                   });
+}
+
+/// The `session_token` the coordinator minted, read back off the Welcome.
+std::string TokenFromWelcome(const Reaction& r) {
+    for (const auto& reply : r.replies) {
+        const auto verified = protocol::VerifyFrame(reply);
+        if (!verified) {
+            continue;
+        }
+        if (const auto* w = verified->envelope()->body_as_Welcome();
+            w != nullptr && w->session_token() != nullptr) {
+            return w->session_token()->str();
+        }
+    }
+    return {};
+}
+
+}  // namespace
+
+TEST_CASE("a reconnect with a valid token keeps its reputation", "[session]") {
+    JobManager jobs;
+    Fleet fleet;
+    ReputationTable rep;
+    const KernelRegistry& kernels = Registry();
+
+    // First connection: handshake, then build a record.
+    std::string token;
+    WorkerId original;
+    {
+        Session s{jobs, kernels, fleet, /*conn_id=*/1, /*lease_ms=*/30000};
+        s.SetReputation(&rep);
+        const Reaction r = Feed(s, HelloFrame(protocol::kProtocolVersion));
+        REQUIRE_FALSE(r.close);
+        original = s.worker_id();
+        token = TokenFromWelcome(r);
+        REQUIRE_FALSE(token.empty());
+        // A guessable token is a reputation-theft primitive (D-0056), so at
+        // minimum it must not be short or constant.
+        CHECK(token.size() >= 16);
+    }
+    for (int i = 0; i < 50; ++i) {
+        rep.RecordAccepted(original);
+    }
+    const double earned = rep.ScoreOf(original);
+    REQUIRE(earned > 0.9);
+
+    // Reconnect on a DIFFERENT connection, presenting the token.
+    Session again{jobs, kernels, fleet, /*conn_id=*/99, /*lease_ms=*/30000};
+    again.SetReputation(&rep);
+    const Reaction r2 = Feed(again, HelloWithToken(token));
+    REQUIRE_FALSE(r2.close);
+
+    // Same identity, same standing. Without this a browser tab reload throws
+    // away fifty correct results and the worker is replicated from scratch.
+    CHECK(again.worker_id() == original);
+    CHECK(rep.ScoreOf(again.worker_id()) == earned);
+}
+
+TEST_CASE("an unknown token is not an error, just a new identity", "[session]") {
+    JobManager jobs;
+    Fleet fleet;
+    ReputationTable rep;
+    Session s{jobs, Registry(), fleet, /*conn_id=*/5, /*lease_ms=*/30000};
+    s.SetReputation(&rep);
+
+    const Reaction r = Feed(s, HelloWithToken("not-a-real-token"));
+    // Tokens expire and coordinators restart. Rejecting a stale one would break
+    // exactly the honest reconnects this feature exists for.
+    CHECK_FALSE(r.close);
+    CHECK(s.handshaked());
+}
+
+TEST_CASE("a token cannot be used to steal another worker's standing",
+          "[session]") {
+    JobManager jobs;
+    Fleet fleet;
+    ReputationTable rep;
+    const KernelRegistry& kernels = Registry();
+
+    Session a{jobs, kernels, fleet, /*conn_id=*/1, /*lease_ms=*/30000};
+    a.SetReputation(&rep);
+    const std::string tok_a = TokenFromWelcome(Feed(a, HelloFrame(protocol::kProtocolVersion)));
+
+    Session b{jobs, kernels, fleet, /*conn_id=*/2, /*lease_ms=*/30000};
+    b.SetReputation(&rep);
+    const std::string tok_b = TokenFromWelcome(Feed(b, HelloFrame(protocol::kProtocolVersion)));
+
+    // Two connections, two DISTINCT secrets. Identical tokens would mean every
+    // worker could assume every other worker's record.
+    CHECK(tok_a != tok_b);
+    CHECK(a.worker_id() != b.worker_id());
+}

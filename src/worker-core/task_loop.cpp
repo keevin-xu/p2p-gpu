@@ -237,6 +237,15 @@ void TaskLoop::OnFrame(std::span<const std::byte> bytes) {
 
 void TaskLoop::HandleWelcome(const wire::Welcome& welcome) {
     handshaked_ = true;
+    // 3.13 — keep the resume token so a reconnect keeps our standing.
+    //
+    // Held in memory only. Persisting it to disk would make it a stealable
+    // credential at rest for a worker process that has no secret storage on
+    // either target, and the cost of losing it is merely starting fresh.
+    if (welcome.session_token() != nullptr) {
+        resume_token_ = welcome.session_token()->str();
+    }
+
     if (welcome.worker_id() != nullptr) {
         worker_id_ = protocol::WorkerId{*welcome.worker_id()};
     }
@@ -447,6 +456,9 @@ void TaskLoop::SendHello() {
 
     auto frame = protocol::EncodeMessage(
         wire::Body::Hello, [&](flatbuffers::FlatBufferBuilder& fbb) {
+            // Empty on a first connect; set after a Welcome, so a reconnect
+            // reclaims the same identity and its reputation (3.13).
+            auto resume = fbb.CreateString(resume_token_);
             auto vendor = fbb.CreateString(desc.vendor);
             auto arch = fbb.CreateString(desc.architecture);
             auto dev = fbb.CreateString(desc.device);
@@ -489,6 +501,7 @@ void TaskLoop::SendHello() {
 
             wire::HelloBuilder hb(fbb);
             hb.add_protocol_version(protocol::kProtocolVersion);
+            hb.add_resume_token(resume);
             hb.add_capabilities(caps);
             return hb.Finish();
         });

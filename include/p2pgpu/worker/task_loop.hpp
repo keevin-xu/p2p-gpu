@@ -185,6 +185,11 @@ private:
     std::vector<protocol::TaskId> held_;
 
     protocol::WorkerId worker_id_;
+
+    /// Resume token from the last `Welcome` (3.13). In memory only — neither
+    /// target has secret storage, and losing it costs nothing but a fresh
+    /// identity.
+    std::string resume_token_;
     bool running_ = false;
     bool handshaked_ = false;
     /// A lease request is in flight. Cleared by a grant — OR by the timeout
