@@ -330,7 +330,16 @@ void VirtualWorker::BeginTask(Pending task) {
         // by inspection; the adversary worth defending against returns
         // something that looks like a result and is wrong (E4).
         result.found_count += 1;
-        result.match_xor ^= static_cast<std::uint32_t>(dice_.next());
+        // A colluding liar derives its lie from the SHARED key rather than its
+        // own RNG, so every colluder on this range produces byte-identical
+        // output and naive quorum reads them as corroborating each other
+        // (3.16). Mixing in the task's start_unit keeps the lie plausible —
+        // one constant for every range would be obvious by inspection.
+        const std::uint64_t fabricated =
+            behaviors_.collusion_key != 0
+                ? behaviors_.collusion_key ^ task.start_unit
+                : dice_.next();
+        result.match_xor ^= static_cast<std::uint32_t>(fabricated);
         if (lying) {
             ++stats_.tasks_lied_about;
         }

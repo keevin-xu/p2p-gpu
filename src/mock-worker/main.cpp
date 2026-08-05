@@ -20,6 +20,7 @@
 #include <spdlog/spdlog.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -37,8 +38,14 @@ int main(int argc, char** argv) {
     std::uint32_t run_seconds = 0;
     bool list_profiles = false;
     double nominal_ms = 600.0;
+    double liar_fraction = -1.0;
+    bool collude = false;
 
     CLI::App app{"p2pgpu mock worker fleet"};
+    app.add_option("--liar-fraction", liar_fraction,
+                   "override the profile's share of lying workers (E4 sweep)");
+    app.add_flag("--collude", collude,
+                 "liars return IDENTICAL wrong answers, defeating naive quorum (3.16)");
     app.add_option("--ms-per-mega-unit", nominal_ms,
                    "simulated device speed; see virtual_worker.cpp for the "
                    "fleet-size constraint")
@@ -91,6 +98,22 @@ int main(int argc, char** argv) {
     for (std::uint32_t i = 0; i < count; ++i) {
         p2pgpu::mock::Dice dice(seed, i);
         auto behaviors = profile->assign(i, count, dice);
+
+        // E4 sweep overrides (3.14/3.16), applied AFTER the profile so the
+        // profile stays the single description of a fleet's character and the
+        // sweep only varies the one axis it is measuring.
+        if (liar_fraction >= 0.0) {
+            // By INDEX, not by coin flip, so "20%" is exactly 20% and the same
+            // workers lie on every replay — a detection rate computed against
+            // an approximate liar count is not a rate.
+            const auto liars =
+                static_cast<std::uint32_t>(std::llround(liar_fraction * count));
+            behaviors.lies_probabilistically = (i < liars) ? 1.0 : 0.0;
+        }
+        if (collude && behaviors.lies_probabilistically > 0.0) {
+            // One key for the whole fleet: every liar fabricates identically.
+            behaviors.collusion_key = 0x5EEDC0111DE5ULL ^ seed;
+        }
         fleet.push_back(std::make_unique<p2pgpu::mock::VirtualWorker>(
             i, url, behaviors, seed));
         fleet.back()->Start();

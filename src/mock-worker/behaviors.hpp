@@ -66,6 +66,18 @@ struct Behaviors {
     /// up, and E5 measures how much that window costs.
     double score_inflation = 1.0;
 
+    /// Colluding liars agree on their lie (3.16).
+    ///
+    /// THE ATTACK NAIVE QUORUM CANNOT SEE. Independent liars produce different
+    /// wrong answers, so replication catches them the moment two are compared.
+    /// Liars that coordinate return the SAME wrong answer, and a quorum counts
+    /// that as agreement — the more of them there are, the more confident the
+    /// coordinator becomes in the lie.
+    ///
+    /// Non-zero means "derive the fabricated result from this shared value
+    /// instead of from my own RNG", so every colluder lands on it identically.
+    std::uint64_t collusion_key = 0;
+
     /// Added to every message this worker sends. Simulates a distant peer.
     std::uint32_t high_latency_ms = 0;
 

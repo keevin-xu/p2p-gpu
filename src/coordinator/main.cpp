@@ -201,13 +201,24 @@ int main(int argc, char** argv) {
         // "Nothing was verified" and "everything verified clean" must never
         // look alike, so `checked` is reported even when there are no
         // mismatches — "0 mismatches" over 0 results would read as a pass.
-        spdlog::info("reference check: checked={} matched={} mismatched={} unsupported={}",
+        spdlog::info("reference check: checked={} matched={} mismatched={} unsupported={}"
+                     " | ACCEPTED: checked={} wrong={}",
                      ref_stats.checked, ref_stats.matched, ref_stats.mismatched,
-                     ref_stats.unsupported);
-        if (ref_stats.mismatched > 0) {
-            spdlog::error("{} RESULT(S) DID NOT MATCH THE CPU REFERENCE",
-                          ref_stats.mismatched);
+                     ref_stats.unsupported, ref_stats.accepted_checked,
+                     ref_stats.accepted_wrong);
+        // The VERDICT keys off accepted_wrong, not mismatched. Under
+        // replication a caught liar submits a wrong answer that is then
+        // outvoted — counting that as a failure would make a working validator
+        // report a failing run, which is exactly what it did before this split
+        // existed (7 mismatches on a run that caught all 7 lies).
+        if (ref_stats.accepted_wrong > 0) {
+            spdlog::error("{} ACCEPTED RESULT(S) DID NOT MATCH THE CPU REFERENCE",
+                          ref_stats.accepted_wrong);
             return 1;
+        }
+        if (ref_stats.mismatched > 0) {
+            spdlog::warn("{} wrong result(s) were SUBMITTED and caught by validation "
+                         "(not a failure)", ref_stats.mismatched);
         }
         return 0;
     };

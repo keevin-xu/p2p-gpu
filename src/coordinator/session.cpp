@@ -853,6 +853,23 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
             }
         }
 
+        // E4's actual measurement (3.14): was the answer we ACCEPTED correct?
+        // `reference_stats_->mismatched` above counts every submission, so it
+        // cannot answer this — a caught liar and an undetected one look the
+        // same there.
+        if (reference_stats_ != nullptr) {
+            ++reference_stats_->accepted_checked;
+            ReferenceStats probe;
+            const Task* t2 = jobs_.Find(task_id);
+            const Job* j2 = t2 != nullptr ? jobs_.FindJob(t2->job) : nullptr;
+            if (j2 != nullptr && !CheckAgainstReference(*ks, *j2, *t2, payload, probe)) {
+                ++reference_stats_->accepted_wrong;
+                spdlog::error("ACCEPTED A WRONG ANSWER task={} worker={} — validation "
+                              "did not catch this",
+                              task_id.lo(), worker_id_.hi());
+            }
+        }
+
         if (const auto s = jobs_.Finish(task_id, /*accepted=*/true); !s) {
             return NonFatal(wire::ErrorCode::Internal, "task could not be finalised");
         }

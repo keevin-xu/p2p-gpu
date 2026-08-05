@@ -31,6 +31,7 @@ import json
 import os
 import signal
 import sqlite3
+import re
 import statistics
 import subprocess
 import sys
@@ -97,7 +98,8 @@ def kill_quietly(proc):
         pass
 
 
-def start_coordinator(units, events_csv, store=None, speculation=True, extra=()):
+def start_coordinator(units, events_csv, store=None, speculation=True, extra=(),
+                      replication=None, verify=False):
     cmd = [
         str(COORD),
         "--seed-job", "brute_search_v1",
@@ -112,6 +114,10 @@ def start_coordinator(units, events_csv, store=None, speculation=True, extra=())
         cmd += ["--store", str(store)]
     if not speculation:
         cmd += ["--no-speculation"]
+    if replication:
+        cmd += ["--replication", replication]
+    if verify:
+        cmd += ["--verify-reference"]
     cmd += list(extra)
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if not wait_for_port():
@@ -132,7 +138,7 @@ def start_coordinator(units, events_csv, store=None, speculation=True, extra=())
 WORKERS_PER_PROCESS = 25
 
 
-def start_mock(count, profile, seed, seconds):
+def start_mock(count, profile, seed, seconds, liar_fraction=None, collude=False):
     """Start however many processes it takes to host `count` workers.
 
     Returns a list, so callers must treat the fleet as a group.
@@ -151,6 +157,10 @@ def start_mock(count, profile, seed, seconds):
             "--seconds", str(seconds),
             "--coordinator", f"ws://localhost:{PORT}/ws",
         ]
+        if liar_fraction is not None:
+            cmd += ["--liar-fraction", str(liar_fraction)]
+        if collude:
+            cmd += ["--collude"]
         procs.append(subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                                       stderr=subprocess.DEVNULL))
         remaining -= n
@@ -393,6 +403,137 @@ def e5(args):
     print(f"  -> {out}")
 
 
+# ── E4 — Byzantine detection (3.14-3.16) ────────────────────────────────
+
+def _e4_run(fleet, units, liar_fraction, policy, collude, seed, tag):
+    """One cell of the sweep. Returns the row, or None if it produced no data."""
+    ev = RESULTS / f".e4_{tag}.csv"
+    log = RESULTS / f".e4_{tag}.log"
+    coord = subprocess.Popen(
+        [str(COORD), "--seed-job", "brute_search_v1", "--seed-units", str(units),
+         "--lease-ms", "20000", "--sweep-ms", "300", "--exit-when-complete",
+         "--verify-reference", "--replication", policy,
+         "--events-csv", str(ev), "--log-level", "info"],
+        stdout=open(log, "w"), stderr=subprocess.STDOUT)
+    if not wait_for_port():
+        kill_quietly(coord)
+        return None
+    mock = start_mock(fleet, "byzantine_10pct", seed, 900,
+                      liar_fraction=liar_fraction, collude=collude)
+    try:
+        coord.wait(timeout=900)
+    except subprocess.TimeoutExpired:
+        pass
+    kill_quietly(mock)
+    kill_quietly(coord)
+
+    text = log.read_text(errors="replace")
+    row = {"policy": policy, "liar_fraction": liar_fraction, "collude": int(collude)}
+
+    # The two numbers the whole phase turns on. `mismatched` is lies TOLD;
+    # `accepted_wrong` is lies that SURVIVED validation. Only the second is a
+    # statement about whether the validator works.
+    m = re.search(r"mismatched=(\d+).*ACCEPTED: checked=(\d+) wrong=(\d+)", text)
+    if not m:
+        return None
+    row["lies_submitted"] = int(m.group(1))
+    row["accepted_checked"] = int(m.group(2))
+    row["accepted_wrong"] = int(m.group(3))
+
+    evs = read_events(ev)
+    accepts = [r for r in evs if r["event"] == "accept"]
+    grants = [r for r in evs if r["event"] == "grant"]
+    tasks = len({r["task_id"] for r in accepts})
+    row["tasks"] = tasks
+    row["grants"] = len(grants)
+
+    # OVERHEAD FACTOR = GRANTS per accepted task. 1.0 is no replication, 2.0 is
+    # the naive baseline, and this is the number 3.17 has to quote.
+    #
+    # Counted from `grant`, NOT `accept`: an accept event is logged once per
+    # task when it is finally accepted, so accepts-per-task is 1.0 by
+    # construction and reported a flat 1.0 even for fixed2x, whose wall clock
+    # had visibly doubled. Every dispatch to a worker is a grant; that is what
+    # replication costs.
+    row["overhead_factor"] = round(len(grants) / tasks, 3) if tasks else 0.0
+    row["detected"] = row["lies_submitted"] - row["accepted_wrong"]
+    row["detection_rate"] = (round(row["detected"] / row["lies_submitted"], 3)
+                             if row["lies_submitted"] else 1.0)
+    row["blacklisted"] = len(re.findall(r"blacklisted worker=", text))
+    row["inconclusive"] = len(re.findall(r"validation_inconclusive", text))
+    row["wall_s"] = round(summarize(evs)["wall_ms"] / 1000, 1) if accepts else 0
+
+    ev.unlink(missing_ok=True)
+    log.unlink(missing_ok=True)
+    return row
+
+
+def e4(args):
+    out = RESULTS / "E4_byzantine.csv"
+    fleet = 20
+    units = UNITS_PER_WORKER * fleet
+    rows = []
+    for policy in ("none", "fixed2x", "adaptive"):
+        for frac in (0.05, 0.10, 0.20, 0.40):
+            print(f"  E4 {policy:8s} liars={frac:.0%} ...", end="", flush=True)
+            r = _e4_run(fleet, units, frac, policy, False, 700,
+                        f"{policy}_{int(frac*100)}")
+            if r is None:
+                print(" no data")
+                continue
+            rows.append(r)
+            print(f" told={r['lies_submitted']:3d} survived={r['accepted_wrong']:3d} "
+                  f"detect={r['detection_rate']:.0%} overhead={r['overhead_factor']}")
+    write_csv(out, rows)
+    print(f"  -> {out}")
+
+
+def e4_control(args):
+    """3.15 — ZERO liars on a heterogeneous fleet. THE R6 evidence.
+
+    0.16 measured honest workers differing by up to 5 ULP across vendors. If the
+    Tolerant comparator or reputation punishes that, this run shows it as
+    blacklists and rejections with nobody lying.
+    """
+    out = RESULTS / "E4_false_positive_control.csv"
+    fleet = 20
+    units = UNITS_PER_WORKER * fleet
+    rows = []
+    for policy in ("fixed2x", "adaptive"):
+        print(f"  E4-control {policy:8s} liars=0 ...", end="", flush=True)
+        r = _e4_run(fleet, units, 0.0, policy, False, 800, f"ctl_{policy}")
+        if r is None:
+            print(" no data")
+            continue
+        rows.append(r)
+        print(f" wrong_accepted={r['accepted_wrong']} blacklisted={r['blacklisted']} "
+              f"inconclusive={r['inconclusive']}")
+    write_csv(out, rows)
+    print(f"  -> {out}")
+
+
+def e4_collusion(args):
+    """3.16 — liars returning IDENTICAL wrong answers, defeating naive quorum."""
+    out = RESULTS / "E4_collusion.csv"
+    fleet = 20
+    units = UNITS_PER_WORKER * fleet
+    rows = []
+    for frac in (0.20, 0.40):
+        for collude in (False, True):
+            tag = f"col_{int(frac*100)}_{int(collude)}"
+            print(f"  E4-collusion liars={frac:.0%} collude={collude} ...",
+                  end="", flush=True)
+            r = _e4_run(fleet, units, frac, "fixed2x", collude, 900, tag)
+            if r is None:
+                print(" no data")
+                continue
+            rows.append(r)
+            print(f" told={r['lies_submitted']:3d} survived={r['accepted_wrong']:3d} "
+                  f"detect={r['detection_rate']:.0%}")
+    write_csv(out, rows)
+    print(f"  -> {out}")
+
+
 # ── 2.26 — sizing convergence ────────────────────────────────────────────
 
 def convergence(args):
@@ -453,7 +594,9 @@ def write_csv(path, rows):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("experiment", choices=["e1", "e3", "e5", "convergence", "all"])
+    ap.add_argument("experiment",
+                    choices=["e1", "e3", "e5", "convergence", "e4", "e4_control",
+                             "e4_collusion", "all"])
     args = ap.parse_args()
 
     for exe in (COORD, MOCK):
@@ -461,7 +604,8 @@ def main():
             sys.exit(f"missing {exe} — build native-release first")
 
     RESULTS.mkdir(exist_ok=True)
-    todo = ["e1", "e3", "e5", "convergence"] if args.experiment == "all" else [args.experiment]
+    todo = (["e1", "e3", "e5", "convergence", "e4", "e4_control", "e4_collusion"]
+            if args.experiment == "all" else [args.experiment])
     for name in todo:
         print(f"[{name}]")
         globals()[name](args)

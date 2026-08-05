@@ -34,10 +34,26 @@ namespace p2pgpu::coordinator {
 /// distinctly from a count of zero mismatches — "nothing was verified" and
 /// "everything verified clean" must never look alike in a log.
 struct ReferenceStats {
+    /// Every SUBMISSION seen, including replicas and liars' answers.
     std::uint64_t checked = 0;
     std::uint64_t matched = 0;
     std::uint64_t mismatched = 0;
     std::uint64_t unsupported = 0;  ///< kernel has no reference implementation
+
+    /// ── THE E4 NUMBERS (3.14) ────────────────────────────────────────────
+    /// Counted only for answers the validator ACCEPTED.
+    ///
+    /// The distinction is the whole experiment. Under replication a liar's
+    /// answer is submitted, counted in `mismatched`, then outvoted and thrown
+    /// away — so `mismatched` measures how many lies were TOLD, while
+    /// `accepted_wrong` measures how many SURVIVED. Only the second says
+    /// whether validation works.
+    ///
+    /// Measured before this split existed: `fixed2x` on `byzantine_10pct`
+    /// reported 7 mismatches on a run where all 7 lies were caught, which reads
+    /// as a total failure and was the opposite.
+    std::uint64_t accepted_checked = 0;
+    std::uint64_t accepted_wrong = 0;
 };
 
 /// Recompute `task` on the CPU and compare against `payload` byte for byte.
