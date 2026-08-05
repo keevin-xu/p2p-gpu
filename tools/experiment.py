@@ -99,7 +99,8 @@ def kill_quietly(proc):
 
 
 def start_coordinator(units, events_csv, store=None, speculation=True, extra=(),
-                      replication=None, verify=False):
+                      replication=None, verify=False, log_path=None,
+                      log_level="warn"):
     cmd = [
         str(COORD),
         "--seed-job", "brute_search_v1",
@@ -108,7 +109,7 @@ def start_coordinator(units, events_csv, store=None, speculation=True, extra=(),
         "--sweep-ms", "300",
         "--exit-when-complete",
         "--events-csv", str(events_csv),
-        "--log-level", "warn",
+        "--log-level", log_level,
     ]
     if store:
         cmd += ["--store", str(store)]
@@ -119,7 +120,8 @@ def start_coordinator(units, events_csv, store=None, speculation=True, extra=(),
     if verify:
         cmd += ["--verify-reference"]
     cmd += list(extra)
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    sink = open(log_path, "w") if log_path else subprocess.DEVNULL
+    proc = subprocess.Popen(cmd, stdout=sink, stderr=subprocess.STDOUT)
     if not wait_for_port():
         kill_quietly(proc)
         raise RuntimeError("coordinator did not come up")
@@ -534,6 +536,93 @@ def e4_collusion(args):
     print(f"  -> {out}")
 
 
+def e4_longrun(args):
+    """Does adaptive replication actually converge toward 1.0? (G3 criterion 2)
+
+    THE SHORT RUNS COULD NOT ANSWER THIS. With a Beta(2,2) prior, a worker needs
+    **16 clean results** to reach `trusted_at = 0.90` — and E4's runs gave each
+    worker ~9. So no worker ever became trusted, adaptive never engaged its
+    saving, and the 1.84x vs 2.06x gap it reported cannot be attributed to the
+    mechanism. This run gives every worker enough history to cross the line, and
+    reports overhead over TIME so the crossing is visible rather than inferred.
+    """
+    out = RESULTS / "E4_longrun.csv"
+    fleet = 20
+    # ~10x the E4 keyspace: ~90 tasks per worker, well past the 16 needed.
+    units = UNITS_PER_WORKER * fleet * 10
+    rows = []
+    for policy in ("fixed2x", "adaptive"):
+        ev = RESULTS / f".e4long_{policy}.csv"
+        print(f"  E4-long {policy:8s} ...", end="", flush=True)
+        # VERIFY. Overhead without detection is not a result: if adaptive
+        # reaches 1.0 by quietly not validating, the number is an argument
+        # against it, not for it. Measured together or not at all.
+        log = RESULTS / f".e4long_{policy}.log"
+        # `log_level`, not an extra flag: CLI11 allows --log-level at most
+        # once, so appending a second one made the coordinator exit before it
+        # ever bound the port — which surfaced as "coordinator did not come up"
+        # and looked like a stale process.
+        coord = start_coordinator(units, ev, replication=policy, verify=True,
+                                  log_path=log, log_level="info")
+        mock = start_mock(fleet, "byzantine_10pct", 1300, 1800, liar_fraction=0.10)
+        try:
+            coord.wait(timeout=1800)
+        except subprocess.TimeoutExpired:
+            print(" TIMEOUT", end="")
+        kill_quietly(mock)
+        kill_quietly(coord)
+
+        evs = read_events(ev)
+        accepts = [r for r in evs if r["event"] == "accept"]
+        grants = [r for r in evs if r["event"] == "grant"]
+        if not accepts:
+            print(" no data")
+            continue
+
+        told = wrong = -1
+        try:
+            m = re.search(r"mismatched=(\d+).*ACCEPTED: checked=\d+ wrong=(\d+)",
+                          log.read_text(errors="replace"))
+            if m:
+                told, wrong = int(m.group(1)), int(m.group(2))
+        except OSError:
+            pass
+
+        # Overhead in each third of the run. If trust is doing anything, the
+        # last third must be cheaper than the first — that is the claim, and a
+        # single average would hide it.
+        t0 = min(r["t_ms"] for r in grants)
+        t1 = max(r["t_ms"] for r in accepts)
+        span = max(1, t1 - t0)
+        thirds = []
+        for k in range(3):
+            lo, hi = t0 + span * k // 3, t0 + span * (k + 1) // 3
+            g = [r for r in grants if lo <= r["t_ms"] < hi]
+            a = [r for r in accepts if lo <= r["t_ms"] < hi]
+            tasks = len({r["task_id"] for r in a})
+            thirds.append(round(len(g) / tasks, 3) if tasks else 0.0)
+
+        tasks_total = len({r["task_id"] for r in accepts})
+        rows.append({
+            "policy": policy,
+            "accepted_wrong": wrong,
+            "lies_submitted": told,
+            "tasks": tasks_total,
+            "grants": len(grants),
+            "tasks_per_worker": round(tasks_total / fleet, 1),
+            "overhead_overall": round(len(grants) / tasks_total, 3),
+            "overhead_first_third": thirds[0],
+            "overhead_mid_third": thirds[1],
+            "overhead_last_third": thirds[2],
+            "wall_s": round(span / 1000, 1),
+        })
+        ev.unlink(missing_ok=True)
+        print(f" tasks/worker={tasks_total/fleet:.0f} overall={rows[-1]['overhead_overall']} "
+              f"thirds={thirds} told={told} SURVIVED={wrong}")
+    write_csv(out, rows)
+    print(f"  -> {out}")
+
+
 # ── 2.26 — sizing convergence ────────────────────────────────────────────
 
 def convergence(args):
@@ -596,7 +685,7 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("experiment",
                     choices=["e1", "e3", "e5", "convergence", "e4", "e4_control",
-                             "e4_collusion", "all"])
+                             "e4_collusion", "e4_longrun", "all"])
     args = ap.parse_args()
 
     for exe in (COORD, MOCK):
