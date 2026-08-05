@@ -12,6 +12,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <cstddef>
 #include <vector>
 
 #include "p2pgpu/coordinator/affinity.hpp"
@@ -49,6 +50,24 @@ struct Task {
     /// with two holders would make "who holds this lease" ambiguous, which is
     /// the question invariants 5 and 6 exist to answer.
     TaskId replica_of;
+
+    /// One worker's answer, kept until the group resolves (D-0054).
+    ///
+    /// For `Exact` only `checksum` is populated — bitwise equality and checksum
+    /// equality are the same question, and the checksum is already computed for
+    /// invariant 9, so integer replication costs 8 bytes rather than up to
+    /// 8 MiB. `payload` is filled only for classes where "close enough" cannot
+    /// be answered from a hash.
+    struct Submission {
+        WorkerId worker;
+        std::uint64_t checksum = 0;
+        std::vector<std::byte> payload;
+    };
+
+    /// Answers received so far. Cleared when the task reaches a terminal state
+    /// — holding them afterwards is pure memory cost with nothing left to
+    /// decide (R11: the protocol permits an 8 MiB payload).
+    std::vector<Submission> submissions;
 
     /// Workers that have already computed this task or a sibling replica.
     /// Invariant 6 forbids granting a replica to any of them: a worker agreeing

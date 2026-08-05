@@ -319,6 +319,7 @@ if(NOT P2PGPU_WASM)
     add_library(p2pgpu-coordinator-core STATIC
         src/coordinator/affinity.cpp
         src/coordinator/event_log.cpp
+        src/coordinator/quorum.cpp
         src/coordinator/store.cpp
         src/coordinator/job.cpp
         src/coordinator/session.cpp

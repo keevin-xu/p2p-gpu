@@ -18,6 +18,7 @@ add_executable(tests
     unit/test_store.cpp            # 2.19/2.20 — durable state + crash recovery
     unit/test_metrics.cpp          # 2.21 — derived metrics + SSE payload
     unit/test_validator.cpp        # 3.1-3.3 — determinism-class comparators
+    unit/test_quorum.cpp           # 3.4-3.6 — replication policy + quorum
     unit/test_sizer.cpp            # 2.12-2.14 — sizing rules, in order
     unit/test_session.cpp          # 1.15-1.16 — handshake + result ingestion
     unit/test_checksum.cpp         # 1.20 — invariant 9, pinned to BLAKE3's vectors
