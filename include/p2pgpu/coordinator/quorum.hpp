@@ -79,6 +79,14 @@ struct QuorumResult {
     /// Worst deviation seen inside the ACCEPTED group, for 3.7. Two honest GPUs
     /// agreeing at 3 ULP is different evidence from two agreeing bitwise.
     std::uint32_t agreeing_max_ulp = 0;
+    /// How far the DISSENTERS were from the accepted answer. This — not the
+    /// spread inside the accepted group — is what 3.7's penalty is a function
+    /// of: 0.16 measured 5 ULP between two honest vendors, and charging that
+    /// like a fabricated answer re-introduces the cross-vendor rejection R6
+    /// exists to prevent.
+    std::uint32_t dissent_max_ulp = 0;
+    double dissent_max_rel = 0.0;
+
     /// Populated when the action is driven by a disagreement, for the 3.3 log.
     std::string detail;
 };

@@ -3,6 +3,7 @@
 #include "p2pgpu/coordinator/quorum.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <string>
 
 #include "p2pgpu/coordinator/validator.hpp"
@@ -98,6 +99,33 @@ QuorumResult Decide(const KernelSpec& spec, const QuorumConfig& cfg,
     const std::size_t best_size = clusters[best].size();
     const auto n = static_cast<std::uint32_t>(submissions.size());
 
+    // How far the losers are from the winner. Measured against a member of the
+    // accepted cluster, because "wrong" here means "disagrees with what we
+    // accepted" — a dissenter's distance from another dissenter is not evidence
+    // about anything.
+    const auto measure_dissent = [&]() {
+        const Task::Submission& winner = submissions[clusters[best].front()];
+        for (std::size_t ci = 0; ci < clusters.size(); ++ci) {
+            if (ci == best) {
+                continue;
+            }
+            for (const std::size_t idx : clusters[ci]) {
+                if (spec.determinism == Determinism::Exact) {
+                    // No notion of "how far" for a hash. Treat any Exact
+                    // disagreement as structural — for an integer kernel it is:
+                    // 0.16 measured 1000/1000 bitwise agreement across vendors,
+                    // so there is no honest way to differ.
+                    r.dissent_max_ulp = std::numeric_limits<std::uint32_t>::max();
+                    r.dissent_max_rel = 1.0;
+                    continue;
+                }
+                const Comparison c = Compare(spec, submissions[idx].payload, winner.payload);
+                r.dissent_max_ulp = std::max(r.dissent_max_ulp, c.max_ulp_diff);
+                r.dissent_max_rel = std::max(r.dissent_max_rel, c.max_rel_diff);
+            }
+        }
+    };
+
     const auto collect = [&](bool agreeing) {
         for (std::size_t ci = 0; ci < clusters.size(); ++ci) {
             if ((ci == best) != agreeing) {
@@ -115,6 +143,7 @@ QuorumResult Decide(const KernelSpec& spec, const QuorumConfig& cfg,
         r.agreeing_max_ulp = cluster_ulp[best];
         collect(true);
         collect(false);
+        measure_dissent();
         if (!r.dissenting.empty()) {
             r.detail = "accepted " + std::to_string(best_size) + "/" +
                        std::to_string(n) + " with " +
@@ -139,6 +168,7 @@ QuorumResult Decide(const KernelSpec& spec, const QuorumConfig& cfg,
         r.agreeing_max_ulp = cluster_ulp[best];
         collect(true);
         collect(false);
+        measure_dissent();
         r.detail = "majority " + std::to_string(best_size) + "/" + std::to_string(n) +
                    " at replica cap";
         return r;

@@ -28,6 +28,9 @@ int main(int argc, char** argv) {
     app.add_option("--port", cfg.port, "WebSocket / HTTP port")->capture_default_str();
     app.add_option("--manifest", cfg.manifest, "kernel manifest")->capture_default_str();
     app.add_option("--kernel-dir", cfg.kernel_dir, "WGSL directory")->capture_default_str();
+    app.add_option("--replication", cfg.replication,
+                   "none | fixed2x | adaptive (steps 3.6/3.8)")
+        ->capture_default_str();
     app.add_option("--events-csv", cfg.events_csv,
                    "DEV: per-event CSV for the 2.23-2.26 experiments");
     app.add_flag("!--no-speculation", cfg.speculation,

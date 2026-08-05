@@ -51,7 +51,19 @@ Server::Server(Config config, const KernelRegistry& kernels, JobManager& jobs,
                EventLog* events)
     : config_(std::move(config)), kernels_(kernels), jobs_(jobs), fleet_(fleet),
       reference_stats_(reference_stats), store_(store), events_(events),
-      sse_(std::make_unique<SseClients>()) {}
+      sse_(std::make_unique<SseClients>()) {
+    // Parsed once, here, so an unrecognised value is caught at startup rather
+    // than silently behaving as `none` for a whole experiment — which would
+    // look exactly like "replication does not help".
+    if (config_.replication == "fixed2x") {
+        quorum_.policy = ReplicationPolicy::Fixed2x;
+    } else if (config_.replication == "adaptive") {
+        quorum_.policy = ReplicationPolicy::Adaptive;
+    } else if (config_.replication != "none") {
+        spdlog::error("unknown --replication '{}'; using none", config_.replication);
+    }
+    spdlog::info("replication policy={}", ToString(quorum_.policy));
+}
 
 Server::~Server() = default;
 
@@ -347,6 +359,8 @@ void Server::Run() {
                         this->config_.lease_ms, this->reference_stats_);
                     data->session->SetEventLog(this->events_);
                     data->session->SetSpeculation(this->config_.speculation);
+                    data->session->SetReputation(&this->reputation_);
+                    data->session->SetQuorum(this->quorum_);
                     // Correlation fields from CONVENTIONS.md §6. worker_id is
                     // unknown until Hello arrives, so conn_id carries the trace
                     // until then — without it, a frame rejected during the
@@ -458,6 +472,18 @@ void Server::OnFrame(Session& session, std::uint64_t conn_id, std::uint32_t& rej
         // 3.12 — escalate. Nothing here touches reputation: the peer may be a
         // broken client, and blaming its RESULTS for its framing is how an
         // honest-but-buggy worker gets blacklisted (3.11).
+        // Tier 1: refuse work, keep the connection. A broken client may yet
+        // start framing correctly, and evicting it immediately would punish a
+        // bug the same as an attack.
+        if (rejected >= kRejectedFramesNoWork) {
+            if (rejected == kRejectedFramesNoWork) {
+                spdlog::warn("rate_limit conn_id={} rejected={} action=no_work",
+                             conn_id, rejected);
+            }
+            session.SetThrottledForAbuse(true);
+        }
+
+        // Tier 2: evict.
         if (rejected >= kRejectedFramesDisconnect) {
             spdlog::warn("rate_limit conn_id={} rejected={} action=disconnect",
                          conn_id, rejected);

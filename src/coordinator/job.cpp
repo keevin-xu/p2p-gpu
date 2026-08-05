@@ -337,7 +337,75 @@ protocol::Status JobManager::Finish(TaskId task_id, bool accepted) {
     if (it == tasks_.end()) {
         return MakeError(ErrorCode::Internal, "unknown task");
     }
-    return Apply(it->second, accepted ? TaskEvent::Accept : TaskEvent::Reject);
+    const auto s = Apply(it->second, accepted ? TaskEvent::Accept : TaskEvent::Reject);
+    if (s) {
+        // Terminal: the answers have nothing left to decide, and the protocol
+        // permits an 8 MiB payload each (R11/D-0054). Freed here rather than
+        // "eventually" because "eventually" is how a coordinator with a long
+        // uptime runs out of memory.
+        it->second.submissions.clear();
+        it->second.submissions.shrink_to_fit();
+    }
+    return s;
+}
+
+void JobManager::RecordSubmission(TaskId task_id, WorkerId worker,
+                                  std::uint64_t checksum,
+                                  std::vector<std::byte> payload) {
+    const auto it = tasks_.find(task_id);
+    if (it == tasks_.end()) {
+        return;
+    }
+    it->second.submissions.push_back(
+        Task::Submission{worker, checksum, std::move(payload)});
+    MarkTaskDirty(task_id);
+}
+
+protocol::Status JobManager::RequestReplica(TaskId task_id) {
+    auto it = tasks_.find(task_id);
+    if (it == tasks_.end()) {
+        return MakeError(ErrorCode::Internal, "unknown task");
+    }
+    Task& task = it->second;
+    // Both transitions, so the state machine witnesses the reason as well as
+    // the outcome. Collapsing them into one edge would lose "why is this task
+    // queued again" at exactly the point 3.3 wants to log it.
+    if (const auto s = Apply(task, TaskEvent::Disagreement); !s) {
+        return s;
+    }
+    if (const auto s = Apply(task, TaskEvent::IssueReplica); !s) {
+        return s;
+    }
+    task.holder = WorkerId{};
+    task.lease_expires_at_ms = 0;
+    queue_.push_back(task.id);
+    return {};
+}
+
+protocol::Status JobManager::RestartValidation(TaskId task_id) {
+    auto it = tasks_.find(task_id);
+    if (it == tasks_.end()) {
+        return MakeError(ErrorCode::Internal, "unknown task");
+    }
+    Task& task = it->second;
+    if (const auto s = Apply(task, TaskEvent::Disagreement); !s) {
+        return s;
+    }
+    if (const auto s = Apply(task, TaskEvent::IssueReplica); !s) {
+        return s;
+    }
+    // DROP the answers. Keeping them lets the same deadlocked split re-form
+    // with one more vote and stall the task indefinitely; the point of an
+    // inconclusive verdict is that this group produced no evidence.
+    //
+    // `prior_workers` is deliberately NOT cleared — invariant 6 still bars
+    // everyone who has already seen this range, which is what "fresh workers"
+    // means.
+    task.submissions.clear();
+    task.holder = WorkerId{};
+    task.lease_expires_at_ms = 0;
+    queue_.push_back(task.id);
+    return {};
 }
 
 protocol::Status JobManager::Requeue(TaskId task_id, TaskEvent why) {

@@ -198,6 +198,28 @@ public:
     /// Terminal outcome after validation.
     [[nodiscard]] protocol::Status Finish(TaskId task, bool accepted);
 
+    /// Keep one worker's answer until the group resolves (3.4/D-0054).
+    ///
+    /// `payload` is empty for `Exact` kernels — the checksum IS the comparison
+    /// there, and retaining up to 8 MiB per submission would be a memory lever
+    /// an attacker controls (R11).
+    void RecordSubmission(TaskId task, WorkerId worker, std::uint64_t checksum,
+                          std::vector<std::byte> payload);
+
+    /// Send a task back out for another opinion (3.4).
+    ///
+    /// `Validating --Disagreement--> NeedsReplica --IssueReplica--> Queued`, so
+    /// the state machine witnesses the reason as well as the outcome. Invariant
+    /// 6 then keeps it away from anyone who already computed it — not
+    /// re-implemented here, because `Grant` already enforces it.
+    [[nodiscard]] protocol::Status RequestReplica(TaskId task);
+
+    /// Abandon the group's answers and re-run the range (3.5, no-majority case).
+    ///
+    /// The submissions are DROPPED: keeping them lets the same deadlocked split
+    /// re-form with one more vote and stall the task forever.
+    [[nodiscard]] protocol::Status RestartValidation(TaskId task);
+
     /// Return a task to the queue without penalty (R8 — absence is not malice).
     [[nodiscard]] protocol::Status Requeue(TaskId task, TaskEvent why);
 

@@ -735,6 +735,18 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
     // afford to compute every answer there would be no reason to distribute the
     // work. Affordable here only because 1.26 uses deliberately tiny tasks.
     // See reference_check.hpp.
+    //
+    // ── WHAT THIS COUNTS, AND WHY IT IS NOT A VALIDATOR SCORE ────────────
+    // It checks EVERY SUBMISSION, including a replica's and a liar's. So under
+    // replication its `mismatched` count is "how many wrong answers were
+    // SUBMITTED", not "how many were ACCEPTED" — and only the second is a
+    // statement about whether validation works.
+    //
+    // With `--replication fixed2x` on `byzantine_10pct`, it reported 7
+    // mismatches while all 7 disagreements were escalated and outvoted: the
+    // validator did its job and the harness still logged failures. E4 (3.14)
+    // needs the accepted-answer count instead, and that is a change to this
+    // hook, not to the validator.
     if (reference_stats_ != nullptr) {
         const Task* task = jobs_.Find(task_id);
         const Job* job = task != nullptr ? jobs_.FindJob(task->job) : nullptr;
@@ -748,12 +760,102 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
         }
     }
 
-    // Real validation (replication, quorum, reputation) is Phase 3. With one
-    // worker and no replicas there is nothing to compare against, so a
-    // checksum-clean result is accepted — and saying that plainly here is
-    // better than implying a check that does not exist yet.
-    if (const auto s = jobs_.Finish(task_id, /*accepted=*/true); !s) {
-        return NonFatal(wire::ErrorCode::Internal, "task could not be finalised");
+    // ── VALIDATION (3.4/3.5) ─────────────────────────────────────────────
+    //
+    // The checksum proved the bytes arrived intact. It says NOTHING about
+    // whether they are the right bytes — a liar computes a wrong answer and
+    // checksums it correctly — so this is where the answer is judged.
+    {
+        const Task* t = jobs_.Find(task_id);
+        const Job* j = t != nullptr ? jobs_.FindJob(t->job) : nullptr;
+        const KernelSpec* ks = j != nullptr ? kernels_.Find(j->kernel_id) : nullptr;
+        if (ks == nullptr) {
+            return NonFatal(wire::ErrorCode::Internal, "kernel missing for task");
+        }
+
+        // Payload retained ONLY where a hash cannot answer "close enough"
+        // (D-0054). For `Exact`, checksum equality and bitwise equality are the
+        // same question, and keeping up to 8 MiB per submission would hand an
+        // attacker a memory lever (R11).
+        std::vector<std::byte> retained;
+        if (ks->determinism != Determinism::Exact) {
+            retained.assign(payload.begin(), payload.end());
+        }
+        jobs_.RecordSubmission(task_id, worker_id_, header.checksum(),
+                               std::move(retained));
+
+        const Task* after = jobs_.Find(task_id);
+        QuorumConfig qcfg = quorum_;
+        // 3.8 — how much agreement THIS worker's result needs, from its record.
+        if (reputation_ != nullptr) {
+            qcfg.required_agreement =
+                RequiredAgreementFor(quorum_, *reputation_, worker_id_, now_ms_);
+        }
+        const QuorumResult q = Decide(*ks, qcfg, after->submissions);
+
+        if (q.action == QuorumAction::NeedMoreReplicas) {
+            // Not a verdict on anyone — we simply do not know yet. The task
+            // goes back out to a worker that has not seen it (invariant 6).
+            if (const auto s = jobs_.RequestReplica(task_id); !s) {
+                return NonFatal(wire::ErrorCode::Internal, "could not issue replica");
+            }
+            // 3.3 — at `warn` WITH the numbers, because a misdeclared
+            // determinism class presents as a flood of these from honest
+            // workers (RISKS.md §2), and the deviation is what tells that apart
+            // from a liar at a glance.
+            if (!q.detail.empty()) {
+                spdlog::warn("replica_needed task={} {}", task_id.lo(), q.detail);
+            }
+            in_flight_results_.erase(
+                std::remove(in_flight_results_.begin(), in_flight_results_.end(), task_id),
+                in_flight_results_.end());
+            return {};
+        }
+
+        if (q.action == QuorumAction::Inconclusive) {
+            // No majority at the cap. NOT a rejection of anybody: with no
+            // majority there is no evidence, and penalising half the group for
+            // a split we cannot resolve is how honest workers get blacklisted.
+            spdlog::warn("validation_inconclusive task={} {}", task_id.lo(), q.detail);
+            if (const auto s = jobs_.RestartValidation(task_id); !s) {
+                return NonFatal(wire::ErrorCode::Internal, "could not restart validation");
+            }
+            in_flight_results_.erase(
+                std::remove(in_flight_results_.begin(), in_flight_results_.end(), task_id),
+                in_flight_results_.end());
+            return {};
+        }
+
+        // Accepted. Credit the agreeing workers and charge the dissenters —
+        // 3.11: this is the ONLY path in the coordinator that touches
+        // reputation, and it is reached only when a result was computed,
+        // checksummed intact, and judged wrong by its peers.
+        if (reputation_ != nullptr) {
+            for (const WorkerId w : q.agreeing) {
+                reputation_->RecordAccepted(w, q.agreeing_max_ulp);
+            }
+            for (const WorkerId w : q.dissenting) {
+                // Severity from the DEVIATION, not a flat penalty (3.2/D-0055).
+                // 0.16 measured 5 ULP between two honest vendors; charging that
+                // like a fabricated answer re-introduces the cross-vendor
+                // rejection R6 exists to prevent.
+                reputation_->RecordRejected(
+                    w, SeverityFromDeviation(q.dissent_max_ulp, q.dissent_max_rel));
+                if (reputation_->MaybeBlacklist(w, now_ms_)) {
+                    spdlog::warn("blacklisted worker={} score={:.2f} accepted={} rejected={}",
+                                 w.hi(), reputation_->ScoreOf(w),
+                                 reputation_->Find(w)->accepted,
+                                 reputation_->Find(w)->rejected);
+                }
+            }
+            if (!q.detail.empty()) {
+                spdlog::warn("validation task={} {}", task_id.lo(), q.detail);
+            }
+        }
+
+        if (const auto s = jobs_.Finish(task_id, /*accepted=*/true); !s) {
+            return NonFatal(wire::ErrorCode::Internal, "task could not be finalised");
+        }
     }
 
     // FIRST RESULT WINS (2.17). Every live sibling is cancelled — not

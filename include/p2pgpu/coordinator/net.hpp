@@ -20,6 +20,7 @@
 #include "p2pgpu/coordinator/reference_check.hpp"
 #include "p2pgpu/coordinator/session.hpp"
 #include "p2pgpu/coordinator/metrics.hpp"
+#include "p2pgpu/coordinator/quorum.hpp"
 #include "p2pgpu/coordinator/store.hpp"
 #include "p2pgpu/protocol/verify.hpp"
 
@@ -72,6 +73,9 @@ struct Config {
     /// E5's control condition (2.25). Speculation is the ONE variable that
     /// experiment changes, so it is a switch rather than a second binary.
     bool speculation = true;
+
+    /// Replication policy (3.6/3.8): none | fixed2x | adaptive.
+    std::string replication = "none";
 
     /// SQLite file for durable state (2.19). Empty disables persistence
     /// entirely, which is what every test and mock run uses — a harness that
@@ -154,6 +158,8 @@ private:
     Fleet& fleet_;
     ReferenceStats* reference_stats_ = nullptr;
     Store* store_ = nullptr;
+    ReputationTable reputation_;
+    QuorumConfig quorum_{};
     EventLog* events_ = nullptr;
     OnCompleteFn on_complete_;
 };

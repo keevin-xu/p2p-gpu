@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "p2pgpu/coordinator/event_log.hpp"
+#include "p2pgpu/coordinator/quorum.hpp"
 #include "p2pgpu/coordinator/reputation.hpp"
 #include "p2pgpu/coordinator/job.hpp"
 #include "p2pgpu/coordinator/fleet.hpp"
@@ -98,6 +99,11 @@ public:
     /// and in any run without replication.
     void SetReputation(ReputationTable* rep) noexcept { reputation_ = rep; }
 
+    /// Replication policy (3.6/3.8). Defaults to `None` — every Phase 2
+    /// measurement was taken without replication, and silently doubling the
+    /// work would make those numbers incomparable (D-0054).
+    void SetQuorum(QuorumConfig cfg) noexcept { quorum_ = cfg; }
+
 private:
     /// The actual routing. `OnMessage` wraps this so revokes are appended to
     /// every reply without each handler having to remember.
@@ -130,6 +136,7 @@ private:
     ReferenceStats* reference_stats_ = nullptr;
     EventLog* events_ = nullptr;
     ReputationTable* reputation_ = nullptr;
+    QuorumConfig quorum_{};
     bool abusive_ = false;
     bool speculation_ = true;
 
