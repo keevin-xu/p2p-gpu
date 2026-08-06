@@ -397,6 +397,19 @@ void Server::Run() {
                                      data->conn_id);
                         return;
                     }
+                    // ws->end() DESTROYS the socket and its user data, so
+                    // nothing below may touch `data` or `ws` once the close
+                    // callback has run. Tracked explicitly rather than
+                    // inferred: 4.15's soak segfaulted the coordinator here
+                    // (rc=139) the first time the 3.12 rate limiter evicted a
+                    // connection, because the D-0046 registration below then
+                    // dereferenced a freed Session.
+                    //
+                    // Neither change was wrong alone — 3.12 added the eviction,
+                    // D-0046 added the post-frame read — and only a sustained
+                    // hostile run reaches 64 malformed frames on one connection
+                    // to put them together.
+                    bool closed = false;
                     this->OnFrame(*data->session, data->conn_id,
                                   data->rejected_frames, msg,
                                   [ws](std::span<const std::byte> reply) {
@@ -410,7 +423,14 @@ void Server::Run() {
                                                    reply.size()),
                                                uWS::OpCode::BINARY);
                                   },
-                                  [ws] { ws->end(1002, "fatal"); });
+                                  [ws, &closed] {
+                                      closed = true;
+                                      ws->end(1002, "fatal");
+                                  });
+
+                    if (closed) {
+                        return;   // `data` and `ws` are gone
+                    }
 
                     // Register once the handshake has established an identity
                     // (D-0046). Done AFTER the frame, not in `.open`, because
