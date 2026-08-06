@@ -36,7 +36,19 @@ TaskLoop::TaskLoop(TaskLoopConfig config, DeviceSession& device, KernelFetcher k
     device_.OnReady([this] { OnDeviceReady(); });
 }
 
-TaskLoop::~TaskLoop() = default;
+TaskLoop::~TaskLoop() {
+    // Same shape as the mock's (4.14): `transport_` is declared before
+    // `inbox_mutex_`/`inbox_`, so reverse-declaration order destroys the mutex
+    // and the queue while the socket is still alive — and the transport
+    // callback locks that mutex from libdatachannel's thread.
+    //
+    // Locking a destroyed mutex is undefined behaviour, not a benign race, so
+    // this is worse in the real worker than in the mock. TSan found it in the
+    // mock because that is what the harness runs; the exposure here is
+    // identical and was fixed at the same time rather than waiting for a
+    // report from a browser.
+    transport_.Shutdown();
+}
 
 void TaskLoop::Start() {
     if (running_) {
@@ -273,8 +285,10 @@ void TaskLoop::HandleWelcome(const wire::Welcome& welcome) {
                 if (const auto* init = out->init()) {
                     // Copied, not aliased: the frame is freed when this returns.
                     info.output_init.assign(
-                        reinterpret_cast<const std::byte*>(init->data()),
-                        reinterpret_cast<const std::byte*>(init->data()) + init->size());
+                        static_cast<const std::byte*>(
+                            static_cast<const void*>(init->data())),
+                        static_cast<const std::byte*>(
+                            static_cast<const void*>(init->data())) + init->size());
                 }
             }
             kernel_info_.emplace_back(k->kernel_id()->str(), std::move(info));
@@ -308,8 +322,9 @@ void TaskLoop::HandleTaskGrant(const wire::TaskGrant& grant) {
         // into our own storage rather than aliasing the frame, which is freed
         // as soon as this returns.
         task.params.assign(
-            reinterpret_cast<const std::byte*>(params->data()),
-            reinterpret_cast<const std::byte*>(params->data()) + params->size());
+            static_cast<const std::byte*>(static_cast<const void*>(params->data())),
+            static_cast<const std::byte*>(static_cast<const void*>(params->data())) +
+                params->size());
     }
     if (const auto* out = env->output_spec()) {
         task.output_bytes = out->bytes();
@@ -536,6 +551,9 @@ void TaskLoop::RequestLease() {
         // Jitter, so a fleet that emptied the queue together does not come back
         // together (RISKS.md §2).
         const auto jitter = std::chrono::milliseconds(
+            // Jitter seed from our own address — NOT network input, and never
+            // dereferenced. `reinterpret_cast` is the only spelling that
+            // converts a pointer to an integer (R11 audit, 4.16).
             static_cast<int>(reinterpret_cast<std::uintptr_t>(this) % 250));
         if (now < next_action_) {
             return;

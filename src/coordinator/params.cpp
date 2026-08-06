@@ -23,6 +23,10 @@ using protocol::MakeError;
 template <typename T>
 std::vector<std::byte> ToBytes(const T& v) {
     std::vector<std::byte> out(sizeof(T));
+    // OUTBOUND serialization: copying a struct WE built into a buffer we own,
+    // to hand to the worker. Not network input — R11's ban is about reading
+    // attacker-controlled bytes, and nothing here has been off the wire
+    // (4.16 audit).
     std::memcpy(out.data(), &v, sizeof(T));
     return out;
 }

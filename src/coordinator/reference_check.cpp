@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "p2pgpu/coordinator/params.hpp"
+#include "p2pgpu/protocol/verify.hpp"
 #include "p2pgpu/kernels/reference.hpp"
 
 namespace p2pgpu::coordinator {
@@ -55,8 +56,20 @@ bool CheckAgainstReference(const KernelSpec& spec, const Job& job, const Task& t
     // the chunk loop and not merely a repeat of it.
     const auto expected = kernels::BruteSearchReference(p);
 
-    kernels::BruteSearchResult actual{};
-    std::memcpy(&actual, payload.data(), sizeof(actual));
+    // R11: `payload` is the WORKER'S submitted result — network input. A
+    // memcpy here reads sizeof(actual) bytes whether or not they arrived, which
+    // is the Heartbleed shape; `ReadStruct` checks the length first. The audit
+    // in 4.16 found this line unjustified while the memcpy above it (a buffer
+    // we built ourselves) was correctly annotated.
+    const auto actual_opt =
+        protocol::ReadStruct<kernels::BruteSearchResult>(payload);
+    if (!actual_opt) {
+        spdlog::error("reference_check task={} payload shorter than the result type",
+                      task.id.lo());
+        ++stats.mismatched;
+        return false;
+    }
+    const kernels::BruteSearchResult actual = *actual_opt;
 
     ++stats.checked;
     const bool ok = actual.found_count == expected.found_count &&

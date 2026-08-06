@@ -34,6 +34,11 @@ endfunction()
 # of the protocol, not after.
 p2pgpu_add_fuzzer(fuzz_protocol fuzz_protocol.cpp)
 
+# Step 4.13 — asset chunk reassembly (PROTOCOL.md invariant 10). Fuzzed BEFORE
+# Phase 6 gives it callers: a crasher is cheap to fix while nothing depends on
+# the path, and expensive once a data plane is running on it.
+p2pgpu_add_fuzzer(fuzz_asset fuzz_asset.cpp)
+
 # Phase 4 step 4.13 — asset chunk reassembly. Needed BEFORE Phase 6 makes that
 # path live, since peer-supplied bytes are the least trusted input in the system.
 # p2pgpu_add_fuzzer(fuzz_asset fuzz_asset.cpp)

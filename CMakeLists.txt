@@ -371,6 +371,12 @@ if(NOT P2PGPU_WASM)
     target_link_libraries(make_corpus PRIVATE p2pgpu-protocol)
     p2pgpu_harden(make_corpus)
 
+    # Step 4.13 — seeds for the asset fuzzer. Separate binary because the asset
+    # path is not framed and shares no structure with the control plane.
+    add_executable(make_asset_corpus fuzz/make_asset_corpus.cpp)
+    target_link_libraries(make_asset_corpus PRIVATE p2pgpu-protocol)
+    p2pgpu_harden(make_asset_corpus)
+
     add_executable(mock-worker
         src/mock-worker/main.cpp
         src/mock-worker/virtual_worker.cpp

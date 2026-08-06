@@ -90,6 +90,14 @@ public:
 
     void Close();
 
+    /// Stop callbacks for good, before anything they touch is destroyed.
+    ///
+    /// `Close()` stops traffic; this destroys the socket, which is what
+    /// guarantees no callback thread is still inside a handler. Call it
+    /// explicitly from the destructor of anything whose members the handlers
+    /// reach into — member destruction order is not enough (4.14, TSan).
+    void Shutdown();
+
     [[nodiscard]] bool IsOpen() const;
 
 private:

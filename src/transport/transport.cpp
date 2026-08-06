@@ -36,7 +36,31 @@ Transport::Transport(LogFn log)
 
 // Out of line, and it has to be: the header only forward-declares
 // rtc::WebSocket, so unique_ptr's deleter needs the complete type here.
-Transport::~Transport() = default;
+Transport::~Transport() { Shutdown(); }
+
+void Transport::Shutdown() {
+    // DESTROY THE SOCKET, do not merely close it.
+    //
+    // Every callback registered in Connect captures `this`, and libdatachannel
+    // delivers them on its OWN threads. `close()` stops new traffic but does
+    // not guarantee a callback already in flight has returned — destroying the
+    // rtc::WebSocket does, because its destructor stops and joins.
+    //
+    // TSan found this at 4.14: `~VirtualWorker` was destroying `in_flight_`
+    // while a callback thread could still be reaching into it. The mock
+    // declares `transport_` BEFORE `in_flight_`, so reverse-declaration order
+    // destroys the deque first and leaves the socket alive over its corpse.
+    //
+    // `resetCallbacks()` would be the obvious alternative and is deliberately
+    // not used: D-0032 measured it as native-only, and this file compiles
+    // unmodified for both targets (R2).
+    if (ws_) {
+        if (!ws_->isClosed()) {
+            ws_->close();
+        }
+        ws_.reset();
+    }
+}
 
 void Transport::OnOpen(std::function<void()> handler) { on_open_ = std::move(handler); }
 void Transport::OnClosed(std::function<void()> handler) { on_closed_ = std::move(handler); }
@@ -48,6 +72,9 @@ void Transport::OnMessage(std::function<void(std::span<const std::byte>)> handle
 }
 
 void Transport::Connect(const std::string& url) {
+    if (!ws_) {
+        return;   // shut down; reconnecting would need a fresh Transport
+    }
     ws_->onOpen([this] {
         log_("info", "transport open");
         if (on_open_) {
@@ -93,7 +120,7 @@ void Transport::Connect(const std::string& url) {
 }
 
 bool Transport::Send(std::span<const std::byte> frame) {
-    if (!ws_->isOpen()) {
+    if (!ws_ || !ws_->isOpen()) {
         return false;
     }
     // send(const byte*, size_t) takes std::byte on BOTH targets, so our frames
@@ -103,11 +130,11 @@ bool Transport::Send(std::span<const std::byte> frame) {
 }
 
 void Transport::Close() {
-    if (!ws_->isClosed()) {
+    if (ws_ && !ws_->isClosed()) {
         ws_->close();
     }
 }
 
-bool Transport::IsOpen() const { return ws_->isOpen(); }
+bool Transport::IsOpen() const { return ws_ && ws_->isOpen(); }
 
 }  // namespace p2pgpu::worker

@@ -298,7 +298,8 @@ Reaction Session::OnHello(const wire::Hello& hello) {
                 // than in every TaskEnvelope.
                 const auto init = BuildOutputInit(*spec);
                 auto init_vec = fbb.CreateVector(
-                    reinterpret_cast<const std::uint8_t*>(init.data()), init.size());
+                    static_cast<const std::uint8_t*>(static_cast<const void*>(init.data())),
+                    init.size());
 
                 wire::OutputSpecBuilder ob(fbb);
                 ob.add_bytes(spec->output_bytes);
@@ -547,7 +548,7 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
             wire::Body::TaskGrant, [&](flatbuffers::FlatBufferBuilder& fbb) {
                 auto kid = fbb.CreateString(spec->id);
                 auto pv = fbb.CreateVector(
-                    reinterpret_cast<const std::uint8_t*>(params->data()),
+                    static_cast<const std::uint8_t*>(static_cast<const void*>(params->data())),
                     params->size());
                 const wire::Uuid tid = task->id.to_wire();
                 const wire::Uuid jid = task->job.to_wire();

@@ -19,6 +19,10 @@
 // the two is how you end up trusting a verified buffer's numbers.
 
 #include <cstddef>
+#include <array>
+#include <bit>
+#include <optional>
+#include <type_traits>
 #include <span>
 
 #include "p2pgpu/p2pgpu_generated.h"
@@ -76,5 +80,28 @@ private:
 /// exactly what the generated helper does internally.
 [[nodiscard]] Result<const wire::AssetMsg*> VerifyAssetMsg(
     std::span<const std::byte> bytes) noexcept;
+
+/// Read a trivially-copyable `T` out of untrusted bytes (R11).
+///
+/// The sanctioned alternative to `memcpy(&t, span.data(), sizeof(t))`, which
+/// R11 bans at the boundary because it reads `sizeof(T)` bytes whether or not
+/// they are there — the Heartbleed shape. This checks first and returns
+/// nullopt, so a short buffer cannot become a struct full of adjacent memory.
+///
+/// Copies through `std::array` + `std::bit_cast` rather than a pointer cast:
+/// the same C++20 spelling D-0027 settled on, and the reason the alignment
+/// bugs could be fixed without reintroducing a cast.
+template <typename T>
+[[nodiscard]] std::optional<T> ReadStruct(std::span<const std::byte> bytes) noexcept {
+    static_assert(std::is_trivially_copyable_v<T>);
+    if (bytes.size() < sizeof(T)) {
+        return std::nullopt;
+    }
+    std::array<std::byte, sizeof(T)> raw{};
+    for (std::size_t i = 0; i < sizeof(T); ++i) {
+        raw[i] = bytes[i];
+    }
+    return std::bit_cast<T>(raw);
+}
 
 }  // namespace p2pgpu::protocol

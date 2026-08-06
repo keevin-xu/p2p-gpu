@@ -207,6 +207,11 @@ void Server::Run() {
     // THE ONE TIMER (2.7/2.8). A post-handler was considered and rejected: it
     // runs only when the loop wakes, so a fleet that has gone completely silent
     // — precisely the case expiry exists for — would never be swept.
+    // R11 AUDIT (4.16): the three reinterpret_casts below are uWebSockets
+    // plumbing — a loop handle and a pointer stashed in the timer's user-data
+    // slot. They touch NO network bytes, and the library's C API offers no
+    // other way to carry `this` into a C callback. Kept, and justified here
+    // rather than removed.
     us_timer_t* sweep_timer = us_create_timer(
         reinterpret_cast<us_loop_t*>(uWS::Loop::get()), 0, sizeof(Server*));
     *reinterpret_cast<Server**>(us_timer_ext(sweep_timer)) = this;

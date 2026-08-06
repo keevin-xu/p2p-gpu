@@ -103,7 +103,13 @@ VirtualWorker::VirtualWorker(std::uint32_t index, std::string url, Behaviors beh
       dice_(run_seed, index),
       next_action_(Clock::now()) {}
 
-VirtualWorker::~VirtualWorker() = default;
+VirtualWorker::~VirtualWorker() {
+    // FIRST, before any member is destroyed. `transport_` is declared before
+    // `in_flight_`, so reverse-declaration order would destroy the deque while
+    // the socket is still alive and its callbacks still reaching into it —
+    // which is exactly the race TSan reported at 4.14.
+    transport_.Shutdown();
+}
 
 void VirtualWorker::Start() {
     if (running_) {
@@ -312,8 +318,10 @@ void VirtualWorker::OnFrame(std::span<const std::byte> bytes) {
     task.start_unit = tenv->start_unit();
     task.work_units = tenv->work_units();
     if (const auto* p = tenv->params()) {
-        task.params.assign(reinterpret_cast<const std::byte*>(p->data()),
-                           reinterpret_cast<const std::byte*>(p->data()) + p->size());
+        // static_cast via void*, never reinterpret_cast (R11): these bytes came
+        // off the wire in a TaskGrant.
+        const auto* pb = static_cast<const std::byte*>(static_cast<const void*>(p->data()));
+        task.params.assign(pb, pb + p->size());
     }
     if (const auto* out = tenv->output_spec()) {
         task.output_bytes = out->bytes();
@@ -326,7 +334,15 @@ void VirtualWorker::BeginTask(Pending task) {
     // agree with each other, or replication has nothing to compare (D-0042).
     kernels::BruteSearchParams p{};
     if (task.params.size() >= sizeof(p)) {
-        std::memcpy(&p, task.params.data(), sizeof(p));
+        // R11 (4.16 audit): `task.params` arrived in a TaskGrant, so this is
+        // NETWORK INPUT. A memcpy reads sizeof(p) bytes whether or not they
+        // arrived; ReadStruct checks the length first.
+        const auto parsed = protocol::ReadStruct<kernels::BruteSearchParams>(
+            std::span<const std::byte>{task.params});
+        if (!parsed) {
+            return;   // malformed params: compute nothing rather than garbage
+        }
+        p = *parsed;
         // The coordinator's params carry the task's range; the real worker's
         // kernel host rewrites the chunk window per dispatch and the mock has
         // no chunks, so use the range as granted.
@@ -366,6 +382,8 @@ void VirtualWorker::BeginTask(Pending task) {
     }
 
     task.result.resize(sizeof(result));
+    // OUTBOUND: writing our own struct into a buffer we own. Not network
+    // input, so R11's ban does not reach here (4.16 audit).
     std::memcpy(task.result.data(), &result, sizeof(result));
 
     // Simulated duration: nominal work scaled by this worker's speed factor.

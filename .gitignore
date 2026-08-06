@@ -54,3 +54,4 @@ oom-*
 *.md
 !README.md
 results/
+fuzz/
