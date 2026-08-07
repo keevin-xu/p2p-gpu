@@ -873,6 +873,18 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
             qcfg.required_agreement =
                 RequiredAgreementFor(quorum_, *reputation_, worker_id_, now_ms_);
         }
+        // EVERY submission, not just the accepting one (4.17).
+        //
+        // Under replication a task needs k agreeing answers, and only the LAST
+        // produced a log line — so a run where the browser did half the work
+        // and the native worker finished it looked, in the log, identical to a
+        // run where the browser did nothing at all. That ambiguity cost three
+        // attempts at the three-way test before anyone noticed the evidence was
+        // simply absent rather than negative.
+        spdlog::info("submission conn_id={} worker={} task={} have={} need={}",
+                     conn_id_, worker_id_.hi(), task_id.lo(),
+                     after->submissions.size(), qcfg.required_agreement);
+
         const QuorumResult q = Decide(*ks, qcfg, after->submissions);
 
         if (q.action == QuorumAction::NeedMoreReplicas) {
