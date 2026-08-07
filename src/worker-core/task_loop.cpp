@@ -584,6 +584,20 @@ void TaskLoop::RequestLease() {
 }
 
 void TaskLoop::SendResult(protocol::TaskId task, const TaskOutcome& outcome) {
+    SendResultFrame(task, outcome, 0, 0);
+}
+
+void TaskLoop::SendPartialResult(protocol::TaskId task, const TaskOutcome& outcome,
+                                 std::uint32_t sequence, std::uint64_t units_done) {
+    // `units_done` must be NON-ZERO and less than the task's total, or the
+    // coordinator reads it as complete and finishes the task (D-0074). The
+    // caller owns that; passing 0 here would end the task early with a partial
+    // image, which would render as a dark tile rather than as an error.
+    SendResultFrame(task, outcome, sequence, units_done);
+}
+
+void TaskLoop::SendResultFrame(protocol::TaskId task, const TaskOutcome& outcome,
+                               std::uint32_t sequence, std::uint64_t units_done) {
     const std::span<const std::byte> payload{outcome.output};
 
     auto frame = protocol::EncodeMessage(
@@ -607,12 +621,22 @@ void TaskLoop::SendResult(protocol::TaskId task, const TaskOutcome& outcome) {
             b.add_payload_bytes(static_cast<std::uint32_t>(payload.size()));
             b.add_checksum(Blake3_64(payload));
             b.add_stats(stats);
+            // 0/0 for a one-shot result, which is what every kernel before the
+            // path tracer sends and what the coordinator's defaults describe
+            // (D-0074).
+            b.add_sequence(sequence);
+            b.add_units_done(units_done);
             return b.Finish();
         },
         payload);
 
     (void)transport_.Send(frame);
-    std::erase(held_, task);
+    // A PARTIAL keeps the lease: the task is not finished and this worker still
+    // holds it. Only a complete result (units_done == 0, meaning "all of it"
+    // per D-0074) gives it up.
+    if (units_done == 0) {
+        std::erase(held_, task);
+    }
 }
 
 void TaskLoop::SendRelease(protocol::TaskId task, wire::ReleaseReason reason) {

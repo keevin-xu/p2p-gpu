@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <cstddef>
+#include <span>
 #include <vector>
 
 #include "p2pgpu/coordinator/affinity.hpp"
@@ -161,6 +162,41 @@ public:
     /// Enforces invariant 5: only the holder may renew. Without that check any
     /// connected peer could keep another worker's lease alive indefinitely,
     /// which is a denial-of-service on the queue rather than a protocol nicety.
+    // ── PARTIAL RESULTS (5.13, D-0074) ───────────────────────────────────
+
+    /// The most recent partial upload for a task: a FULL snapshot of the
+    /// accumulator so far, never a delta.
+    ///
+    /// Held here rather than on `Task` because `DirtyTasks()` copies tasks by
+    /// value for the durability flush, and a 64 KiB payload per tile would make
+    /// every sweep copy the whole working set.
+    struct PartialResult {
+        WorkerId worker;
+        std::uint32_t sequence = 0;
+        std::uint64_t units_done = 0;
+        std::vector<std::byte> payload;
+        std::uint64_t received_at_ms = 0;
+    };
+
+    /// Record a partial. Renews the lease and does NOT advance the state
+    /// machine — the task stays `Leased` (D-0074).
+    ///
+    /// Returns an error if the lease is not held, or if `sequence` is not
+    /// STRICTLY greater than the one already stored. Out-of-order delivery is
+    /// normal after a reconnect, and letting a stale snapshot replace a newer
+    /// one rolls a tile backwards — an image that un-converges.
+    [[nodiscard]] protocol::Status RecordPartial(WorkerId worker, TaskId task,
+                                                 std::uint32_t sequence,
+                                                 std::uint64_t units_done,
+                                                 std::span<const std::byte> payload,
+                                                 std::uint64_t now_ms,
+                                                 std::uint32_t lease_ms);
+
+    /// The latest partial for a task, or nullptr. 5.15 composites from these.
+    [[nodiscard]] const PartialResult* LatestPartial(TaskId task) const noexcept;
+
+    [[nodiscard]] std::size_t partial_count() const noexcept { return partials_.size(); }
+
     [[nodiscard]] protocol::Status RenewLease(WorkerId worker, TaskId task,
                                               std::uint64_t now_ms,
                                               std::uint32_t lease_ms);
@@ -359,6 +395,11 @@ public:
 
 private:
     [[nodiscard]] protocol::Status Apply(Task& task, TaskEvent ev);
+
+    /// Latest partial per task (5.13). Erased when the task goes terminal, so
+    /// a long-running job does not accumulate the payload of every tile it has
+    /// already finished.
+    std::unordered_map<TaskId, PartialResult> partials_;
 
     /// Mark a row for the next flush. Called from every mutating path; the
     /// alternative — remembering to call it at each site — is the kind of

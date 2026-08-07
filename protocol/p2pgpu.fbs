@@ -282,6 +282,36 @@ table ResultHeader {
                           // NO reputation penalty (invariant 9) — corruption is
                           // not malice.
   stats:         TaskStats;
+
+  // ── Appended in D-0074 (step 5.13). APPENDED, never inserted: FlatBuffers
+  //    assigns vtable slots positionally and a reorder silently remaps every
+  //    existing field (D-0035 learned this on ReleaseReason).
+
+  /// Ordering key for partial uploads, strictly increasing per (task, worker).
+  /// 0 for a one-shot result.
+  ///
+  /// Separate from `units_done` on purpose. Ordering and weighting are
+  /// different questions: `units_done` is what 5.15 weights a tile by, this is
+  /// what says which of two snapshots arrived later. They happen to agree for
+  /// an accumulating kernel; a kernel whose partials are not monotonic in any
+  /// natural quantity would otherwise leave no ordering key at all.
+  ///
+  /// A LOWER-OR-EQUAL sequence is DROPPED. Out-of-order delivery is normal
+  /// after a reconnect, and a stale snapshot replacing a newer one rolls a tile
+  /// backwards — an image that un-converges, which is miserable to diagnose.
+  sequence:      uint;
+
+  /// Units this result accounts for. **0 means "all of `work_units`"**, i.e.
+  /// the result is complete.
+  ///
+  /// The default has to mean "complete" because every message already on the
+  /// wire omits this field and every one of them IS complete. A default of
+  /// literal zero would make every brute_search result claim it did no work.
+  ///
+  /// A partial carries the FULL accumulator so far, never a delta: merging
+  /// deltas would need the coordinator to know the payload's arithmetic, which
+  /// is kernel-specific knowledge R1 keeps out of it.
+  units_done:    ulong;
 }
 
 table Release {

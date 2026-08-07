@@ -777,6 +777,44 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
         return NonFatal(wire::ErrorCode::ChecksumMismatch, "payload checksum mismatch");
     }
 
+    // ── PARTIAL RESULT? (5.13, D-0074) ──────────────────────────────────
+    //
+    // AFTER the checksum, BEFORE `Submit`. Same ordering discipline D-0031
+    // established: nothing about the task moves until the bytes are known
+    // readable, and a partial must not reach `Submit` at all — that would push
+    // the task to `Validating`, from which `Release` is not a legal edge, and
+    // it would strand with no lease and no worker.
+    //
+    // `units_done == 0` MEANS COMPLETE (D-0074). Every message written before
+    // this field existed omits it, and every one of them is a complete result;
+    // a default of literal zero would make every brute_search result claim it
+    // did no work.
+    {
+        const Task* task = jobs_.Find(task_id);
+        const std::uint64_t units_done = header.units_done();
+        const bool complete =
+            units_done == 0 || (task != nullptr && units_done >= task->unit_count);
+        if (!complete) {
+            if (const auto s = jobs_.RecordPartial(worker_id_, task_id, header.sequence(),
+                                                  units_done, payload, now_ms_, lease_ms_);
+                !s) {
+                spdlog::debug("partial_rejected conn_id={} task={} seq={} reason=\"{}\"",
+                              conn_id_, task_id.lo(), header.sequence(),
+                              s.error().message);
+                // NOT an error to the worker. A stale sequence after a
+                // reconnect is normal, and telling the worker to retry would
+                // make it resend a snapshot we deliberately discarded.
+                return {};
+            }
+            spdlog::debug("partial conn_id={} task={} seq={} units_done={}/{}",
+                          conn_id_, task_id.lo(), header.sequence(), units_done,
+                          task != nullptr ? task->unit_count : 0);
+            // The lease was renewed by RecordPartial; the task stays Leased and
+            // the worker keeps going.
+            return {};
+        }
+    }
+
     // Only now does the task move. Submit re-checks invariant 5 rather than
     // trusting the check above — the cost is a comparison, and the alternative
     // is an authorization step that a future caller can forget.

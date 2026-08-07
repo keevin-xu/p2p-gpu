@@ -296,6 +296,55 @@ protocol::Status JobManager::RenewLease(WorkerId worker, TaskId task_id,
     return {};
 }
 
+// ── Partial results (5.13, D-0074) ───────────────────────────────────────
+
+protocol::Status JobManager::RecordPartial(WorkerId worker, TaskId task_id,
+                                           std::uint32_t sequence,
+                                           std::uint64_t units_done,
+                                           std::span<const std::byte> payload,
+                                           std::uint64_t now_ms,
+                                           std::uint32_t lease_ms) {
+    // Invariant 5 first, exactly as RenewLease does: a peer that does not hold
+    // the lease must not be able to write a snapshot into this task, and must
+    // not be able to extend the lease by doing so.
+    if (const auto s = CheckLease(worker, task_id); !s) {
+        return s;
+    }
+
+    auto it = partials_.find(task_id);
+    if (it != partials_.end() && sequence <= it->second.sequence) {
+        // STRICTLY greater, and equality counts as stale. A retransmission
+        // after a reconnect carries the same sequence, and letting it through
+        // would be harmless today but would silently permit a genuine reorder
+        // tomorrow — the tile rolls backwards and the image un-converges.
+        return protocol::MakeError(protocol::ErrorCode::Internal,
+                                   "partial result is not newer than the one held");
+    }
+
+    // A partial is PROOF OF LIFE and renews the lease — 5.13's "lease renewal
+    // tied to upload cadence". The 2.6/D-0046 rule from the other side: never
+    // require a separate heartbeat from a worker that is visibly delivering.
+    if (const auto s = RenewLease(worker, task_id, now_ms, lease_ms); !s) {
+        return s;
+    }
+
+    PartialResult& slot = partials_[task_id];
+    slot.worker = worker;
+    slot.sequence = sequence;
+    slot.units_done = units_done;
+    slot.payload.assign(payload.begin(), payload.end());
+    slot.received_at_ms = now_ms;
+    // NOTE: the task's STATE is deliberately untouched. Submit would move it to
+    // Validating, from which Release is not a legal edge — D-0031's wedge, where
+    // a task strands with no lease and no worker and the job never completes.
+    return {};
+}
+
+const JobManager::PartialResult* JobManager::LatestPartial(TaskId task) const noexcept {
+    const auto it = partials_.find(task);
+    return it == partials_.end() ? nullptr : &it->second;
+}
+
 std::vector<JobManager::Expiry> JobManager::SweepExpiredLeases(std::uint64_t now_ms) {
     std::vector<Expiry> expired;
     for (auto& [id, task] : tasks_) {
@@ -345,6 +394,11 @@ protocol::Status JobManager::Finish(TaskId task_id, bool accepted) {
         // uptime runs out of memory.
         it->second.submissions.clear();
         it->second.submissions.shrink_to_fit();
+        // Same reasoning for the partial snapshot (5.13): a finished tile's
+        // accumulator is 64 KiB that nothing will read again. A render of
+        // thousands of tiles would otherwise hold every one of them for the
+        // life of the process.
+        partials_.erase(task_id);
     }
     return s;
 }

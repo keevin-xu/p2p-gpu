@@ -150,6 +150,16 @@ private:
     void RequestLease();
     void SendProgress(protocol::TaskId task, float fraction);
     void SendResult(protocol::TaskId task, const TaskOutcome& outcome);
+    /// Upload progress WITHOUT finishing the task (5.13, D-0074).
+    ///
+    /// Carries the full accumulator so far, not a delta — the coordinator must
+    /// not need to know the payload's arithmetic (R1). Keeps the lease, and the
+    /// upload itself renews it, so an accumulating worker never needs a separate
+    /// heartbeat.
+    void SendPartialResult(protocol::TaskId task, const TaskOutcome& outcome,
+                           std::uint32_t sequence, std::uint64_t units_done);
+    void SendResultFrame(protocol::TaskId task, const TaskOutcome& outcome,
+                         std::uint32_t sequence, std::uint64_t units_done);
     void SendRelease(protocol::TaskId task, wire::ReleaseReason reason);
     /// Clean departure: "I am done, do not wait for me." Sent when the GPU is
     /// permanently gone (D-0065) — the coordinator already handles `Goodbye`,
