@@ -329,6 +329,26 @@ jobs:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
         run: ctest --preset native-debug --output-on-failure -R '^kernel_'
 
+      # ── 4.19 — one-command join package ─────────────────────────────
+      #
+      # RISKS.md R-D: the non-Apple GPU need is bursty, and every visit that
+      # needs a toolchain install and a 20-minute build is a visit that does not
+      # happen. CI publishing a ready tarball turns the ask into "download this,
+      # run ./join <url>".
+      #
+      # Linux only. The script builds for the platform it runs on, and a Windows
+      # package would need a windows-latest runner — the browser worker is the
+      # Windows answer today, since it installs nothing at all.
+      - name: Package the worker
+        run: ./tools/package_worker.sh build/native-release dist
+
+      - name: Upload join package
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2pgpu-worker-linux
+          path: dist/*.tar.gz
+          retention-days: 30
+
       - name: R2 seam check
         run: python3 tools/check_seam.py
 

@@ -54,4 +54,5 @@ oom-*
 *.md
 !README.md
 results/
-fuzz/
+fuzz/dist/
+fuzz/corpus/
