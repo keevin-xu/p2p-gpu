@@ -72,22 +72,67 @@ r5_note = """
 """
 
 # ── Workload A — added in Phase 5, step 5.10 ─────────────────────────────
-# Fails R5 naively (~6.3e4, 16x short). Clears it only via accumulation.
-# `min_iterations` is DERIVED from the step 5.1 calculation, not guessed.
+# R5 gate DERIVED in D-0068 (step 5.1), before any WGSL. Read it before
+# touching any number below — several of them are locked by that calculation.
+#
+# THE ALGEBRA, because the numbers alone mislead:
+#
+#   output_bytes = P x 16          (P pixels, one vec4<f32> of running sum)
+#   FLOP         = spp x P x F     (F = FLOP per pixel-sample)
+#   ratio        = spp x F / 16    <- P CANCELS
+#
+#   R5 (>1e6) reduces to:  spp x F > 1.6e7
+#
+# (a) THE RATIO IS INDEPENDENT OF TILE SIZE. P cancels, so a 128x128 tile sits
+#     at exactly the same ratio as 32x32. "Bigger tiles amortise the upload"
+#     is FALSE here and must not be reached for as an R5 fix. Tile size is a
+#     scheduling and K4 decision only.
+#
+# (b) ONLY TWO LEVERS EXIST: samples per upload, and bytes per pixel. The
+#     second is already at its floor — WGSL gives array<vec3<f32>> a stride of
+#     16 regardless, so "store RGB and save a quarter" buys nothing without
+#     dropping to array<f32> and manual indexing.
+#
+# (c) OUTPUT SIZE IS LOCKED, as in D-0029(d). Adding per-pixel variance for
+#     adaptive sampling doubles the payload and HALVES the ratio. Anything
+#     wanting per-pixel side data must re-run the gate first.
+#
+# (d) min_iterations BELOW IS PROVISIONAL. F is estimated from the intended
+#     algorithm (~5e3, honest range 1.1e3-1e4, spread dominated by BVH depth
+#     in a scene that does not exist yet). Once pathtrace_tile.wgsl exists,
+#     COUNT F FROM SOURCE the way brute_search's flop_per_unit=80 was counted,
+#     then re-derive:
+#
+#         min_iterations := 4 x (1.6e7 / F_measured)      # 4x over the gate
+#
+#     32,768 was chosen to clear the gate even at the PESSIMISTIC end of F
+#     (2.2x at F=1.1e3; 10x at F=5e3). KERNELS.md's 100,000 is illustrative,
+#     not derived — roughly 7x above the floor even pessimistically.
+#
+# (e) A WORK UNIT IS ONE SAMPLE OF THE WHOLE TILE, so unit_count == spp and
+#     r5_min_units IS the R5 floor directly — one meaning of "unit" across the
+#     sizer, the D-0033 chunk window, and this gate.
+#
+# (f) THIS FLOOR WILL ACTUALLY BIND, unlike brute_search's ~32 us floor which
+#     never has. At 32,768 spp a slow worker (1e11 FLOP/s) needs ~6.7 s for a
+#     single R5-legal task. D-0043's rule order says the R5 floor WINS over the
+#     lease clamp, so leases must be revisited for accumulating kernels (5.13)
+#     or the sizer will produce tasks that outlive their own leases.
 #
 # [kernels.pathtrace_tile_v1]
 # file            = "pathtrace_tile.wgsl"
 # entry_point     = "main"
 # workgroup_size  = [8, 8, 1]
 # determinism     = "statistical"
-# output_bytes    = 65536
+# output_bytes    = 65536          # 64x64 x vec4<f32>; LOCKED by the gate
 # output_dtype    = "f32"
 # param_layout    = "PathTraceParams"
 # accumulates     = true
-# min_iterations  = 100000
-# flop_per_unit   = 1000
-# r5_ratio        = 6.3e6
-# r5_note         = "..."
+# min_iterations  = 32768          # PROVISIONAL until F is counted from source
+# flop_per_unit   = 20480000       # 4096 px x F(=5e3), ESTIMATED
+# r5_min_units    = 14545          # R5 floor at the PESSIMISTIC F=1.1e3
+# r5_ratio        = 1.02e7         # at min_iterations, central F
+# r5_note         = "see D-0068 and the derivation above"
 
 # ── Calibration — added in step 0.10 ─────────────────────────────────────
 # The join-time benchmark kernel. Compute-bound with an exactly known FLOP
