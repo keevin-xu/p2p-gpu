@@ -43,6 +43,7 @@
   var chunkBtn = document.getElementById("chunk");
   var tdrBtn = document.getElementById("tdr");
   var benchBtn = document.getElementById("bench");
+  var reloadBtn = document.getElementById("reload");
 
   var statusEl = document.getElementById("status");
   var logEl = document.getElementById("log");
@@ -170,6 +171,20 @@
     worker.ccall("p2pgpu_stop", null, [], []);
     setDiagnosticsEnabled(true);
   });
+
+  // ── D-0065: RELOAD AFTER AN UNRECOVERABLE GPU LOSS ─────────────────────
+  // The panel is revealed by C++ (`SetGpuUnavailable`), never by this file
+  // deciding the GPU looks dead — that judgement is the loop's, and a second
+  // opinion here would be a second state machine (R1).
+  //
+  // This is the one control that is a plain page reload rather than a call into
+  // WASM, because the module itself is what has to be discarded: the dead
+  // adapter belongs to the document.
+  if (reloadBtn) {
+    reloadBtn.addEventListener("click", function () {
+      window.location.reload();
+    });
+  }
 
   // ── R7: THROTTLE ───────────────────────────────────────────────────────
   // Read the slider, convert to 0..1, hand it over. The meaning of the number

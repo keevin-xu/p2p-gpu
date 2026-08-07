@@ -28,4 +28,11 @@ void SetRunning(bool on);
 
 void SetCounters(int completed, int failed, int recoveries);
 
+/// Reveal the "GPU lost — reload to rejoin" panel (D-0065).
+///
+/// Reveals it only. The reload itself is a user click, because the page is not
+/// entitled to reload itself out from under someone whose driver just crashed,
+/// and because doing so discards the worker identity and resume token.
+void SetGpuUnavailable(bool on);
+
 }  // namespace p2pgpu::worker::ui

@@ -34,6 +34,7 @@ TaskLoop::TaskLoop(TaskLoopConfig config, DeviceSession& device, KernelFetcher k
     // Wired here, not in Start(), so a loss during connection is still handled.
     device_.OnLost([this] { OnDeviceLost(); });
     device_.OnReady([this] { OnDeviceReady(); });
+    device_.OnUnrecoverable([this] { OnDeviceUnrecoverable(); });
 }
 
 TaskLoop::~TaskLoop() {
@@ -52,6 +53,14 @@ TaskLoop::~TaskLoop() {
 
 void TaskLoop::Start() {
     if (running_) {
+        return;
+    }
+    // A terminal GPU loss (D-0065) is not something restarting can fix — the
+    // adapter is dead for the life of this document. Reconnecting would give
+    // the coordinator a worker that accepts leases and computes nothing, which
+    // is strictly worse than the tab staying gone.
+    if (status_.gpu_unavailable) {
+        Log("warn", "GPU is permanently unavailable in this page; reload to rejoin");
         return;
     }
     running_ = true;
@@ -619,6 +628,16 @@ void TaskLoop::SendRelease(protocol::TaskId task, wire::ReleaseReason reason) {
     std::erase(held_, task);
 }
 
+void TaskLoop::SendGoodbye(wire::ReleaseReason reason) {
+    auto frame = protocol::EncodeMessage(
+        wire::Body::Goodbye, [&](flatbuffers::FlatBufferBuilder& fbb) {
+            wire::GoodbyeBuilder b(fbb);
+            b.add_reason(reason);
+            return b.Finish();
+        });
+    (void)transport_.Send(frame);
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Execution
 // ─────────────────────────────────────────────────────────────────────────
@@ -711,6 +730,29 @@ void TaskLoop::OnDeviceLost() {
     status_.device_ready = false;
     status_.contributing = false;
     status_.last_message = "device lost; recovering";
+}
+
+void TaskLoop::OnDeviceUnrecoverable() {
+    // OnDeviceLost already released every lease and cleared the queue, so by
+    // the time we get here we owe the coordinator nothing. What is left is to
+    // say so: a `Goodbye` costs one frame and saves the coordinator a full
+    // lease timeout per task, and — more importantly — it distinguishes a
+    // worker that is FINISHED from one that is merely quiet. 4.10 measured
+    // exactly that ambiguity from the other side.
+    //
+    // Order: goodbye BEFORE closing, or the frame never leaves.
+    Log("error", "GPU unavailable for the rest of this page; leaving the fleet");
+    SendGoodbye(wire::ReleaseReason::DeviceLost);
+    transport_.Close();
+
+    running_ = false;
+    handshaked_ = false;
+    lease_outstanding_ = false;
+    status_.connected = false;
+    status_.contributing = false;
+    status_.device_ready = false;
+    status_.gpu_unavailable = true;
+    status_.last_message = "GPU lost and could not be recovered — reload the page to rejoin";
 }
 
 void TaskLoop::OnDeviceReady() {

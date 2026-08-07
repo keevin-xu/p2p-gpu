@@ -154,6 +154,15 @@ private:
     /// client gets blacklisted (3.11).
     std::uint64_t rejected_frames_total_ = 0;
 
+    /// Consecutive sweeps with work outstanding, workers connected, and nothing
+    /// leased. Counted rather than latched so the warning fires once per stall
+    /// and can fire again if one recurs.
+    std::uint32_t stalled_sweeps_ = 0;
+    /// Sweeps of that state before saying so. Long enough that the ordinary gap
+    /// between a submission and the next grant never trips it, short enough to
+    /// beat a human watching a quiet log.
+    static constexpr std::uint32_t kStallSweeps = 20;
+
     /// Push one snapshot to every open SSE connection.
     void PublishMetrics(std::uint64_t now_ms);
 

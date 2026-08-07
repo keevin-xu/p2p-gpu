@@ -49,6 +49,24 @@ public:
     /// resume requesting work here.
     void OnReady(std::function<void()> handler) { on_ready_ = std::move(handler); }
 
+    /// Called when recovery has EXHAUSTED its attempts and this worker can no
+    /// longer contribute (D-0065).
+    ///
+    /// In a browser this is not a rare tail case, it is the *only* outcome of a
+    /// real TDR: 4.10 measured six attempts over 6.3 s, every one failing
+    /// instantly with `DXGI_ERROR_DEVICE_REMOVED`, because Chrome hands a
+    /// permanently dead adapter back to a document whose device was lost. Until
+    /// now that state was reported to the log and nowhere else, so the worker
+    /// simply went quiet and the coordinator had to discover it by lease
+    /// timeout. A worker that KNOWS it is finished should say so.
+    void OnUnrecoverable(std::function<void()> handler) {
+        on_unrecoverable_ = std::move(handler);
+    }
+
+    /// True once recovery has given up. Terminal — nothing clears it, because
+    /// nothing short of a new document can produce a working adapter.
+    [[nodiscard]] bool unrecoverable() const noexcept { return unrecoverable_; }
+
     /// Acquire the initial device. Returns false if none is available — which
     /// is a capability, not a crash (docs/RISKS.md §1).
     [[nodiscard]] bool Start();
@@ -88,14 +106,32 @@ public:
     /// steps 0.16 / 4.10, and is untestable on macOS.
     void SimulateGenuineLossForTest();
 
+    /// TEST HOOK — make every re-acquisition attempt fail, so the EXHAUSTION
+    /// path (D-0065) is reachable on a machine whose GPU is perfectly healthy.
+    ///
+    /// Honest scope, stated because it is easy to overclaim: this does NOT
+    /// reproduce what a browser does after TDR. It reproduces our REACTION to
+    /// it. What 4.10 measured — Chrome returning a permanently dead adapter for
+    /// the life of a document — cannot be produced on demand, and certainly not
+    /// on macOS. What can be checked here is that when acquisition does keep
+    /// failing, the worker gives up, says goodbye, and reports itself finished
+    /// instead of going quiet. That was the actual defect.
+    ///
+    /// Costs the full backoff (~6.3 s) by design: shortening it for a test
+    /// would leave the production timing unexercised.
+    void FailRecoveryForTest(bool on) { fail_recovery_ = on; }
+
 private:
     void HandleLost();
 
     platform::GpuContext ctx_{};
     std::function<void()> on_lost_;
     std::function<void()> on_ready_;
+    std::function<void()> on_unrecoverable_;
     std::uint32_t recoveries_ = 0;
     bool healthy_ = false;
+    bool unrecoverable_ = false;
+    bool fail_recovery_ = false;   ///< test hook only; see FailRecoveryForTest
 };
 
 }  // namespace p2pgpu::worker

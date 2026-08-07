@@ -302,8 +302,10 @@ int RunRecovery(const std::string& dir) {
     std::string events;
     int lost_events = 0;
     int ready_events = 0;
+    int gone_events = 0;
     session.OnLost([&] { events.push_back('L'); ++lost_events; });
     session.OnReady([&] { events.push_back('R'); ++ready_events; });
+    session.OnUnrecoverable([&] { events.push_back('X'); ++gone_events; });
 
     if (!session.Start()) {
         std::fprintf(stderr, "no WebGPU device available; declining to run\n");
@@ -367,12 +369,35 @@ int RunRecovery(const std::string& dir) {
     std::printf("  6. automatic loss path       : %s (sequence \"%s\", expected \"LR\")\n",
                 auto_recovered ? "OK" : "FAILED", incident.c_str());
 
+    // 7. THE GIVING-UP PATH (D-0065). Until now the only outcome this harness
+    //    could produce was successful recovery, so the branch that fires when
+    //    recovery EXHAUSTS was reachable on exactly one machine in the world:
+    //    a Windows box mid-TDR. That is how it went a whole phase without
+    //    anyone noticing it only wrote a log line.
+    //
+    //    Forcing acquisition to fail exercises our reaction, not the browser's
+    //    behaviour — see FailRecoveryForTest. Expect "LX": leases released,
+    //    then unrecoverable. An "LR" here would mean the forcing did not take
+    //    and the step proved nothing.
+    //
+    //    Takes ~6.3 s: the real backoff, deliberately not shortened.
+    const std::size_t gone_before_events = events.size();
+    session.FailRecoveryForTest(true);
+    session.SimulateGenuineLossForTest();
+    const std::string gone_incident = events.substr(gone_before_events);
+    const bool gone_ok = (gone_incident == "LX") && session.unrecoverable() &&
+                         !session.healthy() && gone_events == 1;
+    std::printf("  7. unrecoverable loss        : %s (sequence \"%s\", expected \"LX\")\n",
+                gone_ok ? "OK" : "FAILED", gone_incident.c_str());
+    session.FailRecoveryForTest(false);
+
     session.Stop();
 
     const bool pass = before && !during && recovered && after && auto_recovered &&
-                      (lost_events - lost_before) == 1 &&
-                      (ready_events - ready_before) == 1 && order_ok;
-    std::printf("  callbacks: lost=%d ready=%d\n", lost_events, ready_events);
+                      (lost_events - lost_before) == 2 &&
+                      (ready_events - ready_before) == 1 && order_ok && gone_ok;
+    std::printf("  callbacks: lost=%d ready=%d unrecoverable=%d\n",
+                lost_events, ready_events, gone_events);
     std::printf("%s\n", pass ? "PASS" : "FAIL");
     if (during) {
         std::fprintf(stderr,

@@ -42,6 +42,9 @@
       #conn { color: #666; font-size: .9rem; }
       #conn.on { color: #2d6; }
       #counters { color: #888; font-size: .85rem; }
+      /* D-0065. Loud on purpose: this is terminal, and a user who cannot tell
+         it apart from an ordinary disconnect will sit watching a dead tab. */
+      #gpu-gone .gone { color: #f66; font-weight: bold; }
       label { color: #aaa; }
     </style>
   </head>
@@ -114,6 +117,21 @@
 
         <div class="row">
           <span id="counters">0 completed · 0 failed · 0 device recoveries</span>
+        </div>
+
+        <!--
+          D-0065. A GPU lost to a driver reset cannot be re-acquired by this
+          document — Chrome hands the same dead adapter back for the life of the
+          page, measured over six attempts in 4.10. So this is the one failure
+          the worker cannot fix itself, and reloading is the only remedy.
+
+          Hidden until it happens, and the reload is a CLICK: it throws away the
+          socket, the worker id and the resume token, which is not something to
+          do to someone unprompted seconds after their graphics driver crashed.
+        -->
+        <div class="row" id="gpu-gone" hidden>
+          <span class="gone">⚠ GPU lost and could not be recovered.</span>
+          <button id="reload">Reload to rejoin</button>
         </div>
       </div>
 

@@ -75,6 +75,12 @@ struct WorkerStatus {
     bool connected = false;
     bool contributing = false;   ///< actually running GPU work right now
     bool device_ready = false;
+    /// The GPU is gone and will not come back in this document (D-0065).
+    /// TERMINAL: `Start()` will not resume from it, and the UI offers a reload
+    /// rather than pretending a retry might help. Distinct from
+    /// `!device_ready`, which is the recoverable case — conflating the two is
+    /// what made a dead tab indistinguishable from a briefly stalled one.
+    bool gpu_unavailable = false;
     std::uint32_t tasks_completed = 0;
     std::uint32_t tasks_failed = 0;
     std::uint32_t device_recoveries = 0;
@@ -145,6 +151,10 @@ private:
     void SendProgress(protocol::TaskId task, float fraction);
     void SendResult(protocol::TaskId task, const TaskOutcome& outcome);
     void SendRelease(protocol::TaskId task, wire::ReleaseReason reason);
+    /// Clean departure: "I am done, do not wait for me." Sent when the GPU is
+    /// permanently gone (D-0065) — the coordinator already handles `Goodbye`,
+    /// and telling it beats making it infer our death from a lease timeout.
+    void SendGoodbye(wire::ReleaseReason reason);
 
     /// Device loss: release leases FIRST, then re-acquire, then re-register
     /// (step 1.21). Backwards means the coordinator waits out a lease on work
@@ -152,6 +162,9 @@ private:
     /// lease-duration outage.
     void OnDeviceLost();
     void OnDeviceReady();
+    /// Recovery gave up (D-0065). Leases were already released by OnDeviceLost;
+    /// this says goodbye and stops the loop for good.
+    void OnDeviceUnrecoverable();
 
     struct PendingTask {
         protocol::TaskId id;

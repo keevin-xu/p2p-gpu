@@ -84,7 +84,15 @@ void DeviceSession::HandleLost() {
     }
 
     if (!Recover()) {
+        // TERMINAL (D-0065). Not "failed for now" — in a browser the adapter is
+        // dead for the life of the document, so there is nothing to retry later
+        // and pretending otherwise leaves a tab that looks slow rather than
+        // finished. Announce it once, here, and let the host say goodbye.
+        unrecoverable_ = true;
         Log("error", "device recovery failed — this worker can no longer contribute");
+        if (on_unrecoverable_) {
+            on_unrecoverable_();
+        }
     }
 }
 
@@ -92,7 +100,7 @@ bool DeviceSession::Recover() {
     platform::ReleaseDevice(ctx_);
 
     for (int attempt = 1; attempt <= kMaxRecoveryAttempts; ++attempt) {
-        if (platform::AcquireDevice(ctx_, kRecoveryAcquireTimeoutMs)) {
+        if (!fail_recovery_ && platform::AcquireDevice(ctx_, kRecoveryAcquireTimeoutMs)) {
             platform::OnDeviceLost([this] { HandleLost(); });
             healthy_ = true;
             ++recoveries_;

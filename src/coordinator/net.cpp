@@ -165,6 +165,50 @@ void Server::Sweep() {
         spdlog::info("revoke_push count={}", revoked);
     }
 
+    // ── STALL DETECTION ──────────────────────────────────────────────────
+    //
+    // Work is outstanding, workers are connected, and NOT ONE task is leased.
+    // That combination is not slowness — it means every remaining task is
+    // ineligible for every connected worker, and the fleet will sit there
+    // forever without a word.
+    //
+    // Reproduced deliberately: one worker under `fixed2x`. It computes a task,
+    // needs a second opinion, and invariant 6 forbids giving it its own replica
+    // — so it asks every ~3.4 s, is refused every time, and the job can never
+    // complete. The worker is behaving correctly and the coordinator is
+    // behaving correctly; the run is still dead. Before this it was visible
+    // only as `granted=0` at DEBUG level, which is why the same symptom got
+    // misfiled as "the worker went silent" (docs/PENDING.md).
+    //
+    // Warn ONCE per stall, not per sweep: a message repeated three times a
+    // second is one nobody reads. `stalled_sweeps_` resets the moment anything
+    // is leased again, so a recovered stall reports again if it recurs.
+    {
+        const auto by_state = jobs_.CountByState();
+        const auto leased = by_state[static_cast<std::size_t>(TaskState::Leased)];
+        const bool work_outstanding = !jobs_.AllComplete();
+        if (!live_.empty() && work_outstanding && leased == 0) {
+            ++stalled_sweeps_;
+            if (stalled_sweeps_ == kStallSweeps) {
+                spdlog::warn(
+                    "STALLED workers={} queued={} needs_replica={} validating={} "
+                    "units_remaining={} — work is outstanding and nothing is "
+                    "leased; every remaining task is ineligible for every "
+                    "connected worker (commonly: a replica this fleet is too "
+                    "small to supply, invariant 6)",
+                    live_.size(), by_state[static_cast<std::size_t>(TaskState::Queued)],
+                    by_state[static_cast<std::size_t>(TaskState::NeedsReplica)],
+                    by_state[static_cast<std::size_t>(TaskState::Validating)],
+                    jobs_.remaining_units());
+            }
+        } else {
+            if (stalled_sweeps_ >= kStallSweeps) {
+                spdlog::info("stall cleared after {} sweeps", stalled_sweeps_);
+            }
+            stalled_sweeps_ = 0;
+        }
+    }
+
     // 2.19 — durability, ONE transaction per sweep (D-0048). Last in the pass,
     // deliberately: expiry and revocation both mutate task state, so flushing
     // first would write rows this same tick is about to change and leave the

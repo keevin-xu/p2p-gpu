@@ -79,9 +79,21 @@ EM_JS(void, p2pgpu_ui_running, (int on), {
     if (url) { url.disabled = !!on; }
 });
 
+// D-0065. Shown only when the GPU is gone for the life of the document, and it
+// disables the start button because restarting cannot help — Chrome will hand
+// back the same dead adapter. Reload is the only thing that works, so it is the
+// only thing offered.
+EM_JS(void, p2pgpu_ui_gpu_unavailable, (int on), {
+    var el = document.getElementById("gpu-gone");
+    if (el) { el.hidden = !on; }
+    var start = document.getElementById("start");
+    if (start && on) { start.disabled = true; }
+});
+
 namespace p2pgpu::worker::ui {
 
 void SetStatus(const char* text) { p2pgpu_ui_status(text); }
+void SetGpuUnavailable(bool on) { p2pgpu_ui_gpu_unavailable(on ? 1 : 0); }
 void SetContributing(bool on) { p2pgpu_ui_contributing(on ? 1 : 0); }
 void SetConnected(bool on) { p2pgpu_ui_connected(on ? 1 : 0); }
 void SetRunning(bool on) { p2pgpu_ui_running(on ? 1 : 0); }

@@ -150,6 +150,9 @@ struct Snapshot {
     std::uint32_t completed = 0;
     std::uint32_t failed = 0;
     std::uint32_t recoveries = 0;
+    /// D-0065. Terminal, and separate from `!connected` on purpose: the page
+    /// offers a reload only for the case that reloading actually fixes.
+    bool gpu_unavailable = false;
     std::string message = "idle";
 };
 Snapshot g_snapshot;
@@ -168,6 +171,7 @@ void PublishSnapshot() {
     g_snapshot.completed = st.tasks_completed;
     g_snapshot.failed = st.tasks_failed;
     g_snapshot.recoveries = st.device_recoveries;
+    g_snapshot.gpu_unavailable = st.gpu_unavailable;
     g_snapshot.message = st.last_message;
 }
 
@@ -183,6 +187,7 @@ void DrawStatus(void*) {
     std::uint32_t completed = 0;
     std::uint32_t failed = 0;
     std::uint32_t recoveries = 0;
+    bool gpu_unavailable = false;
     std::string message;
     {
         const std::lock_guard<std::mutex> lock(g_snapshot.mutex);
@@ -191,6 +196,7 @@ void DrawStatus(void*) {
         completed = g_snapshot.completed;
         failed = g_snapshot.failed;
         recoveries = g_snapshot.recoveries;
+        gpu_unavailable = g_snapshot.gpu_unavailable;
         message = g_snapshot.message;   // copied, so the DOM call sees a stable
     }                                   // buffer even if the loop moves on
 
@@ -200,6 +206,11 @@ void DrawStatus(void*) {
                                     static_cast<int>(failed),
                                     static_cast<int>(recoveries));
     p2pgpu::worker::ui::SetStatus(message.c_str());
+    // The reload prompt is REVEALED, never acted on (D-0065): reloading discards
+    // the socket, the worker identity and the resume token, and a page that
+    // resurrects itself the moment the user's GPU driver crashed is not one to
+    // leave running unattended. The user clicks it or does not.
+    p2pgpu::worker::ui::SetGpuUnavailable(gpu_unavailable);
 }
 
 }  // namespace
