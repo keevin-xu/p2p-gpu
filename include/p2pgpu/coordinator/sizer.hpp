@@ -99,6 +99,18 @@ struct SizingInputs {
 /// start colliding with the floor, which would make every first task identical.
 inline constexpr std::uint64_t kProbeDivisor = 8;
 
+/// Largest task the params block can describe (D-0063).
+///
+/// `BruteSearchParams::unit_count` is a `u32` because WGSL has no u64, so a
+/// task of 2^32 or more units cannot be expressed to the worker at all. It was
+/// silently narrowed until 4.17: a browser reporting 2.12e12 ops/s was handed a
+/// 5e9-unit task, which reached the worker as 705,032,704 — 5e9 mod 2^32.
+///
+/// The workers computed the right answer anyway (`RunTask` dispatches from a
+/// u64), so the damage was to every OTHER consumer of the blob, starting with
+/// the CPU reference.
+inline constexpr std::uint64_t kMaxUnitsPerTask = 0xFFFFFFFFULL;
+
 [[nodiscard]] std::uint64_t ComputeTaskSize(const SizingInputs& in) noexcept;
 
 /// Update a worker's correction factor from one completed task (2.13).

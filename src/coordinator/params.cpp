@@ -60,6 +60,18 @@ protocol::Result<std::vector<std::byte>> BuildParams(const KernelSpec& spec,
         // start_lo is the task's offset within the job's 32-bit low window; the
         // high half travels separately in base_hi, since WGSL has no u64.
         p.start_lo = static_cast<std::uint32_t>(task.start_unit & 0xFFFFFFFFULL);
+
+        // REFUSE, never narrow (D-0063). This cast was unguarded until 4.17,
+        // where a 5e9-unit task arrived as 705,032,704 and every consumer of
+        // this blob silently described the wrong range. The sizer now caps at
+        // kMaxUnitsPerTask, so reaching this is a bug elsewhere — which is
+        // exactly when a silent truncation is most expensive.
+        if (task.unit_count > 0xFFFFFFFFULL) {
+            return protocol::MakeError(
+                protocol::ErrorCode::Internal,
+                "task of " + std::to_string(task.unit_count) +
+                    " units exceeds what BruteSearchParams can express (2^32-1)");
+        }
         p.unit_count = static_cast<std::uint32_t>(task.unit_count);
         p.base_hi = static_cast<std::uint32_t>(task.start_unit >> 32);
 

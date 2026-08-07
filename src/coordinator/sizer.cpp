@@ -66,7 +66,13 @@ std::uint64_t ComputeTaskSize(const SizingInputs& in) noexcept {
     //    a round trip and a lease to produce a transfer-bound result.
     result = std::max(result, in.r5_min_units);
 
-    // 4. ...but never more than is left. The final task of a job may therefore
+    //    Also never more than the params block can describe (D-0063). Placed
+    //    before the remaining-units cap so the final task of a job is still
+    //    whatever remains, and after the R5 floor so a floor above the ceiling
+    //    is impossible rather than merely unlikely.
+    result = std::min(result, kMaxUnitsPerTask);
+
+    // 5. ...but never more than is left. The final task of a job may therefore
     //    be smaller than the R5 floor, which is correct: the alternative is
     //    leaving a remainder unsearched. R5 is a sizing rule, not an invariant
     //    about every task that exists (D-0043).

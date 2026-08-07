@@ -219,3 +219,49 @@ TEST_CASE("the probe never exceeds what is left", "[sizer]") {
 
     CHECK(ComputeTaskSize(in) == 500);
 }
+
+// ── D-0063 — a task must fit its own params block ────────────────────────
+//
+// Found in the 4.17 three-way run, not by any test: a browser reporting
+// 2.12e12 ops/s was handed the whole 5e9-unit keyspace, and
+// `BruteSearchParams::unit_count` is a u32, so it reached the worker as
+// 705,032,704 — 5e9 mod 2^32. Every prior task was small only because every
+// prior worker was slow.
+
+TEST_CASE("a task never exceeds what the params block can express", "[sizer]") {
+    SizingInputs in;
+    // A worker fast enough to be given everything, against a keyspace larger
+    // than u32 — the exact shape 4.17 produced.
+    in.score = 2.0e12;
+    in.target_ms = 2000;
+    in.lease_ms = 30000;
+    in.remaining_units = 5'000'000'000ULL;
+
+    const std::uint64_t units = ComputeTaskSize(in);
+    CHECK(units <= kMaxUnitsPerTask);
+    // And specifically NOT the truncated value, which is what made the bug so
+    // hard to see: 705,032,704 looks like a perfectly ordinary task size.
+    CHECK(units != (5'000'000'000ULL % (1ULL << 32)));
+}
+
+TEST_CASE("the cap does not shrink a task that already fits", "[sizer]") {
+    SizingInputs in;
+    in.score = 1.0e6;
+    in.target_ms = 2000;
+    in.lease_ms = 30000;
+    in.remaining_units = 1'000'000'000ULL;
+    // A normal task is nowhere near the ceiling; the clamp must be inert here
+    // rather than quietly reshaping ordinary sizing.
+    CHECK(ComputeTaskSize(in) < kMaxUnitsPerTask);
+}
+
+TEST_CASE("the last task of a job is still whatever remains", "[sizer]") {
+    SizingInputs in;
+    in.score = 2.0e12;
+    in.target_ms = 2000;
+    in.lease_ms = 30000;
+    in.remaining_units = 500;
+    // The u32 cap sits before the remaining-units cap, so a tiny remainder is
+    // unaffected (D-0043's rule order).
+    CHECK(ComputeTaskSize(in) == 500);
+}
