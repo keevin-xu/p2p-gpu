@@ -17,6 +17,7 @@
 #include "p2pgpu/coordinator/quorum.hpp"
 #include "p2pgpu/coordinator/reputation.hpp"
 #include "p2pgpu/coordinator/spot_check.hpp"
+#include "p2pgpu/coordinator/assets.hpp"
 #include "p2pgpu/coordinator/composite.hpp"
 #include "p2pgpu/coordinator/job.hpp"
 #include "p2pgpu/coordinator/fleet.hpp"
@@ -115,6 +116,10 @@ public:
     /// and every non-render test keeps working unchanged.
     void SetCompositor(Compositor* c) noexcept { compositor_ = c; }
 
+    /// Where `AssetRequest` is served from (5.16, D-0077). Null means this
+    /// coordinator has no bulk assets, and every request gets `AssetMiss`.
+    void SetAssetStore(const AssetStore* store) noexcept { asset_store_ = store; }
+
 private:
     /// The actual routing. `OnMessage` wraps this so revokes are appended to
     /// every reply without each handler having to remember.
@@ -126,6 +131,8 @@ private:
     [[nodiscard]] Reaction OnProgress(const wire::Progress& progress, std::uint64_t now_ms);
     [[nodiscard]] Reaction OnRelease(const wire::Release& release);
     [[nodiscard]] Reaction OnGoodbye();
+    /// Serve a bulk asset over the control link (5.16, D-0077).
+    [[nodiscard]] Reaction OnAssetRequest(const wire::AssetRequest& req);
 
     [[nodiscard]] Reaction OnBenchmarkResult(const wire::BenchmarkResult& result);
     [[nodiscard]] Reaction OnThrottle(const wire::Throttle& throttle);
@@ -146,6 +153,7 @@ private:
     std::uint32_t lease_ms_ = 30000;
     ReferenceStats* reference_stats_ = nullptr;
     Compositor* compositor_ = nullptr;
+    const AssetStore* asset_store_ = nullptr;
     EventLog* events_ = nullptr;
     ReputationTable* reputation_ = nullptr;
     QuorumConfig quorum_{};

@@ -160,6 +160,8 @@ private:
                            std::uint32_t sequence, std::uint64_t units_done);
     void SendResultFrame(protocol::TaskId task, const TaskOutcome& outcome,
                          std::uint32_t sequence, std::uint64_t units_done);
+    void SendAssetRequest(const std::string& address, std::uint32_t from,
+                          std::uint32_t to);
     void SendRelease(protocol::TaskId task, wire::ReleaseReason reason);
     /// Clean departure: "I am done, do not wait for me." Sent when the GPU is
     /// permanently gone (D-0065) — the coordinator already handles `Goodbye`,
@@ -178,6 +180,8 @@ private:
 
     struct PendingTask {
         protocol::TaskId id;
+        /// Content address of the bulk input this task reads, empty if none.
+        std::string asset;
         protocol::JobId job;
         std::string kernel_id;
         std::vector<std::byte> params;
@@ -185,6 +189,11 @@ private:
         std::uint64_t work_units = 0;
         std::uint32_t output_bytes = 0;
         std::uint32_t workgroup_size = 64;
+        std::uint32_t workgroup_size_y = 1;
+        /// Invocation grid, when a unit is not an invocation (D-0073). Zero
+        /// keeps the one-invocation-per-unit default.
+        std::uint32_t invocations_x = 0;
+        std::uint32_t invocations_y = 1;
     };
 
     /// Runs one task to completion. Returns false if it could not be run at all
@@ -227,13 +236,43 @@ private:
     /// Consecutive empty replies. Drives jittered exponential backoff (2.15) so
     /// a 200-worker fleet does not synchronise into a thundering herd against
     /// an empty queue (RISKS.md §2).
-    /// Can this worker obtain bulk assets (`TaskEnvelope.input_ref`)?
-    ///
-    /// FALSE until the asset transport lands. A task naming an asset is
-    /// REFUSED rather than attempted while this is false — running a kernel
-    /// whose storage bindings nothing supplies aborts the process rather than
-    /// returning a wrong answer (see HandleTaskGrant).
-    bool assets_available_ = false;
+    // ── Bulk assets over the control link (5.16, D-0077) ─────────────────
+
+    /// An asset being reassembled. One at a time: a worker renders one job, so
+    /// concurrent fetches would be a cache-thrashing pattern with no caller.
+    struct AssetFetch {
+        std::string address;
+        std::vector<std::byte> bytes;
+        std::vector<bool> have;      ///< per chunk, so a duplicate is idempotent
+        std::uint32_t total = 0;
+        std::uint32_t received = 0;
+        std::chrono::steady_clock::time_point started{};
+        std::chrono::steady_clock::time_point last_progress{};
+    };
+    std::optional<AssetFetch> fetch_;
+
+    /// Tasks waiting on an asset. PARKED, not released: releasing returns the
+    /// task to the queue where this same worker is likely to be granted it
+    /// again and re-request the same asset — a loop that looks like progress
+    /// (D-0077).
+    std::vector<PendingTask> waiting_on_asset_;
+
+    /// Validated, GPU-ready views of the resident asset. Rebuilt when a new
+    /// asset arrives, and kept alive for as long as tasks reference them.
+    std::vector<std::byte> asset_nodes_;
+    std::vector<std::byte> asset_prims_;
+    std::vector<std::byte> asset_materials_;
+    std::string resident_asset_;
+
+    void RequestAssetChunks();
+    void HandleAssetChunk(const wire::AssetChunk& chunk);
+    void HandleAssetMiss(const wire::AssetMiss& miss);
+    /// Verify, validate, and publish a fully-received asset. Releases every
+    /// parked task on failure — the bytes are wrong and re-requesting them
+    /// from the same source would produce the same wrong bytes.
+    void FinishAssetFetch();
+    /// Give up on a stalled fetch and release what was waiting on it.
+    void AbandonAssetFetch(const char* why);
     std::uint32_t empty_replies_ = 0;
     /// Earliest time the next lease request may go out, under backoff.
     std::chrono::steady_clock::time_point next_action_{};
@@ -245,6 +284,11 @@ private:
     struct KernelInfo {
         std::string entry_point;
         std::uint32_t workgroup_size = 64;
+        /// The y dimension. On the wire since 1.11 and DISCARDED until 5.16 —
+        /// every kernel before the path tracer was 1D, so `@workgroup_size(8,8,1)`
+        /// was silently read as (8,1,1) and the dispatch covered an eighth of
+        /// the grid.
+        std::uint32_t workgroup_size_y = 1;
         std::uint32_t output_bytes = 0;
         /// Arithmetic ops per work unit, from the manifest via Welcome. Needed
         /// to turn a device-level ops/sec figure into a chunk size in units.

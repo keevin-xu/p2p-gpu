@@ -188,6 +188,19 @@ Reaction Session::Dispatch(const protocol::VerifiedFrame& frame, std::uint64_t n
             break;
         case wire::Body::Goodbye:
             return OnGoodbye();
+        case wire::Body::AssetRequest:
+            if (const auto* m = env.body_as_AssetRequest()) {
+                return OnAssetRequest(*m);
+            }
+            break;
+        case wire::Body::AssetChunk:
+        case wire::Body::AssetMiss:
+            // A worker does not serve assets to the coordinator. Rejected
+            // rather than ignored: an unexpected message is a peer that
+            // disagrees with us about the protocol, and silence would let it
+            // keep sending them (3.12 counts rejections per connection).
+            return NonFatal(wire::ErrorCode::MalformedMessage,
+                            "workers do not send asset data to the coordinator");
 
         case wire::Body::BenchmarkResult:
             if (const auto* m = env.body_as_BenchmarkResult()) {
@@ -692,6 +705,98 @@ Reaction Session::OnProgress(const wire::Progress& progress, std::uint64_t now_m
     spdlog::debug("renew conn_id={} task={} until={}", conn_id_, task_id.lo(),
                   now_ms + lease_ms_);
     return {};
+}
+
+// ── Serving a bulk asset over the control link (5.16, D-0077) ────────────
+
+Reaction Session::OnAssetRequest(const wire::AssetRequest& req) {
+    const auto reply_miss = [&](const wire::Hash32* h) {
+        std::vector<std::vector<std::byte>> out;
+        out.push_back(protocol::EncodeMessage(
+            wire::Body::AssetMiss, [&](flatbuffers::FlatBufferBuilder& fbb) {
+                wire::AssetMissBuilder b(fbb);
+                if (h != nullptr) {
+                    b.add_hash(h);
+                }
+                return b.Finish();
+            }));
+        return Reaction{std::move(out)};
+    };
+
+    const wire::Hash32* h = req.hash();
+    if (h == nullptr) {
+        return NonFatal(wire::ErrorCode::MalformedMessage, "AssetRequest has no hash");
+    }
+    // Hash32's four u64 lanes back to the 64-char lowercase hex the store keys
+    // on. Little-endian per lane, matching how the grant encoded it — the two
+    // conversions are inverses and live a few hundred lines apart, which is
+    // exactly the kind of pairing that drifts, so both spell out the byte order
+    // rather than memcpy-ing a struct.
+    std::string address;
+    address.reserve(64);
+    static constexpr char kHex[] = "0123456789abcdef";
+    for (const std::uint64_t lane : {h->a(), h->b(), h->c(), h->d()}) {
+        for (std::size_t byte = 0; byte < 8; ++byte) {
+            const auto v = static_cast<std::uint8_t>((lane >> (byte * 8)) & 0xFFU);
+            address.push_back(kHex[v >> 4]);
+            address.push_back(kHex[v & 0x0FU]);
+        }
+    }
+
+    const std::vector<std::byte>* blob =
+        asset_store_ != nullptr ? asset_store_->Find(address) : nullptr;
+    if (blob == nullptr) {
+        spdlog::debug("asset_miss conn_id={} address={}", conn_id_, address);
+        return reply_miss(h);
+    }
+
+    const std::size_t total_chunks =
+        (blob->size() + protocol::kChunkBytes - 1) / protocol::kChunkBytes;
+    if (total_chunks == 0 || total_chunks > 0xFFFFFFFFULL) {
+        return reply_miss(h);
+    }
+
+    // The worker asks for a RANGE. Clamped to what exists rather than trusted:
+    // `chunk_to` is attacker-controlled, and a huge value would otherwise turn
+    // one request into an unbounded send loop — an amplification attack costing
+    // the attacker one frame (R11).
+    const std::uint32_t from = req.chunk_from();
+    const std::uint32_t to =
+        std::min<std::uint64_t>(req.chunk_to(), total_chunks);
+    if (from >= to) {
+        return reply_miss(h);
+    }
+    // Bounded per request so one asset cannot monopolise the connection; the
+    // worker asks again for the rest.
+    constexpr std::uint32_t kMaxChunksPerRequest = 64;
+    const std::uint32_t end = std::min(to, from + kMaxChunksPerRequest);
+
+    std::vector<std::vector<std::byte>> out;
+    out.reserve(end - from);
+    for (std::uint32_t i = from; i < end; ++i) {
+        const auto offset = protocol::ChunkOffset(i);
+        if (!offset || *offset >= blob->size()) {
+            break;
+        }
+        const std::size_t len =
+            std::min<std::size_t>(protocol::kChunkBytes, blob->size() - *offset);
+        const std::byte* start = blob->data() + *offset;
+        out.push_back(protocol::EncodeMessage(
+            wire::Body::AssetChunk, [&](flatbuffers::FlatBufferBuilder& fbb) {
+                auto bytes = fbb.CreateVector(
+                    static_cast<const std::uint8_t*>(static_cast<const void*>(start)),
+                    len);
+                wire::AssetChunkBuilder b(fbb);
+                b.add_hash(h);
+                b.add_index(i);
+                b.add_total(static_cast<std::uint32_t>(total_chunks));
+                b.add_bytes(bytes);
+                return b.Finish();
+            }));
+    }
+    spdlog::debug("asset_serve conn_id={} address={} chunks={}..{} of {}",
+                  conn_id_, address, from, end, total_chunks);
+    return Reaction{std::move(out)};
 }
 
 Reaction Session::OnGoodbye() {

@@ -277,7 +277,7 @@ add_library(p2pgpu-worker-core STATIC
     src/worker-core/asset_cache.cpp        # 5.4/5.5 portable: verify-before-use cache
 )
 target_include_directories(p2pgpu-worker-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(p2pgpu-worker-core PUBLIC p2pgpu-protocol p2pgpu-transport)
+target_link_libraries(p2pgpu-worker-core PUBLIC p2pgpu-protocol p2pgpu-transport p2pgpu-scene)
 
 if(P2PGPU_WASM)
     target_sources(p2pgpu-worker-core PRIVATE

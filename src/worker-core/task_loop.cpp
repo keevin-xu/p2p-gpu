@@ -15,9 +15,21 @@
 #include "p2pgpu/protocol/encode.hpp"
 #include "p2pgpu/worker/bench.hpp"
 #include "p2pgpu/worker/checksum.hpp"
+#include "p2pgpu/protocol/invariants.hpp"
+#include "p2pgpu/protocol/limits.hpp"
 #include "p2pgpu/protocol/verify.hpp"
+#include "p2pgpu/scene/bvh.hpp"
 
 namespace p2pgpu::worker {
+namespace {
+/// Chunks asked for per request. Matches the coordinator's per-request cap, so
+/// a full batch is one round trip rather than a partial reply plus a retry.
+constexpr std::uint32_t kAssetChunkRequestBatch = 64;
+/// Give up if no chunk arrives for this long. A stalled fetch must not pin a
+/// task forever — the coordinator can hand it to someone else.
+constexpr auto kAssetStallTimeout = std::chrono::seconds(20);
+}  // namespace
+
 namespace {
 
 using platform::Log;
@@ -176,7 +188,17 @@ void TaskLoop::Poll() {
         ++empty_replies_;
     }
 
-    if (!lease_outstanding_ && held_.empty()) {
+    // A fetch that has stopped progressing must not pin its parked tasks
+    // forever — the coordinator can give them to someone else, and R8 says a
+    // worker going quiet is the normal case rather than an error.
+    if (fetch_ && Clock::now() - fetch_->last_progress > kAssetStallTimeout) {
+        AbandonAssetFetch("no asset chunk received before the stall timeout");
+    }
+
+    // A worker holding a parked task is NOT idle. Asking for more work while
+    // waiting on an asset would pile up tasks it cannot start, and each would
+    // expire in turn.
+    if (!lease_outstanding_ && held_.empty() && waiting_on_asset_.empty()) {
         RequestLease();
     }
 }
@@ -247,6 +269,20 @@ void TaskLoop::OnFrame(std::span<const std::byte> bytes) {
         case wire::Body::ResultHeader:
         case wire::Body::Progress:
         case wire::Body::Release:
+        case wire::Body::AssetChunk:
+            if (const auto* m = env.body_as_AssetChunk()) {
+                HandleAssetChunk(*m);
+            }
+            break;
+        case wire::Body::AssetMiss:
+            if (const auto* m = env.body_as_AssetMiss()) {
+                HandleAssetMiss(*m);
+            }
+            break;
+        case wire::Body::AssetRequest:
+            // The coordinator does not ask US for assets. Ignored rather than
+            // acted on; Phase 6 is where a peer legitimately can.
+            break;
         case wire::Body::Goodbye:
         case wire::Body::BenchmarkResult:
         case wire::Body::Signal:
@@ -287,6 +323,7 @@ void TaskLoop::HandleWelcome(const wire::Welcome& welcome) {
             // result rather than a stale worker.
             if (const auto* wg = k->workgroup_size()) {
                 info.workgroup_size = wg->x() != 0 ? wg->x() : 64;
+                info.workgroup_size_y = wg->y() != 0 ? wg->y() : 1;
             }
             info.flop_per_unit = k->flop_per_unit();
             if (const auto* out = k->output()) {
@@ -339,24 +376,6 @@ void TaskLoop::HandleTaskGrant(const wire::TaskGrant& grant) {
         task.output_bytes = out->bytes();
     }
 
-    // ── A TASK WE CANNOT SUPPLY THE INPUT FOR IS REFUSED, NOT ATTEMPTED ──
-    //
-    // `input_ref` names a bulk asset the kernel reads through storage bindings
-    // this worker must provide. Running the kernel without them is not a wrong
-    // answer, it is a PROCESS ABORT: observed at 5.16 bring-up as a Rust panic
-    // inside wgpu-native when the bind group had two entries and the pipeline
-    // layout wanted five. One misconfigured job would have taken down every
-    // worker in the fleet.
-    //
-    // `AssetUnavailable` is exactly what this ReleaseReason is for, and it keeps
-    // the failure in the coordinator's vocabulary — 3.11 separates broken from
-    // malicious on these codes, and a crash reports nothing at all.
-    if (env->input_ref() != nullptr && !assets_available_) {
-        Log("warn", "granted a task needing a bulk asset this worker cannot fetch yet");
-        SendRelease(task.id, wire::ReleaseReason::AssetUnavailable);
-        return;
-    }
-
     const KernelInfo* info = FindKernel(task.kernel_id);
     if (info == nullptr) {
         Log("warn", "granted an unknown kernel: " + task.kernel_id);
@@ -364,6 +383,79 @@ void TaskLoop::HandleTaskGrant(const wire::TaskGrant& grant) {
         return;
     }
     task.workgroup_size = info->workgroup_size;
+    task.workgroup_size_y = info->workgroup_size_y;
+    // A 2D workgroup means the kernel indexes a GRID rather than a linear range
+    // of units, so the dispatch cannot be derived from the chunk (D-0073). The
+    // grid comes from the params the coordinator built — bytes 8..23 of
+    // PathTraceParams are (tile_x, tile_y, tile_w, tile_h), and tile_w/tile_h
+    // are the invocation extents.
+    if (info->workgroup_size_y > 1 && task.params.size() >= 24) {
+        const auto read_u32 = [&](std::size_t at) {
+            std::uint32_t v = 0;
+            for (std::size_t i = 0; i < 4; ++i) {
+                v |= static_cast<std::uint32_t>(
+                         std::to_integer<std::uint8_t>(task.params[at + i]))
+                     << (i * 8);
+            }
+            return v;
+        };
+        task.invocations_x = read_u32(16);   // tile_w
+        task.invocations_y = read_u32(20);   // tile_h
+    }
+
+    // ── PARKED ONLY AFTER THE TASK IS FULLY DESCRIBED ────────────────────
+    //
+    // This block sat ABOVE the kernel lookup, and a parked task therefore kept
+    // the DEFAULT workgroup and invocation fields forever — nothing filled them
+    // in when it was later released into the queue.
+    //
+    // The effect was subtle enough to be worth recording: only the FIRST task
+    // of a render was ever parked (later ones find the asset resident), so
+    // exactly one tile came out wrong. It dispatched 16x1 groups of an
+    // @workgroup_size(8,8,1) kernel instead of 8x8, the kernel's own bounds
+    // check clipped the overhang, and the tile rendered its top 8 rows and
+    // nothing else. 512 pixels of 4096 — no error, no warning, one dark
+    // rectangle in the corner of the image.
+    // ── A TASK NAMING A BULK ASSET WAITS FOR IT (5.16, D-0077) ───────────
+    //
+    // Running the kernel without its storage bindings is not a wrong answer,
+    // it is a PROCESS ABORT — observed at 5.16 bring-up as a Rust panic inside
+    // wgpu-native when the bind group had two entries and the pipeline layout
+    // wanted five. One misconfigured job would have taken down the fleet.
+    //
+    // PARKED, not released. Releasing returns the task to the queue, where this
+    // same worker is likely to be granted it again and re-request the same
+    // asset — a loop that looks like progress.
+    if (const auto* ref = env->input_ref()) {
+        std::string address;
+        address.reserve(64);
+        static constexpr char kHexDigits[] = "0123456789abcdef";
+        for (const std::uint64_t lane : {ref->a(), ref->b(), ref->c(), ref->d()}) {
+            for (std::size_t byte = 0; byte < 8; ++byte) {
+                const auto v = static_cast<std::uint8_t>((lane >> (byte * 8)) & 0xFFU);
+                address.push_back(kHexDigits[v >> 4]);
+                address.push_back(kHexDigits[v & 0x0FU]);
+            }
+        }
+        task.asset = address;
+
+        if (address != resident_asset_) {
+            waiting_on_asset_.push_back(std::move(task));
+            if (!fetch_ || fetch_->address != address) {
+                // A different asset than the one in flight supersedes it: the
+                // coordinator has moved on, and finishing the old fetch would
+                // spend bandwidth on bytes nothing is waiting for.
+                fetch_ = AssetFetch{};
+                fetch_->address = address;
+                fetch_->started = Clock::now();
+                fetch_->last_progress = fetch_->started;
+                Log("info", "fetching asset " + address.substr(0, 12) + "...");
+                SendAssetRequest(address, 0, kAssetChunkRequestBatch);
+            }
+            return;
+        }
+    }
+
     if (task.output_bytes == 0) {
         task.output_bytes = info->output_bytes;
     }
@@ -670,6 +762,191 @@ void TaskLoop::SendRelease(protocol::TaskId task, wire::ReleaseReason reason) {
     std::erase(held_, task);
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Bulk assets over the control link — step 5.16 (D-0077)
+// ─────────────────────────────────────────────────────────────────────────
+
+void TaskLoop::SendAssetRequest(const std::string& address, std::uint32_t from,
+                                std::uint32_t to) {
+    // Hex back to Hash32's four little-endian u64 lanes. The inverse of the
+    // encoder in HandleTaskGrant; both spell the byte order out rather than
+    // memcpy-ing a struct, because the two live far apart and are exactly the
+    // kind of pairing that drifts.
+    if (address.size() != 64) {
+        return;
+    }
+    std::array<std::uint64_t, 4> lanes{};
+    for (std::size_t lane = 0; lane < 4; ++lane) {
+        std::uint64_t v = 0;
+        for (std::size_t byte = 0; byte < 8; ++byte) {
+            const std::string pair = address.substr(lane * 16 + byte * 2, 2);
+            v |= static_cast<std::uint64_t>(std::stoul(pair, nullptr, 16)) << (byte * 8);
+        }
+        lanes[lane] = v;
+    }
+    auto frame = protocol::EncodeMessage(
+        wire::Body::AssetRequest, [&](flatbuffers::FlatBufferBuilder& fbb) {
+            const wire::Hash32 h(lanes[0], lanes[1], lanes[2], lanes[3]);
+            wire::AssetRequestBuilder b(fbb);
+            b.add_hash(&h);
+            b.add_chunk_from(from);
+            b.add_chunk_to(to);
+            return b.Finish();
+        });
+    (void)transport_.Send(frame);
+}
+
+void TaskLoop::RequestAssetChunks() {
+    if (!fetch_) {
+        return;
+    }
+    // Ask for the next contiguous run of missing chunks. Contiguous rather than
+    // "every gap": a request carries one range, and the common case after a
+    // batch is a single gap at the end.
+    std::uint32_t first_missing = 0;
+    bool found = false;
+    for (std::uint32_t i = 0; i < fetch_->total; ++i) {
+        if (!fetch_->have[i]) {
+            first_missing = i;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        return;
+    }
+    SendAssetRequest(fetch_->address, first_missing,
+                     std::min(fetch_->total, first_missing + kAssetChunkRequestBatch));
+}
+
+void TaskLoop::HandleAssetChunk(const wire::AssetChunk& chunk) {
+    if (!fetch_) {
+        return;   // nothing outstanding; a late chunk from a superseded fetch
+    }
+    const auto* bytes = chunk.bytes();
+    if (bytes == nullptr) {
+        return;
+    }
+
+    // INVARIANT 10, and it is the reason this path was fuzzed before it had a
+    // caller (4.13). `index * kChunkBytes` wraps for a large enough index, and
+    // an unsigned wrap is not UB — no sanitizer fires, and the write lands
+    // somewhere it should not.
+    if (fetch_->total == 0) {
+        const std::uint32_t declared = chunk.total();
+        const auto expected_bytes =
+            static_cast<std::uint64_t>(declared) * protocol::kChunkBytes;
+        if (declared == 0 || expected_bytes > protocol::kMaxAssetBytes) {
+            AbandonAssetFetch("asset declares more chunks than the limit allows");
+            return;
+        }
+        fetch_->total = declared;
+        fetch_->have.assign(declared, false);
+        fetch_->bytes.assign(static_cast<std::size_t>(expected_bytes), std::byte{0});
+    }
+    if (const auto s = protocol::CheckAssetChunk(chunk.index(), chunk.total(),
+                                                 fetch_->total, bytes->size());
+        !s) {
+        AbandonAssetFetch("asset chunk failed invariant 10");
+        return;
+    }
+    const auto offset = protocol::ChunkOffset(chunk.index());
+    if (!offset || *offset + bytes->size() > fetch_->bytes.size()) {
+        AbandonAssetFetch("asset chunk lands outside the reassembly buffer");
+        return;
+    }
+    if (fetch_->have[chunk.index()]) {
+        return;   // duplicate; idempotent by design, retries are normal
+    }
+
+    const auto* src = static_cast<const std::byte*>(
+        static_cast<const void*>(bytes->data()));
+    std::copy(src, src + bytes->size(), fetch_->bytes.begin() +
+                                            static_cast<std::ptrdiff_t>(*offset));
+    fetch_->have[chunk.index()] = true;
+    ++fetch_->received;
+    fetch_->last_progress = Clock::now();
+
+    // The LAST chunk is short. Trim to the real length before hashing, or the
+    // trailing zero padding changes the digest and every asset fails
+    // verification — which would look exactly like a corrupt transfer.
+    if (chunk.index() + 1 == fetch_->total) {
+        fetch_->bytes.resize(static_cast<std::size_t>(*offset) + bytes->size());
+    }
+
+    if (fetch_->received == fetch_->total) {
+        FinishAssetFetch();
+    } else if (fetch_->received % kAssetChunkRequestBatch == 0) {
+        RequestAssetChunks();
+    }
+}
+
+void TaskLoop::HandleAssetMiss(const wire::AssetMiss& /*miss*/) {
+    // The source does not have it. Releasing is right here and parking is not:
+    // waiting cannot help, and the coordinator may be able to hand the task to
+    // a worker that already holds the asset (2.16 affinity).
+    AbandonAssetFetch("the coordinator does not have this asset");
+}
+
+void TaskLoop::FinishAssetFetch() {
+    if (!fetch_) {
+        return;
+    }
+    const std::string address = fetch_->address;
+
+    // VERIFY BEFORE PARSE. The bytes must hash to the name we asked for — not
+    // to a checksum the sender supplied, which would only prove the sender can
+    // hash. In Phase 6 these arrive from an arbitrary peer and this is the only
+    // thing between one and the GPU.
+    const std::string actual = Blake3Hex(fetch_->bytes);
+    if (actual != address) {
+        AbandonAssetFetch("asset failed verification and was discarded");
+        return;
+    }
+
+    // VALIDATE BEFORE USE. Every index bounds-checked on the CPU, once, before
+    // any of it becomes a GPU array index (D-0069/D-0070).
+    auto bvh = scene::LoadBvh(fetch_->bytes);
+    if (!bvh) {
+        AbandonAssetFetch("asset hashed correctly but failed structural validation");
+        return;
+    }
+
+    const auto to_bytes = [](const auto& v) {
+        const auto* p = static_cast<const std::byte*>(static_cast<const void*>(v.data()));
+        return std::vector<std::byte>(p, p + v.size() * sizeof(v[0]));
+    };
+    asset_nodes_ = to_bytes(bvh->nodes);
+    asset_prims_ = to_bytes(bvh->prims);
+    asset_materials_ = to_bytes(bvh->materials);
+    resident_asset_ = address;
+    fetch_.reset();
+
+    Log("info", "asset ready " + address.substr(0, 12) + "... nodes=" +
+                    std::to_string(bvh->nodes.size()) + " prims=" +
+                    std::to_string(bvh->prims.size()) + " depth=" +
+                    std::to_string(bvh->max_depth));
+
+    // Release the parked tasks into the run queue.
+    for (auto& parked : waiting_on_asset_) {
+        if (parked.asset == resident_asset_) {
+            queue_.push_back(std::move(parked));
+        } else {
+            SendRelease(parked.id, wire::ReleaseReason::AssetUnavailable);
+        }
+    }
+    waiting_on_asset_.clear();
+}
+
+void TaskLoop::AbandonAssetFetch(const char* why) {
+    Log("error", std::string("asset fetch abandoned: ") + why);
+    fetch_.reset();
+    for (const auto& parked : waiting_on_asset_) {
+        SendRelease(parked.id, wire::ReleaseReason::AssetUnavailable);
+    }
+    waiting_on_asset_.clear();
+}
+
 void TaskLoop::SendGoodbye(wire::ReleaseReason reason) {
     auto frame = protocol::EncodeMessage(
         wire::Body::Goodbye, [&](flatbuffers::FlatBufferBuilder& fbb) {
@@ -717,6 +994,19 @@ bool TaskLoop::Execute(const PendingTask& task) {
     req.unit_count = task.work_units;
     req.output_bytes = task.output_bytes;
     req.workgroup_size = task.workgroup_size;
+    req.workgroup_size_y = task.workgroup_size_y;
+    req.invocations_x = task.invocations_x;
+    req.invocations_y = task.invocations_y;
+
+    // The bulk input, as three GPU-ready arrays. Present only when this task
+    // named an asset and that asset is the resident one — checked rather than
+    // assumed, because running with the wrong scene renders a plausible image
+    // of something else.
+    std::vector<std::span<const std::byte>> inputs;
+    if (!task.asset.empty() && task.asset == resident_asset_) {
+        inputs = {asset_nodes_, asset_prims_, asset_materials_};
+        req.inputs = inputs;
+    }
     // Once per task, before the first dispatch. Empty means zero-fill; for
     // brute_search this carries atomicMin's identity, and without it that
     // output is pinned at 0 forever (D-0040).

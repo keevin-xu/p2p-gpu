@@ -487,6 +487,7 @@ void Server::Run() {
                     data->session->SetReputation(&this->reputation_);
                     data->session->SetQuorum(this->quorum_);
                     data->session->SetCompositor(&this->compositor_);
+                    data->session->SetAssetStore(&this->assets_);
                     if (this->config_.spot_checks) {
                         data->session->SetSpotChecks(&this->spot_checks_);
                     }

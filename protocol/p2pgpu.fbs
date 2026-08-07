@@ -425,6 +425,16 @@ union Body {
   Goodbye,
   Shutdown,
   Error,
+  // APPENDED in D-0077 (step 5.16). Appending is safe; inserting is not —
+  // the generated `Body` enum numbers members positionally, so anything but
+  // the end silently remaps every existing message (D-0035).
+  //
+  // These same tables are also members of `AssetBody` below, for Phase 6's
+  // peer DataChannel. One description of one thing carried over two
+  // transports: Phase 6 changes who SENDS the bytes, not what they look like.
+  AssetRequest,
+  AssetChunk,
+  AssetMiss,
 }
 
 table Envelope {

@@ -52,6 +52,15 @@ inline constexpr std::uint32_t kMaxOutputBytes = 8u * 1024u * 1024u;
 /// do NOT assume 256 KiB EOR support.
 inline constexpr std::uint32_t kChunkBytes = 16u * 1024u;
 
+/// Largest bulk asset a worker will reassemble (5.16).
+///
+/// R11: the chunk COUNT is attacker-controlled, and a receiver that allocates
+/// `total * kChunkBytes` without a cap can be made to reserve gigabytes by one
+/// small frame. This is the bound that check goes against, and it is generous
+/// on purpose — a scene BVH is megabytes, and refusing a legitimate one is a
+/// worse failure than reserving 256 MB briefly.
+inline constexpr std::uint64_t kMaxAssetBytes = 256ull * 1024ull * 1024ull;
+
 /// Verifier recursion and table bounds. FlatBuffers' defense against
 /// nesting-based resource exhaustion.
 inline constexpr std::size_t kMaxVerifyDepth  = 16;
