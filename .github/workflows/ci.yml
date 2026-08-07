@@ -346,26 +346,6 @@ jobs:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
         run: ctest --preset native-debug --output-on-failure -R '^kernel_'
 
-      # ── 4.19 — one-command join package ─────────────────────────────
-      #
-      # RISKS.md R-D: the non-Apple GPU need is bursty, and every visit that
-      # needs a toolchain install and a 20-minute build is a visit that does not
-      # happen. CI publishing a ready tarball turns the ask into "download this,
-      # run ./join <url>".
-      #
-      # Linux only. The script builds for the platform it runs on, and a Windows
-      # package would need a windows-latest runner — the browser worker is the
-      # Windows answer today, since it installs nothing at all.
-      - name: Package the worker
-        run: ./tools/package_worker.sh build/native-release dist
-
-      - name: Upload join package
-        uses: actions/upload-artifact@v4
-        with:
-          name: p2pgpu-worker-linux
-          path: dist/*.tar.gz
-          retention-days: 30
-
       - name: R2 seam check
         run: python3 tools/check_seam.py
 
@@ -382,6 +362,32 @@ jobs:
 
       - name: Build (release)
         run: cmake --build build/native-release
+
+      # ── 4.19 — one-command join package ─────────────────────────────
+      #
+      # RISKS.md R-D: the non-Apple GPU need is bursty, and every visit that
+      # needs a toolchain install and a 20-minute build is a visit that does not
+      # happen. CI publishing a ready tarball turns the ask into "download this,
+      # run ./join <url>".
+      #
+      # AFTER the release build, which is what produces `worker-native`. The
+      # first version of this step ran before it and failed with "worker-native
+      # not found" — the debug build above does not produce a package-worthy
+      # binary, and the script correctly refused rather than shipping nothing.
+      #
+      # Linux only. The script builds for the platform it runs on, and a Windows
+      # package would need a windows-latest runner — the browser worker is the
+      # Windows answer today, since it installs nothing at all.
+      - name: Package the worker
+        run: ./tools/package_worker.sh build/native-release dist
+
+      - name: Upload join package
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2pgpu-worker-linux
+          path: dist/*.tar.gz
+          retention-days: 30
+
 
       # DIAGNOSTIC. The cache has been the wrong size twice and both guesses at
       # why were wrong, so measure instead of reasoning. Prints what is actually
