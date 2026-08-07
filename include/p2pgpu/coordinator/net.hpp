@@ -14,6 +14,7 @@
 #include <memory>
 #include <unordered_map>
 
+#include "p2pgpu/coordinator/assets.hpp"
 #include "p2pgpu/coordinator/job.hpp"
 #include "p2pgpu/coordinator/kernel_registry.hpp"
 #include "p2pgpu/coordinator/fleet.hpp"
@@ -102,6 +103,16 @@ public:
     /// Out-of-line so `SseClients` may stay incomplete in this header.
     ~Server();
 
+    /// Publish a bulk asset and return its content address (5.4).
+    ///
+    /// Owned by the server rather than injected because its lifetime is exactly
+    /// the server's: an address handed to a worker must stay fetchable for as
+    /// long as anything might be rendering against it.
+    [[nodiscard]] std::string PublishAsset(std::vector<std::byte> bytes) {
+        return assets_.Put(std::move(bytes));
+    }
+    [[nodiscard]] const AssetStore& assets() const noexcept { return assets_; }
+
     /// DEV ONLY (step 1.26): invoked once when every task is terminal, under
     /// --exit-when-complete. Returns the process exit code.
     using OnCompleteFn = std::function<int()>;
@@ -172,6 +183,8 @@ private:
     Fleet& fleet_;
     ReferenceStats* reference_stats_ = nullptr;
     Store* store_ = nullptr;
+    /// Content-addressed bulk assets served over `GET /asset/{hash}` (5.4).
+    AssetStore assets_;
     ReputationTable reputation_;
     SpotCheckPool spot_checks_;
     QuorumConfig quorum_{};

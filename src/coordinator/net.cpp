@@ -399,6 +399,44 @@ void Server::Run() {
                      ->end(spec->wgsl);
              })
 
+        // Serve a bulk asset by CONTENT ADDRESS (step 5.4). Phase 6 puts a
+        // peer-to-peer plane in front of this; it stays as the fallback, which
+        // is only sound because the name of the thing is its hash — a peer and
+        // the coordinator are interchangeable sources of a verified blob
+        // (D-0007, D-0069).
+        .get("/asset/:hash",
+             [this](auto* res, auto* req) {
+                 const std::string_view hash = req->getParameter(0);
+                 // `Find` validates the shape before touching the container, so
+                 // a malformed key cannot express anything at all (R11). One
+                 // response for "absent" and "malformed" together, and no echo
+                 // of the requested hash — reflecting attacker text is a habit
+                 // worth not forming, and distinguishing the two cases would
+                 // leak whether an asset exists.
+                 const std::vector<std::byte>* blob = assets_.Find(hash);
+                 if (blob == nullptr) {
+                     res->writeStatus("404 Not Found")->end("unknown asset");
+                     return;
+                 }
+                 // Same CORS + CORP pair as /kernel/:id, and required for the
+                 // same reason: the worker page is cross-origin isolated, so
+                 // under `COEP: require-corp` the browser blocks any
+                 // cross-origin subresource that does not opt in. Without both
+                 // headers this fails as a console CORS error and surfaces as
+                 // "asset unavailable", nowhere near the cause (1.23, RISKS.md).
+                 //
+                 // IMMUTABLE, and safely so: the URL contains the hash of the
+                 // body, so the bytes at an address can never change. This is
+                 // the one place in the system where an infinite cache lifetime
+                 // is a theorem rather than a gamble.
+                 res->writeHeader("Content-Type", "application/octet-stream")
+                     ->writeHeader("Access-Control-Allow-Origin", "*")
+                     ->writeHeader("Cross-Origin-Resource-Policy", "cross-origin")
+                     ->writeHeader("Cache-Control", "public, max-age=31536000, immutable")
+                     ->end(std::string_view(reinterpret_cast<const char*>(blob->data()),
+                                            blob->size()));
+             })
+
         .ws<SocketData>("/ws",
             {
                 .compression = uWS::DISABLED,

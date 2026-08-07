@@ -242,8 +242,13 @@ add_library(p2pgpu-scene-hash STATIC src/scene/content_address.cpp)
 target_link_libraries(p2pgpu-scene-hash PUBLIC p2pgpu-scene BLAKE3::blake3)
 p2pgpu_harden(p2pgpu-scene-hash)
 
-add_executable(bvhtool src/scene/bvhtool.cpp)
-target_link_libraries(bvhtool PRIVATE p2pgpu-scene-hash)
+# Dev utility: build a scene, print BVH statistics and its content address.
+# Native only — it has no place in the browser bundle, and building it there
+# was just wasted wasm link time.
+if(NOT EMSCRIPTEN)
+    add_executable(bvhtool src/scene/bvhtool.cpp)
+    target_link_libraries(bvhtool PRIVATE p2pgpu-scene-hash)
+endif()
 
 add_library(p2pgpu-transport STATIC src/transport/transport.cpp)
 target_include_directories(p2pgpu-transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -269,6 +274,7 @@ add_library(p2pgpu-worker-core STATIC
     src/worker-core/bench.cpp              # portable: throughput + overhead (0.10-0.12)
     src/worker-core/recovery.cpp           # portable: device-loss recovery (0.14)
     src/worker-core/checksum.cpp           # portable: BLAKE3-64, invariant 9
+    src/worker-core/asset_cache.cpp        # 5.4/5.5 portable: verify-before-use cache
 )
 target_include_directories(p2pgpu-worker-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(p2pgpu-worker-core PUBLIC p2pgpu-protocol p2pgpu-transport)
@@ -349,6 +355,7 @@ if(NOT P2PGPU_WASM)
     # the line (session.hpp explains why that boundary is worth keeping).
     add_library(p2pgpu-coordinator-core STATIC
         src/coordinator/affinity.cpp
+        src/coordinator/assets.cpp
         src/coordinator/event_log.cpp
         src/coordinator/quorum.cpp
         src/coordinator/reputation.cpp
@@ -370,6 +377,7 @@ if(NOT P2PGPU_WASM)
     )
     target_link_libraries(p2pgpu-coordinator-core PUBLIC
         p2pgpu-protocol
+        p2pgpu-scene-hash
         spdlog::spdlog
         BLAKE3::blake3
         unofficial::sqlite3::sqlite3)

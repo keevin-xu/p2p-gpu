@@ -321,3 +321,166 @@ TEST_CASE("an unknown primitive kind is rejected", "[bvh][hostile]") {
     SetU32(blob, prim_off, 99);
     CHECK_FALSE(LoadBvh(blob).has_value());
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// 5.4 — asset store and the worker-side verify-before-use cache
+// ─────────────────────────────────────────────────────────────────────────
+
+#include "p2pgpu/coordinator/assets.hpp"
+#include "p2pgpu/worker/asset_cache.hpp"
+#include "p2pgpu/worker/checksum.hpp"
+
+TEST_CASE("the coordinator and the worker agree on a content address",
+          "[bvh][asset]") {
+    // THE D-0034 PIN, for the same reason and against a different pair of
+    // functions. `scene::ContentAddress` and `worker::Blake3Hex` hash the same
+    // bytes in two libraries that cannot share a dependency: p2pgpu-scene must
+    // stay free of vcpkg `native` packages so `LoadBvh` is fuzzable (D-0069),
+    // while the browser worker links BLAKE3 from upstream entirely (D-0034).
+    //
+    // If they ever disagree the symptom is "every asset fetch is corrupt", with
+    // nothing in any log pointing at the hash.
+    const auto blob = GoodBlob();
+    CHECK(ContentAddress(blob) == p2pgpu::worker::Blake3Hex(blob));
+
+    const std::vector<std::byte> empty;
+    CHECK(ContentAddress(empty) == p2pgpu::worker::Blake3Hex(empty));
+}
+
+TEST_CASE("an address must be exactly 64 lowercase hex characters",
+          "[asset][hostile]") {
+    using p2pgpu::coordinator::AssetStore;
+    const std::string good(64, 'a');
+    CHECK(AssetStore::IsWellFormedAddress(good));
+
+    CHECK_FALSE(AssetStore::IsWellFormedAddress(""));
+    CHECK_FALSE(AssetStore::IsWellFormedAddress(std::string(63, 'a')));
+    CHECK_FALSE(AssetStore::IsWellFormedAddress(std::string(65, 'a')));
+    CHECK_FALSE(AssetStore::IsWellFormedAddress(std::string(64, 'g')));
+    // Uppercase is REJECTED deliberately: one function emits addresses and it
+    // emits lowercase, so accepting both spellings would create two names for
+    // one asset — two cache entries per worker and a 5.18 hit rate measuring
+    // the wrong thing.
+    CHECK_FALSE(AssetStore::IsWellFormedAddress(std::string(64, 'A')));
+    // Path traversal is not expressible, and cannot become expressible: the
+    // store is in-memory and the key never reaches a filesystem.
+    CHECK_FALSE(AssetStore::IsWellFormedAddress("../../etc/passwd"));
+    CHECK_FALSE(AssetStore::IsWellFormedAddress(std::string(64, '\0')));
+}
+
+TEST_CASE("the store round-trips a blob and is idempotent", "[asset]") {
+    p2pgpu::coordinator::AssetStore store;
+    const auto blob = GoodBlob();
+    const std::string address = store.Put(blob);
+
+    CHECK(address == ContentAddress(blob));
+    REQUIRE(store.Find(address) != nullptr);
+    CHECK(*store.Find(address) == blob);
+    CHECK(store.count() == 1);
+
+    // Same bytes, same address, one entry — the defining property of content
+    // addressing rather than a collision.
+    CHECK(store.Put(blob) == address);
+    CHECK(store.count() == 1);
+
+    CHECK(store.Find(std::string(64, 'b')) == nullptr);
+    CHECK(store.Find("not-an-address") == nullptr);
+}
+
+TEST_CASE("the worker cache REJECTS bytes that do not hash to their name",
+          "[asset][hostile]") {
+    // The check the whole class exists for, and the one thing standing between
+    // a hostile Phase 6 peer and the GPU traversal loop.
+    using p2pgpu::worker::AssetCache;
+    auto blob = GoodBlob();
+    const std::string address = ContentAddress(blob);
+
+    int fetches = 0;
+    auto corrupt = blob;
+    corrupt[corrupt.size() / 2] = static_cast<std::byte>(
+        static_cast<unsigned char>(corrupt[corrupt.size() / 2]) ^ 0x01U);
+
+    AssetCache cache(
+        [&](std::string_view) -> std::optional<std::vector<std::byte>> {
+            ++fetches;
+            return corrupt;
+        },
+        1U << 20);
+
+    CHECK(cache.Get(address) == nullptr);
+    CHECK(cache.rejected_count() == 1);
+    CHECK(cache.resident_bytes() == 0);
+    CHECK_FALSE(cache.Has(address));
+    // A single flipped bit, in a blob that is otherwise a perfectly valid BVH:
+    // `LoadBvh` would have accepted it, because it is structurally sound and
+    // only the GEOMETRY is wrong. Verification is what catches that class, and
+    // structural validation cannot.
+    CHECK(LoadBvh(corrupt).has_value());
+}
+
+TEST_CASE("the worker cache accepts, caches, and does not refetch", "[asset]") {
+    using p2pgpu::worker::AssetCache;
+    const auto blob = GoodBlob();
+    const std::string address = ContentAddress(blob);
+
+    int fetches = 0;
+    AssetCache cache(
+        [&](std::string_view) -> std::optional<std::vector<std::byte>> {
+            ++fetches;
+            return blob;
+        },
+        1U << 20);
+
+    const auto* first = cache.Get(address);
+    REQUIRE(first != nullptr);
+    CHECK(*first == blob);
+    CHECK(cache.Has(address));
+    CHECK(cache.rejected_count() == 0);
+    CHECK(cache.cached() == std::vector<std::string>{address});
+
+    CHECK(cache.Get(address) != nullptr);
+    CHECK(fetches == 1);  // served from cache the second time
+
+    cache.Clear();
+    CHECK_FALSE(cache.Has(address));
+    CHECK(cache.resident_bytes() == 0);
+}
+
+TEST_CASE("the cache bounds its memory against an unbounded asset namer",
+          "[asset][hostile]") {
+    // R11: a coordinator or peer that can name unlimited assets must not be
+    // able to grow a worker's memory without limit.
+    using p2pgpu::worker::AssetCache;
+    const auto blob = GoodBlob();
+    const std::string address = ContentAddress(blob);
+
+    AssetCache tiny(
+        [&](std::string_view) -> std::optional<std::vector<std::byte>> {
+            return blob;
+        },
+        blob.size() / 2);
+    CHECK(tiny.Get(address) == nullptr);       // larger than the whole budget
+    CHECK(tiny.resident_bytes() == 0);
+
+    AssetCache bounded(
+        [&](std::string_view) -> std::optional<std::vector<std::byte>> {
+            return blob;
+        },
+        blob.size() + 8);
+    REQUIRE(bounded.Get(address) != nullptr);
+    CHECK(bounded.resident_bytes() == blob.size());
+}
+
+TEST_CASE("a fetch failure is not a verification failure", "[asset]") {
+    // Distinct counters on purpose: "the network is down" and "a peer served
+    // corrupt bytes" call for completely different responses in Phase 6, and a
+    // single failure count would conflate them.
+    using p2pgpu::worker::AssetCache;
+    AssetCache cache(
+        [](std::string_view) -> std::optional<std::vector<std::byte>> {
+            return std::nullopt;
+        },
+        1U << 20);
+    CHECK(cache.Get(std::string(64, 'a')) == nullptr);
+    CHECK(cache.rejected_count() == 0);
+}

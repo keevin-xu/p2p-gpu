@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 
 namespace p2pgpu::worker {
 
@@ -28,5 +29,19 @@ namespace p2pgpu::worker {
 /// stable across hosts — it travels on the wire and both ends must agree byte
 /// for byte.
 [[nodiscard]] std::uint64_t Blake3_64(std::span<const std::byte> bytes) noexcept;
+
+/// Full BLAKE3-256 as lowercase hex — a CONTENT ADDRESS (5.4).
+///
+/// Must produce exactly the same string as `scene::ContentAddress`, which the
+/// coordinator uses to name the same bytes. They are separate functions because
+/// they live in libraries with different dependency rules (see the header note
+/// above, and D-0069 on why `p2pgpu-scene` links no vcpkg `native` package).
+/// `tests/unit/test_scene.cpp` pins them against each other for the D-0034
+/// reason: a disagreement would present as "every asset fetch is corrupt", with
+/// nothing in any log pointing at the hash.
+///
+/// 64 characters, lowercase. Case is part of the contract — see
+/// `AssetStore::IsWellFormedAddress`.
+[[nodiscard]] std::string Blake3Hex(std::span<const std::byte> bytes);
 
 }  // namespace p2pgpu::worker
