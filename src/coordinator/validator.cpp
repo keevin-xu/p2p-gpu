@@ -3,6 +3,7 @@
 // No unwrap-equivalent: never crash on worker input (docs/CONVENTIONS.md §1).
 
 #include "p2pgpu/coordinator/validator.hpp"
+#include <vector>
 
 #include <algorithm>
 #include <array>
@@ -143,6 +144,175 @@ Comparison CompareTolerant(const KernelSpec& spec, std::span<const std::byte> a,
 
 }  // namespace
 
+// ── Statistical (5.14, D-0075) ───────────────────────────────────────────
+//
+// The payload contract for this class is an array of `{r,g,b,samples}` f32
+// quadruples — the accumulator format from D-0074, a running SUM plus the count
+// that produced it. Sample counts must be ON the payload: the estimator's
+// precision depends on them, and a comparator without them is guessing.
+
+namespace {
+
+/// Per-channel outlier cutoff, in robust standard deviations.
+constexpr double kSigmaCutoff = 6.0;
+/// Tile fails if more than this fraction of channels are outliers. Non-zero
+/// because a handful of genuine tail samples in a Monte Carlo image is normal —
+/// fireflies are not fraud.
+constexpr double kMaxOutlierFraction = 0.005;
+/// Aggregate cutoff, deliberately stricter in sigma terms: averaging over
+/// thousands of pixels shrinks the noise floor, so a global bias that survives
+/// it is not noise.
+constexpr double kAggregateCutoff = 8.0;
+/// Floor on the robust scale, relative to the typical pixel magnitude.
+///
+/// WITHOUT THIS THE COMPARATOR REJECTS PERFECT AGREEMENT. Identical inputs give
+/// a median |d| of ~0, so the scale is ~0 and every pixel exceeds `6 * 0`.
+/// D-0073 measured honest identical-range disagreement at ~1 ULP, far under
+/// this floor, and any real disagreement is far over it.
+constexpr double kScaleFloorRel = 1e-3;
+/// 1/Phi^-1(3/4): makes the MAD a consistent estimator of sigma for a normal.
+constexpr double kMadToSigma = 1.4826;
+
+double Median(std::vector<double>& v) {
+    if (v.empty()) {
+        return 0.0;
+    }
+    const std::size_t mid = v.size() / 2;
+    std::nth_element(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(mid), v.end());
+    return v[mid];
+}
+
+Comparison CompareStatistical(std::span<const std::byte> a,
+                              std::span<const std::byte> b) {
+    Comparison c;
+    constexpr std::size_t kStride = 16;   // {r,g,b,samples} f32
+
+    if (a.size() % kStride != 0) {
+        c.verdict = Verdict::Unsupported;
+        c.detail = "statistical payload is not a whole number of RGBA f32 pixels";
+        return c;
+    }
+    const std::size_t pixels = a.size() / kStride;
+    c.elements = pixels * 3;   // channels compared; samples is not a measurement
+
+    const auto pixel_at = [](std::span<const std::byte> buf, std::size_t i) {
+        std::array<float, 4> out{};
+        for (std::size_t k = 0; k < 4; ++k) {
+            std::array<std::byte, 4> raw{};
+            for (std::size_t j = 0; j < 4; ++j) {
+                raw[j] = buf[i * kStride + k * 4 + j];
+            }
+            out[k] = std::bit_cast<float>(raw);
+        }
+        return out;
+    };
+
+    std::vector<double> d;
+    d.reserve(pixels * 3);
+    std::vector<double> magnitude;
+    magnitude.reserve(pixels * 3);
+    double sum_a = 0.0;
+    double sum_b = 0.0;
+    double sum_pooled_sq = 0.0;
+
+    for (std::size_t i = 0; i < pixels; ++i) {
+        const auto pa = pixel_at(a, i);
+        const auto pb = pixel_at(b, i);
+        const double na = pa[3];
+        const double nb = pb[3];
+        if (!(na > 0.0) || !(nb > 0.0) || !std::isfinite(na) || !std::isfinite(nb)) {
+            // No sample count means no estimate of precision, so there is no
+            // honest comparison to make. Unsupported, NOT Match — a comparator
+            // that passes what it cannot judge is the stub D-0047 refused.
+            c.verdict = Verdict::Unsupported;
+            c.detail = "a pixel reports a non-positive or non-finite sample count";
+            return c;
+        }
+        // Variance of the difference of two independent means.
+        const double pooled = std::sqrt(1.0 / na + 1.0 / nb);
+        sum_pooled_sq += pooled * pooled;
+
+        for (std::size_t k = 0; k < 3; ++k) {
+            if (!std::isfinite(pa[k]) || !std::isfinite(pb[k])) {
+                c.verdict = Verdict::Mismatch;
+                c.differing_elements = 1;
+                c.first_differing_index = i * 3 + k;
+                c.detail = "non-finite radiance";
+                return c;
+            }
+            const double ma = pa[k] / na;
+            const double mb = pb[k] / nb;
+            d.push_back((ma - mb) / pooled);
+            magnitude.push_back(std::abs(mb));
+            sum_a += ma;
+            sum_b += mb;
+        }
+    }
+    if (d.empty()) {
+        c.verdict = Verdict::Match;
+        return c;
+    }
+
+    std::vector<double> abs_d;
+    abs_d.reserve(d.size());
+    for (const double v : d) {
+        abs_d.push_back(std::abs(v));
+    }
+    std::vector<double> mag_copy = magnitude;
+    const double typical = Median(mag_copy);
+    // MAD about zero: the difference of two unbiased estimators is centred on
+    // zero by construction, so subtracting a sample median would only absorb a
+    // genuine global bias into the scale — precisely what the aggregate test
+    // below exists to catch.
+    const double scale =
+        std::max(kMadToSigma * Median(abs_d), kScaleFloorRel * std::max(typical, 1e-9));
+
+    std::size_t outliers = 0;
+    double worst = 0.0;
+    std::size_t worst_index = d.size();
+    for (std::size_t i = 0; i < d.size(); ++i) {
+        const double z = std::abs(d[i]) / scale;
+        if (z > worst) {
+            worst = z;
+            worst_index = i;
+        }
+        if (z > kSigmaCutoff) {
+            ++outliers;
+        }
+    }
+    c.differing_elements = outliers;
+    c.first_differing_index = worst_index;
+    c.max_abs_diff = worst;   // in robust sigmas, which is the scale-free number
+
+    // Aggregate: a MAD test is BLIND to a uniform error, because scaling every
+    // pixel scales the estimator too. Averaging over thousands of pixels shrinks
+    // the noise floor, so a global bias that survives it is not noise.
+    const double mean_diff = (sum_a - sum_b) / static_cast<double>(d.size());
+    const double aggregate_se =
+        scale * std::sqrt(sum_pooled_sq / static_cast<double>(d.size())) /
+        std::sqrt(static_cast<double>(d.size()));
+    const double z_aggregate =
+        aggregate_se > 0.0 ? std::abs(mean_diff) / aggregate_se : 0.0;
+    c.max_rel_diff = z_aggregate;
+
+    const double outlier_fraction =
+        static_cast<double>(outliers) / static_cast<double>(d.size());
+    if (outlier_fraction > kMaxOutlierFraction) {
+        c.verdict = Verdict::Mismatch;
+        c.detail = "too many per-pixel outliers";
+        return c;
+    }
+    if (z_aggregate > kAggregateCutoff) {
+        c.verdict = Verdict::Mismatch;
+        c.detail = "tile means disagree beyond sampling error";
+        return c;
+    }
+    c.verdict = Verdict::Match;
+    return c;
+}
+
+}  // namespace
+
 Comparison Compare(const KernelSpec& spec, std::span<const std::byte> a,
                    std::span<const std::byte> b) {
     Comparison c;
@@ -174,14 +344,7 @@ Comparison Compare(const KernelSpec& spec, std::span<const std::byte> a,
         case Determinism::Tolerant:
             return CompareTolerant(spec, a, b);
         case Determinism::Statistical:
-            // Interface now, body in Phase 5 (3.1). Deliberately NOT Match: a
-            // stub that passes everything is indistinguishable from validation
-            // that works, which is the mistake D-0047 refused to repeat.
-            c.verdict = Verdict::Unsupported;
-            c.elements = a.size();
-            c.detail = "Statistical comparator lands in Phase 5; NO validation "
-                       "is performed for this kernel";
-            return c;
+            return CompareStatistical(a, b);
     }
 
     c.verdict = Verdict::Unsupported;
