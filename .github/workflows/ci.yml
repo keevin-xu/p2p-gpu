@@ -421,7 +421,11 @@ jobs:
       # A skip must be VISIBLE. The whole failure above was a signal that went
       # missing without anything saying it had, so this writes to the job
       # summary and raises a warning annotation rather than a log line.
-      - name: 4.4 NOT VERIFIED — no software adapter
+      # Named to read correctly in BOTH states. GitHub shows skipped steps by
+      # name, greyed out, so "4.4 NOT VERIFIED" sat in the sidebar of a run
+      # where the tests had in fact passed and read as a failure. A step name
+      # is a sentence someone reads without its condition.
+      - name: Warn if the kernel tests did not run
         if: steps.probe.outcome != 'success'
         run: |
           echo "::warning title=4.4 not verified::No software adapter available; the 15 GPU kernel tests did NOT run on this commit."
