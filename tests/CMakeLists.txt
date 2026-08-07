@@ -26,6 +26,7 @@ add_executable(tests
     unit/test_session.cpp          # 1.15-1.16 — handshake + result ingestion
     unit/test_checksum.cpp         # 1.20 — invariant 9, pinned to BLAKE3's vectors
     unit/test_reference.cpp        # 1.25 — the CPU ground truth, no GPU needed
+    unit/test_scene.cpp            # 5.2/5.3/5.5 — scene parse, BVH build, HOSTILE loader
 
     # Still to come:
     # unit/test_sizer.cpp          # 2.12
@@ -51,7 +52,7 @@ add_executable(tests
 # touches a device, which is what keeps `tests` runnable on a machine with no
 # GPU. GPU tests live in `kernel_tests`.
 target_link_libraries(tests PRIVATE Catch2::Catch2WithMain
-    p2pgpu-coordinator-core p2pgpu-worker-core)
+    p2pgpu-coordinator-core p2pgpu-worker-core p2pgpu-scene-hash)
 # test_session.cpp loads the REAL kernel manifest — granting a task now needs
 # the job's kernel to be in the registry, so a stub registry would exercise a
 # path production never takes.

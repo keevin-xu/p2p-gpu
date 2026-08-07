@@ -160,6 +160,28 @@ add_dependencies(p2pgpu-protocol p2pgpu-schema)
 target_include_directories(p2pgpu-protocol SYSTEM PUBLIC
     $<TARGET_PROPERTY:flatbuffers::flatbuffers,INTERFACE_INCLUDE_DIRECTORIES>)
 
+# ── p2pgpu-scene — scene parsing, BVH build, and the HOSTILE loader ──────
+#
+# A separate library for the same reason p2pgpu-transport is (D-0042): the
+# coordinator BUILDS a BVH, the worker VALIDATES and traverses one, and 5.5's
+# fuzz harness must reach `LoadBvh` without dragging in SQLite or uWebSockets.
+# Folding this into coordinator-core would make the most security-critical
+# parser in the project the hardest one to fuzz.
+#
+# ** DELIBERATELY ABOVE THE P2PGPU_FUZZ_ONLY RETURN, AND THEREFORE FREE OF
+#    EVERY vcpkg `native` DEPENDENCY. ** `LoadBvh` is the function 5.5 fuzzes,
+# so it must exist in the fuzz configure. That is why `ContentAddress` — the
+# only part needing BLAKE3 — lives in its own target further down instead of
+# here. Adding a `native`-feature dependency to THIS target is the 1.29 break
+# again, and a warm build directory will hide it (see the banner below).
+add_library(p2pgpu-scene STATIC
+    src/scene/scene.cpp
+    src/scene/bvh.cpp
+)
+target_include_directories(p2pgpu-scene PUBLIC include)
+target_link_libraries(p2pgpu-scene PUBLIC p2pgpu-protocol)
+p2pgpu_harden(p2pgpu-scene)
+
 if(P2PGPU_FUZZ_ONLY)
     # Everything below this point is deliberately skipped — see D-0015.
     add_subdirectory(fuzz)
@@ -214,6 +236,15 @@ endif()
 # One WebSocket wrapper, two consumers. The alternative was the same ~90 lines
 # twice, and the second copy is the one that stops getting fixed.
 # ─────────────────────────────────────────────────────────────────────────
+# Content addressing. Split from p2pgpu-scene ONLY because BLAKE3 comes from
+# the vcpkg `native` feature and p2pgpu-scene must stay fuzz-buildable.
+add_library(p2pgpu-scene-hash STATIC src/scene/content_address.cpp)
+target_link_libraries(p2pgpu-scene-hash PUBLIC p2pgpu-scene BLAKE3::blake3)
+p2pgpu_harden(p2pgpu-scene-hash)
+
+add_executable(bvhtool src/scene/bvhtool.cpp)
+target_link_libraries(bvhtool PRIVATE p2pgpu-scene-hash)
+
 add_library(p2pgpu-transport STATIC src/transport/transport.cpp)
 target_include_directories(p2pgpu-transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(p2pgpu-transport PUBLIC p2pgpu-protocol)
