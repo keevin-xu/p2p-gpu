@@ -73,6 +73,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         return f"{browser}-{platform}"
 
+    @staticmethod
+    def _gpu_tag(body: bytes) -> str:
+        """Short GPU slug from the report body, or "" if it cannot be found.
+
+        Both report shapes carry it: `adapter : nvidia / turing /` in the smoke
+        dump, `# adapter=nvidia/turing/` in the throughput CSV.
+        """
+        try:
+            head = body[:400].decode("utf-8", errors="replace")
+        except Exception:
+            return ""
+        for line in head.splitlines():
+            low = line.lower()
+            if "adapter" not in low:
+                continue
+            _, _, rest = low.partition("adapter")
+            rest = rest.lstrip(" :=")
+            # Keep the first two fields (vendor, architecture) — enough to tell
+            # a discrete card from an integrated one on the same machine.
+            parts = [p.strip() for p in rest.split("/") if p.strip()]
+            slug = "-".join(parts[:2])
+            slug = "".join(c if c.isalnum() or c == "-" else "-" for c in slug)
+            slug = "-".join(f for f in slug.split("-") if f)
+            return slug[:32]
+        return ""
+
     def _token_ok(self) -> bool:
         """Shared-secret gate. DEV ONLY, and weaker than it looks.
 
@@ -159,6 +185,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
 
         body = self.rfile.read(length)
+
+        # ── THE GPU GOES IN THE FILENAME TOO ─────────────────────────────
+        # browser+platform is not unique enough. A machine with both a discrete
+        # and an integrated GPU reports the SAME `chrome-windows` for each, so
+        # the second run silently overwrites the first — and that machine is
+        # exactly the case worth capturing, because it is a third distinct GPU
+        # for free.
+        #
+        # Same failure as the one that clobbered the Mac Chrome run in 0.16,
+        # one level down: that fix added the platform, and the platform is not
+        # the last thing that distinguishes two runs.
+        #
+        # Read from the report BODY rather than asked of ui.js, which stays
+        # logic-free (R1) — the adapter line is already in every report.
+        gpu = self._gpu_tag(body)
+        if gpu:
+            stem2, ext2 = os.path.splitext(name)
+            name = f"{stem2}-{gpu}{ext2}"
         os.makedirs(self.results_dir, exist_ok=True)
         out_path = os.path.join(self.results_dir, name)
         with open(out_path, "wb") as f:
