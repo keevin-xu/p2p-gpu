@@ -144,6 +144,14 @@ struct Job {
     /// Present only for render jobs (5.15). Absent means a plain keyspace job.
     std::optional<RenderConfig> render;
 
+    /// Samples GRANTED per tile (5.17, D-0078). Sized to `render->grid`.
+    ///
+    /// Granted, not accepted: an accepted count does not move until work
+    /// completes, so ten idle workers asking at once would all be handed tile 0.
+    /// A scheduler must observe the thing it controls, not the thing that
+    /// follows from it.
+    std::vector<std::uint64_t> tile_granted;
+
     /// Tasks carved so far. Grows as the job runs; empty at creation.
     std::vector<TaskId> tasks;
 

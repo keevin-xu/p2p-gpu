@@ -222,6 +222,9 @@ int main(int argc, char** argv) {
                                         rc.samples_per_tile);
         if (auto* mutable_job = jobs.MutableJob(job); mutable_job != nullptr) {
             mutable_job->render = rc;
+            // Per-tile granted counters (5.17). Sized here rather than lazily,
+            // so `Grant` never has to decide whether the vector is ready.
+            mutable_job->tile_granted.assign(rc.grid.tile_count(), 0);
             // THE JOB MUST NAME ITS ASSET, or the grant carries no `input_ref`
             // and the worker has no way to know it needs one. Setting the
             // render config without this is what made the 5.16 bring-up crash:

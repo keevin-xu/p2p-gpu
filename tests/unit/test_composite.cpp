@@ -5,6 +5,8 @@
 #include <cstring>
 #include <array>
 #include <limits>
+#include <algorithm>
+#include <map>
 #include <set>
 #include <vector>
 
@@ -190,4 +192,107 @@ TEST_CASE("non-finite radiance is zeroed rather than propagated", "[composite]")
     const auto img = comp.RenderRgba();
     CHECK(img[0] == 0);        // the NaN channel
     CHECK(img[1] > 180);       // its neighbours are unaffected
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 5.17 — sample-budget scheduling, in the JobManager
+// ─────────────────────────────────────────────────────────────────────────
+
+#include "p2pgpu/coordinator/job.hpp"
+
+namespace {
+
+/// A render job of `tiles` tiles, `spp` samples each.
+JobManager RenderJob(std::uint32_t tiles_x, std::uint32_t tiles_y,
+                     std::uint64_t spp, JobId& out) {
+    JobManager jobs;
+    const TileGrid grid{tiles_x * 64, tiles_y * 64, 64, 64};
+    out = jobs.CreateJob("pathtrace_tile_v1", grid.tile_count() * spp, 42, spp);
+    auto* job = jobs.MutableJob(out);
+    RenderConfig rc;
+    rc.grid = grid;
+    rc.samples_per_tile = spp;
+    job->render = rc;
+    job->tile_granted.assign(grid.tile_count(), 0);
+    return jobs;
+}
+
+}  // namespace
+
+TEST_CASE("grants go to the LEAST-granted tile, round-robin at equal counts",
+          "[composite][schedule]") {
+    JobId id;
+    auto jobs = RenderJob(2, 2, 1000, id);   // 4 tiles, 1000 spp each
+
+    // Tasks of 250 samples: four grants should touch four DIFFERENT tiles
+    // rather than filling tile 0 first, which is what a cursor would do.
+    std::vector<std::uint64_t> tiles;
+    for (int i = 0; i < 4; ++i) {
+        const auto t = jobs.Grant(WorkerId{1, static_cast<std::uint64_t>(i + 1)},
+                                  1000, 5000, 250, {});
+        REQUIRE(t.has_value());
+        tiles.push_back(t->start_unit / 1000);
+    }
+    std::ranges::sort(tiles);
+    CHECK(tiles == std::vector<std::uint64_t>{0, 1, 2, 3});
+}
+
+TEST_CASE("an in-flight grant is visible to the scheduler", "[composite][schedule]") {
+    // THE POINT OF COUNTING AT THE GRANT (D-0078). If the counter only moved on
+    // acceptance, every idle worker asking at once would be handed tile 0 —
+    // nine of ten redundantly — and the fleet would oscillate tile by tile.
+    JobId id;
+    auto jobs = RenderJob(2, 1, 1000, id);   // 2 tiles
+
+    const auto a = jobs.Grant(WorkerId{1, 1}, 1000, 5000, 500, {});
+    const auto b = jobs.Grant(WorkerId{1, 2}, 1000, 5000, 500, {});
+    REQUIRE(a.has_value());
+    REQUIRE(b.has_value());
+    // Nothing has been ACCEPTED, yet the second grant avoids the first's tile.
+    CHECK(a->start_unit / 1000 != b->start_unit / 1000);
+}
+
+TEST_CASE("a task never spans two tiles", "[composite][schedule]") {
+    // A task carries ONE set of tile coordinates. Spanning two would render
+    // half its range into the wrong place and still produce a well-formed
+    // accumulator of the right size — undetectable downstream (the D-0040
+    // shape).
+    JobId id;
+    auto jobs = RenderJob(2, 2, 100, id);
+
+    for (int i = 0; i < 8; ++i) {
+        // Ask for far more than a tile holds.
+        const auto t = jobs.Grant(WorkerId{1, static_cast<std::uint64_t>(i + 1)},
+                                  1000, 5000, 10000, {});
+        if (!t) { break; }
+        const std::uint64_t first = t->start_unit / 100;
+        const std::uint64_t last = (t->start_unit + t->unit_count - 1) / 100;
+        INFO("task " << i << " start=" << t->start_unit << " count=" << t->unit_count);
+        CHECK(first == last);
+        CHECK(t->unit_count <= 100);
+    }
+}
+
+TEST_CASE("the whole sample budget is carved exactly once", "[composite][schedule]") {
+    // The E3 audit question, applied to a render: no gaps (a tile short of
+    // samples renders noisier than asked) and no overlaps (a tile double-counted
+    // renders brighter, because the compositor divides by the count it is told).
+    JobId id;
+    auto jobs = RenderJob(2, 2, 300, id);
+
+    std::map<std::uint64_t, std::uint64_t> per_tile;
+    std::uint64_t total = 0;
+    for (int i = 0; i < 200; ++i) {
+        const auto t = jobs.Grant(WorkerId{1, static_cast<std::uint64_t>(i + 1)},
+                                  1000, 5000, 70, {});
+        if (!t) { break; }
+        per_tile[t->start_unit / 300] += t->unit_count;
+        total += t->unit_count;
+    }
+    CHECK(total == 4 * 300);
+    REQUIRE(per_tile.size() == 4);
+    for (const auto& [tile, samples] : per_tile) {
+        INFO("tile " << tile);
+        CHECK(samples == 300);
+    }
 }

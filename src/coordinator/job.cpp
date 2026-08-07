@@ -2,6 +2,8 @@
 
 #include "p2pgpu/coordinator/job.hpp"
 
+#include <limits>
+
 #include <algorithm>
 
 #include "p2pgpu/protocol/invariants.hpp"
@@ -217,7 +219,44 @@ std::optional<Task> JobManager::Grant(WorkerId worker, std::uint64_t now_ms,
         Task t;
         t.id = TaskId{0, next_id_++};
         t.job = job_id;
-        t.start_unit = job.next_unit;
+
+        // ── SAMPLE-BUDGET SCHEDULING (5.17, D-0078) ──────────────────────
+        //
+        // A render job picks the LEAST-GRANTED tile rather than advancing a
+        // cursor, so the image converges evenly instead of in index order.
+        // `next_unit` stops being a position and becomes the SUM of what has
+        // been granted, which is the only property anything downstream ever
+        // used it for — `keyspace_exhausted`, `remaining_units`, `JobComplete`
+        // and the durability flush all keep working unchanged.
+        std::uint64_t tile_index = 0;
+        const bool by_tile =
+            job.render.has_value() && job.render->samples_per_tile > 0 &&
+            !job.tile_granted.empty();
+        if (by_tile) {
+            std::uint64_t fewest = std::numeric_limits<std::uint64_t>::max();
+            bool found = false;
+            for (std::size_t i = 0; i < job.tile_granted.size(); ++i) {
+                if (job.tile_granted[i] >= job.render->samples_per_tile) {
+                    continue;   // this tile's budget is fully carved
+                }
+                // Strictly less, so ties keep the LOWEST index. The choice has
+                // to be deterministic or an experiment cannot be replayed
+                // (2.3's rule), and "converges evenly" is a claim someone will
+                // want to reproduce.
+                if (job.tile_granted[i] < fewest) {
+                    fewest = job.tile_granted[i];
+                    tile_index = i;
+                    found = true;
+                }
+            }
+            if (!found) {
+                continue;   // every tile fully carved; try the next job
+            }
+            t.start_unit = tile_index * job.render->samples_per_tile +
+                           job.tile_granted[tile_index];
+        } else {
+            t.start_unit = job.next_unit;
+        }
         // Never past the end. The final task of a job takes whatever remains,
         // which may be less than the R5 floor — correct, because the
         // alternative is leaving a remainder unsearched (D-0043).
@@ -231,10 +270,18 @@ std::optional<Task> JobManager::Grant(WorkerId worker, std::uint64_t now_ms,
             const std::uint64_t to_boundary = job.units_per_group - offset_in_group;
             t.unit_count = std::min(t.unit_count, to_boundary);
         }
+        if (t.unit_count == 0) {
+            continue;   // nothing left in the chosen tile; try the next job
+        }
         t.state = TaskState::Leased;
         t.holder = worker;
         t.lease_expires_at_ms = now_ms + lease_ms;
 
+        if (by_tile) {
+            job.tile_granted[tile_index] += t.unit_count;
+        }
+        // The SUM either way. For a render job this is no longer a position,
+        // and nothing downstream treats it as one.
         job.next_unit += t.unit_count;
         job.tasks.push_back(t.id);
         // The CURSOR moved, which is the only job field that changes after
