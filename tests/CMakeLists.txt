@@ -89,6 +89,7 @@ add_test(NAME r2_platform_seam
 # no suite. Keeping them apart means `tests` stays a pure T1 tier that runs
 # anywhere, and a missing GPU fails loudly here instead of quietly there.
 add_executable(kernel_tests
+    kernels/test_compile.cpp   # 5.6 — every kernel compiles; catches WGSL nothing runs yet
     kernels/test_brute_search.cpp        # 1.19 — chunk invariance + the D-0033 window
 )
 target_link_libraries(kernel_tests PRIVATE Catch2::Catch2WithMain p2pgpu-worker-core)

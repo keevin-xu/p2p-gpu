@@ -40,6 +40,21 @@ namespace p2pgpu::worker {
 /// kernel's own element count, not a byte count.
 ///
 /// Returns std::nullopt on any failure; failures are logged through the seam.
+/// Compile WGSL and build a compute pipeline, WITHOUT running anything.
+///
+/// Exists so every kernel in `kernels/` can be validated on every commit —
+/// including in CI against the software adapter (4.4) — rather than only when
+/// something happens to execute it. A kernel that no test exercises yet is
+/// exactly the one whose WGSL rots.
+///
+/// Building the PIPELINE and not merely the module is the point: a shader
+/// module can compile while its entry point is missing, its workgroup size
+/// exceeds the device, or its bindings do not form a valid layout. Those are
+/// the failures that would otherwise surface on a stranger's GPU.
+[[nodiscard]] bool CompileKernel(const platform::GpuContext& ctx,
+                                 std::string_view wgsl_source,
+                                 std::string_view entry_point);
+
 [[nodiscard]] std::optional<std::vector<std::byte>> RunUnaryKernel(
     const platform::GpuContext& ctx,
     std::string_view wgsl_source,

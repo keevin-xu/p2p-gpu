@@ -79,6 +79,90 @@ void MapThunk(WGPUMapAsyncStatus status, WGPUStringView, void* ud, void*) {
 
 }  // namespace
 
+namespace {
+
+struct ErrorScopeResult {
+    bool done = false;
+    bool had_error = false;
+    std::string message;
+};
+
+void ErrorScopeThunk(WGPUPopErrorScopeStatus, WGPUErrorType type,
+                     WGPUStringView message, void* user1, void*) {
+    auto* r = static_cast<ErrorScopeResult*>(user1);
+    r->had_error = (type != WGPUErrorType_NoError);
+    // This file keeps its own tiny string helpers (see `Str` above) rather
+    // than pulling in wgpu_util.hpp; `length` may be WGPU_STRLEN, meaning the
+    // view happens to be NUL-terminated after all, so both cases need handling.
+    if (message.data != nullptr) {
+        r->message = (message.length == WGPU_STRLEN)
+                         ? std::string(message.data)
+                         : std::string(message.data, message.length);
+    }
+    r->done = true;
+}
+
+}  // namespace
+
+bool CompileKernel(const platform::GpuContext& ctx, std::string_view wgsl_source,
+                   std::string_view entry_point) {
+    if (!ctx.valid()) {
+        return false;
+    }
+
+    // ── AN ERROR SCOPE, BECAUSE THE HANDLES LIE ─────────────────────────
+    // The first version of this function checked the returned handles for null
+    // and returned true otherwise. It reported SUCCESS for the literal string
+    // "this is not wgsl" — WebGPU surfaces validation failures through the
+    // asynchronous error callback and still hands back a non-null object, so
+    // there is nothing at the call site to see.
+    //
+    // Caught by the deliberately-broken case in tests/kernels/test_compile.cpp
+    // on its first run. Without that case this would have been a compile check
+    // that could not fail, which is exactly D-0067's shape.
+    wgpuDevicePushErrorScope(ctx.device, WGPUErrorFilter_Validation);
+
+    WGPUShaderSourceWGSL wgsl{};
+    wgsl.chain.sType = WGPUSType_ShaderSourceWGSL;
+    wgsl.code = Str(wgsl_source);
+
+    WGPUShaderModuleDescriptor module_desc{};
+    module_desc.nextInChain = &wgsl.chain;
+    module_desc.label = Str("p2pgpu-compile-check");
+    ShaderModule module{wgpuDeviceCreateShaderModule(ctx.device, &module_desc)};
+
+    // The PIPELINE too, inside the same scope: a module can compile while its
+    // entry point is missing or its bindings do not form a valid layout, and
+    // those are the failures that would otherwise surface on a stranger's GPU.
+    ComputePipeline pipeline;
+    if (module) {
+        const std::string entry{entry_point};
+        WGPUComputePipelineDescriptor pipe_desc{};
+        pipe_desc.label = Str("p2pgpu-compile-check");
+        pipe_desc.compute.module = module.get();
+        pipe_desc.compute.entryPoint = Str(entry);
+        pipeline = ComputePipeline{
+            wgpuDeviceCreateComputePipeline(ctx.device, &pipe_desc)};
+    }
+
+    ErrorScopeResult scope;
+    WGPUPopErrorScopeCallbackInfo cb{};
+    cb.mode = WGPUCallbackMode_AllowProcessEvents;
+    cb.callback = ErrorScopeThunk;
+    cb.userdata1 = &scope;
+    (void)wgpuDevicePopErrorScope(ctx.device, cb);
+
+    if (!platform::WaitUntil(ctx, [&] { return scope.done; })) {
+        Log("error", "compile check: error scope timed out");
+        return false;
+    }
+    if (scope.had_error) {
+        Log("error", "kernel failed to compile: " + scope.message);
+        return false;
+    }
+    return module && pipeline;
+}
+
 std::optional<std::vector<std::byte>> RunUnaryKernel(
     const platform::GpuContext& ctx,
     std::string_view wgsl_source,

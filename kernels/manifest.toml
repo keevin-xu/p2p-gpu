@@ -97,17 +97,20 @@ r5_note = """
 #     adaptive sampling doubles the payload and HALVES the ratio. Anything
 #     wanting per-pixel side data must re-run the gate first.
 #
-# (d) min_iterations BELOW IS PROVISIONAL. F is estimated from the intended
-#     algorithm (~5e3, honest range 1.1e3-1e4, spread dominated by BVH depth
-#     in a scene that does not exist yet). Once pathtrace_tile.wgsl exists,
-#     COUNT F FROM SOURCE the way brute_search's flop_per_unit=80 was counted,
-#     then re-derive:
+# (d) F IS NOW COUNTED FROM SOURCE (D-0071), not estimated: 2,240 on a shallow
+#     tree, 5,000 on the default scene, 7,120 on the dense one. D-0068's
+#     pessimistic guess of 1.1e3 was too low — `rand_f32` costs 27 ops because
+#     it chains three PCG hashes, which is the price of K2's cross-device
+#     identical sampling.
 #
-#         min_iterations := 4 x (1.6e7 / F_measured)      # 4x over the gate
+#     min_iterations = 32,768 gives 4.6x over the gate at the WORST modelled
+#     scene, 10x on the default one. The rule if F changes:
 #
-#     32,768 was chosen to clear the gate even at the PESSIMISTIC end of F
-#     (2.2x at F=1.1e3; 10x at F=5e3). KERNELS.md's 100,000 is illustrative,
-#     not derived — roughly 7x above the floor even pessimistically.
+#         min_iterations := 4 x (1.6e7 / F)               # 4x over the gate
+#
+#     STILL NOT A MEASUREMENT. Box tests per ray are estimated; only a real
+#     instrumented render settles them (5.12/5.21). KERNELS.md's 100,000 is
+#     illustrative, not derived.
 #
 # (e) A WORK UNIT IS ONE SAMPLE OF THE WHOLE TILE, so unit_count == spp and
 #     r5_min_units IS the R5 floor directly — one meaning of "unit" across the
@@ -128,11 +131,16 @@ r5_note = """
 # output_dtype    = "f32"
 # param_layout    = "PathTraceParams"
 # accumulates     = true
-# min_iterations  = 32768          # PROVISIONAL until F is counted from source
-# flop_per_unit   = 20480000       # 4096 px x F(=5e3), ESTIMATED
-# r5_min_units    = 14545          # R5 floor at the PESSIMISTIC F=1.1e3
+# min_iterations  = 32768          # 4.6x over R5 at the worst modelled scene
+# flop_per_unit   = 20480000       # 4096 px x F(=5e3), counted from source
+# r5_min_units    = 7143           # R5 floor at the counted worst case F=2240
 # r5_ratio        = 1.02e7         # at min_iterations, central F
-# r5_note         = "see D-0068 and the derivation above"
+# r5_note         = "see D-0068 (gate) and D-0071 (counted F)"
+#
+# STILL COMMENTED OUT: the kernel needs three read-only storage bindings and
+# the host binds two (params + output). Registering it now would advertise a
+# kernel in `Welcome` that no worker can execute. Uncomment at 5.12, which is
+# step 5.10.
 
 # ── Calibration — added in step 0.10 ─────────────────────────────────────
 # The join-time benchmark kernel. Compute-bound with an exactly known FLOP
