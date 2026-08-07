@@ -202,6 +202,23 @@ jobs:
           ./build/linux-fuzz/fuzz_protocol fuzz/corpus/protocol/ \
             -max_total_time=60 -print_final_stats=1
 
+      # The SAME treatment for the asset target (4.13). It guards
+      # `PROTOCOL.md` invariant 10 — the `index * kChunkBytes` overflow site —
+      # and Phase 6 makes that path live. Fuzzing it only when someone
+      # remembers is how it arrives untested.
+      #
+      # Its harness carries an ORACLE, not just a crash check: unsigned
+      # multiplication wraps by definition, so a wrapped offset is a wrong
+      # value that no sanitizer reports. Replay would pass a real bug without
+      # it.
+      - name: Replay the committed asset corpus
+        run: ./build/linux-fuzz/fuzz_asset fuzz/corpus/asset/ -runs=0
+
+      - name: Fuzz assets for 60s
+        run: |
+          ./build/linux-fuzz/fuzz_asset fuzz/corpus/asset/ \
+            -max_total_time=60 -print_final_stats=1
+
       # A crash here is the whole point of the job, so keep the input. Per
       # CONVENTIONS.md §7 T4 it then gets committed as a regression seed — by a
       # human, deliberately, not by this workflow.

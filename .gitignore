@@ -55,4 +55,14 @@ oom-*
 !README.md
 results/
 fuzz/dist/
-fuzz/corpus/
+
+# fuzz/corpus/ is deliberately NOT ignored. It IS the regression net: CI replays
+# every committed seed with -runs=0 on each push, and R11 states outright that
+# the corpus is committed.
+#
+# It was ignored until 2026-08-06, and 125 protocol seeds only existed in git
+# because someone once force-added them. Every entry found since — 295 from the
+# 4.12 campaign, plus the entire 4.13 asset corpus — was silently dropped, so
+# CI's net was frozen at the original seeds while the logs reported half a
+# billion executions. Same shape as the `*.md` mistake noted above: an ignore
+# rule quietly excluding the thing it was protecting.
