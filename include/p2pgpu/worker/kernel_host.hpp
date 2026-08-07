@@ -84,7 +84,29 @@ struct TaskRequest {
     std::uint64_t start_unit = 0;
     std::uint64_t unit_count = 0;
     std::uint32_t output_bytes = 0;
-    std::uint32_t workgroup_size = 64;
+
+    /// Workgroup dimensions, matching the kernel's `@workgroup_size`.
+    std::uint32_t workgroup_size = 64;    ///< x
+    std::uint32_t workgroup_size_y = 1;   ///< y
+
+    /// ── INVOCATION GRID, WHEN UNITS ARE NOT INVOCATIONS ─────────────────
+    ///
+    /// Zero (the default) means the `brute_search_v1` model: **one invocation
+    /// per unit**, so the grid shrinks with the chunk. That mapping was implicit
+    /// in the host from 1.19 until 5.12, because it was true of the only kernel
+    /// that existed.
+    ///
+    /// It is not true in general. For `pathtrace_tile_v1` a unit is one SAMPLE
+    /// of the whole tile while the invocation grid is PIXELS — fixed, and
+    /// completely independent of how the sample range was chunked. Deriving the
+    /// grid from the chunk there dispatched a fraction of the tile and left the
+    /// rest of the accumulator untouched; the kernel bounds-checks its own
+    /// overhang, so nothing failed, it simply rendered part of the image.
+    ///
+    /// Set these to state the grid explicitly. The host still applies K4's
+    /// `maxComputeWorkgroupsPerDimension` clamp to whatever it is given.
+    std::uint32_t invocations_x = 0;
+    std::uint32_t invocations_y = 1;
 
     /// Initial bytes of the result buffer, written ONCE PER TASK.
     ///
@@ -96,6 +118,20 @@ struct TaskRequest {
     ///
     /// Empty means zero-filled.
     std::span<const std::byte> output_init;
+
+    /// Read-only storage inputs, bound at bindings 2, 3, 4… IN ORDER (D-0072).
+    ///
+    /// The host attaches NO meaning to these — it uploads each span to a buffer
+    /// and binds it. Turning one fetched asset into this list is the caller's
+    /// job, because that is the only place that knows the asset's shape, and
+    /// keeping the knowledge out of here is what preserves D-0033's
+    /// kernel-agnostic host.
+    ///
+    /// Binding 0 is params and binding 1 is the output; inputs therefore start
+    /// at 2, and a kernel's WGSL must agree. Nothing checks that agreement at
+    /// runtime — a mismatch is a pipeline creation failure, which is why
+    /// `CompileKernel` builds the pipeline rather than just the module.
+    std::span<const std::span<const std::byte>> inputs;
 };
 
 /// Facts about an execution. Reported to the coordinator; NEVER used to decide

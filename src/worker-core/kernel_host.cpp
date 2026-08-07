@@ -539,19 +539,61 @@ std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
         return std::nullopt;
     }
 
-    WGPUBindGroupEntry entries[2]{};
+    // ── read-only storage inputs, bound at 2, 3, 4… (D-0072) ──
+    //
+    // Uploaded ONCE per task, before the chunk loop: a BVH is the same for
+    // every chunk, and re-uploading megabytes per dispatch would put transfer
+    // back into the inner loop that R5's whole argument is about keeping
+    // compute-bound.
+    //
+    // The host attaches no meaning to these. Slicing one fetched asset into
+    // this list is the caller's job — see the header.
+    std::vector<Buffer> input_buffers;
+    input_buffers.reserve(req.inputs.size());
+    for (const std::span<const std::byte>& bytes : req.inputs) {
+        if (bytes.empty()) {
+            Log("error", "an input buffer is empty; refusing to bind it");
+            return std::nullopt;
+        }
+        if (bytes.size() > limits.maxStorageBufferBindingSize) {
+            // K4: the device's REAL limit, queried, not a hardcoded guess. This
+            // is the check that fires on a stranger's low-end GPU.
+            Log("error", "input buffer exceeds maxStorageBufferBindingSize (" +
+                             std::to_string(bytes.size()) + " > " +
+                             std::to_string(limits.maxStorageBufferBindingSize) + ")");
+            return std::nullopt;
+        }
+        WGPUBufferDescriptor desc{};
+        desc.label = Str("p2pgpu-task-input");
+        desc.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
+        desc.size = bytes.size();
+        Buffer buf{wgpuDeviceCreateBuffer(ctx.device, &desc)};
+        if (!buf) {
+            Log("error", "input buffer allocation failed");
+            return std::nullopt;
+        }
+        wgpuQueueWriteBuffer(ctx.queue, buf.get(), 0, bytes.data(), bytes.size());
+        input_buffers.push_back(std::move(buf));
+    }
+
+    std::vector<WGPUBindGroupEntry> entries(2 + input_buffers.size());
     entries[0].binding = 0;
     entries[0].buffer = params_buf.get();
     entries[0].size = params_bytes;
     entries[1].binding = 1;
     entries[1].buffer = out_buf.get();
     entries[1].size = req.output_bytes;
+    for (std::size_t i = 0; i < input_buffers.size(); ++i) {
+        entries[2 + i].binding = static_cast<std::uint32_t>(2 + i);
+        entries[2 + i].buffer = input_buffers[i].get();
+        entries[2 + i].size = req.inputs[i].size();
+    }
 
     WGPUBindGroupDescriptor bg_desc{};
     bg_desc.label = Str("p2pgpu-task-bindgroup");
     bg_desc.layout = layout.get();
-    bg_desc.entryCount = 2;
-    bg_desc.entries = entries;
+    bg_desc.entryCount = entries.size();
+    bg_desc.entries = entries.data();
 
     BindGroup bind_group{wgpuDeviceCreateBindGroup(ctx.device, &bg_desc)};
     if (!bind_group) {
@@ -606,10 +648,20 @@ std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
             wgpuComputePassEncoderSetBindGroup(pass.get(), 0, bind_group.get(), 0, nullptr);
             // Round up; the kernel bounds-checks the overhang against
             // unit_count rather than the dispatch size (K1).
-            const std::uint64_t groups =
-                (units + req.workgroup_size - 1) / req.workgroup_size;
+            //
+            // WHICH COUNT drives the grid is kernel-dependent, and assuming it
+            // was always `units` was wrong — see TaskRequest::invocations_x. A
+            // zero means the one-invocation-per-unit model; anything else is a
+            // fixed grid that does not shrink with the chunk.
+            const std::uint64_t span_x =
+                req.invocations_x != 0 ? req.invocations_x : units;
+            const std::uint64_t groups_x =
+                (span_x + req.workgroup_size - 1) / req.workgroup_size;
+            const std::uint64_t groups_y =
+                (req.invocations_y + req.workgroup_size_y - 1) / req.workgroup_size_y;
             wgpuComputePassEncoderDispatchWorkgroups(
-                pass.get(), static_cast<std::uint32_t>(groups), 1, 1);
+                pass.get(), static_cast<std::uint32_t>(groups_x),
+                static_cast<std::uint32_t>(groups_y), 1);
             wgpuComputePassEncoderEnd(pass.get());
         }
 
