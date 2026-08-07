@@ -1,10 +1,10 @@
 # p2pgpu step 0.16 - TDR probe (browser)
 # DELIBERATELY violates R4 to test its premise. Dev-only.
 multiplier,iterations,max_chunk_ms,device_lost
-1,32768,250.575104,0
-2,65536,488.464896,0
-4,131072,964.114944,0
-8,262144,1915.569664,0
+1,32768,251.924992,0
+2,65536,487.879936,0
+4,131072,963.414784,0
+8,262144,1931.240192,0
 16,524288,,1
 # result=tdr_fired
 # recovered_after_tdr=no

@@ -265,3 +265,46 @@ TEST_CASE("the last task of a job is still whatever remains", "[sizer]") {
     // unaffected (D-0043's rule order).
     CHECK(ComputeTaskSize(in) == 500);
 }
+
+// ── D-0064 — the correction must be able to express real hardware ────────
+
+TEST_CASE("the correction can express a browser on a discrete GPU", "[sizer]") {
+    // 4.17: a browser benchmarked at 2.01e12 ops/s and could not finish a task.
+    // It needs ~45x (D-0026's browser submission cost) compounded with the
+    // 11.5x per-chunk penalty 0.16 measured on that card. At the old 10x
+    // ceiling the estimator could not represent it, so every task expired and
+    // the worker never completed one to learn from.
+    double c = 1.0;
+    for (int i = 0; i < 40; ++i) {
+        c = UpdateCorrection(c, /*predicted_ms=*/100.0, /*actual_ms=*/5000.0);
+    }
+    CHECK(c > 10.0);          // the old ceiling
+    CHECK(c <= kMaxCorrection);
+    // Converging toward the true ratio (50x), not parked at a limit.
+    CHECK(c > 40.0);
+}
+
+TEST_CASE("the correction still refuses absurd values", "[sizer]") {
+    // The clamp exists to reject nonsense, and raising it must not remove that.
+    double c = 1.0;
+    for (int i = 0; i < 200; ++i) {
+        c = UpdateCorrection(c, 1.0, 1.0e9);
+    }
+    CHECK(c <= kMaxCorrection);
+}
+
+TEST_CASE("an over-granted worker recovers to a sane task size", "[sizer]") {
+    // The consequence that matters: after correcting, the task must actually
+    // shrink enough to finish inside a lease.
+    SizingInputs in;
+    in.score = 2.51e10;        // units/s the browser CLAIMED
+    in.target_ms = 2000;
+    in.lease_ms = 20000;
+    in.remaining_units = 5'000'000'000ULL;
+    in.correction = 50.0;      // what it actually needs
+
+    const std::uint64_t units = ComputeTaskSize(in);
+    const double real_rate = 2.51e10 / 50.0;      // its true throughput
+    const double seconds = static_cast<double>(units) / real_rate;
+    CHECK(seconds < 20.0);     // fits the lease, which it did not before
+}

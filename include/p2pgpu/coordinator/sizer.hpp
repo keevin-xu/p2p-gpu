@@ -111,6 +111,15 @@ inline constexpr std::uint64_t kProbeDivisor = 8;
 /// the CPU reference.
 inline constexpr std::uint64_t kMaxUnitsPerTask = 0xFFFFFFFFULL;
 
+/// Bounds on the 2.13 correction factor (D-0064).
+///
+/// The ceiling rejects absurd values; it is not meant to bound legitimate ones.
+/// It was 10.0 until 4.17, where a browser on a discrete GPU needed more than
+/// that — and because it could not be expressed, every task expired and the
+/// worker never completed one to correct from.
+inline constexpr double kMinCorrection = 0.1;
+inline constexpr double kMaxCorrection = 1000.0;
+
 [[nodiscard]] std::uint64_t ComputeTaskSize(const SizingInputs& in) noexcept;
 
 /// Update a worker's correction factor from one completed task (2.13).

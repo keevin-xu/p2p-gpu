@@ -94,10 +94,15 @@ double UpdateCorrection(double current, double predicted_ms, double actual_ms,
     // push the correction so high it is granted single-digit units forever —
     // one bad sample must not permanently exile a machine (R8's spirit: a
     // hiccup is not a verdict).
-    const double clamped = std::clamp(ratio, 0.1, 10.0);
+    // Ceiling 1000, not 10 (D-0064). A browser on a discrete GPU measured
+    // needing MORE than 10x — the benchmark overstates it ~45x (D-0026) and the
+    // 1650 Super's per-chunk cost is 11.5x the Mac's (0.16) — so at 10x the
+    // estimator could not express reality, every task expired, and the worker
+    // never completed one to learn from.
+    const double clamped = std::clamp(ratio, kMinCorrection, kMaxCorrection);
     const double a = std::clamp(alpha, 0.0, 1.0);
     const double next = (1.0 - a) * current + a * clamped;
-    return std::clamp(next, 0.1, 10.0);
+    return std::clamp(next, kMinCorrection, kMaxCorrection);
 }
 
 }  // namespace p2pgpu::coordinator
