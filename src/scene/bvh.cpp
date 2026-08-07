@@ -424,7 +424,19 @@ protocol::Result<Bvh> LoadBvh(std::span<const std::byte> bytes) {
             // rather than merely unlikely. A cycle would spin the GPU traversal
             // loop forever, and R4's chunking cannot interrupt a running shader
             // — the worker would hang with no path back (D-0069).
-            if (n.left_or_first <= i || n.left_or_first + 1 >= h.node_count) {
+            // 64-BIT, and this is not defensive style — it is the bug.
+            // `n.left_or_first + 1` in 32 bits WRAPS at 0xFFFFFFFF, so the
+            // comparison became `0 >= node_count`, which is false, and a child
+            // index of 0xFFFFFFFF passed validation and was then used to index
+            // `in_degree`. Found by `fuzz_bvh` in a 120-second campaign.
+            //
+            // THIRD TIME THIS CLASS HAS APPEARED: unsigned arithmetic wraps by
+            // definition, so it is not UB, no sanitizer fires at the wrap, and
+            // a wrong VALUE flows onward to be trusted. `ChunkOffset` (4.13) and
+            // the section arithmetic above are the other two. Any expression
+            // combining an attacker-supplied u32 with a bound belongs in 64-bit.
+            const auto left = static_cast<std::uint64_t>(n.left_or_first);
+            if (left <= i || left + 1 >= h.node_count) {
                 return MakeError(ErrorCode::Internal,
                                  "bvh: a child index is out of range or does not increase");
             }
@@ -445,6 +457,47 @@ protocol::Result<Bvh> LoadBvh(std::span<const std::byte> bytes) {
         if (bvh.materials[i].kind > static_cast<std::uint32_t>(MaterialKind::Emissive)) {
             return MakeError(ErrorCode::Internal,
                              "bvh: a material has an unknown kind");
+        }
+    }
+
+    // ── IT MUST BE A TREE, NOT MERELY ACYCLIC ────────────────────────────
+    // Strictly-increasing child indices make a CYCLE unrepresentable, and that
+    // was originally assumed to be enough. It is not: nothing above stops two
+    // parents naming the SAME child. Indices still increase, traversal still
+    // terminates, no read goes out of bounds, and every check above passes.
+    //
+    // What it costs is exponential: a diamond-shaped DAG where nodes share
+    // children makes a traversal visit 2^depth paths. That is a GPU hang by a
+    // different route than a cycle, and R4's chunking cannot interrupt this one
+    // either — a shader is not preemptible once dispatched.
+    //
+    // FOUND BY `fuzz_bvh`, in the first 60-second campaign against the finished
+    // loader, by the contract oracle rather than by a sanitizer — there is
+    // nothing here for ASan to see. In-degree exactly 0 for the root and at
+    // most 1 for everything else is what makes it a tree.
+    std::vector<std::uint8_t> in_degree(h.node_count, 0);
+    for (std::uint32_t i = 0; i < h.node_count; ++i) {
+        const BvhNode& n = bvh.nodes[i];
+        if ((n.count_and_leaf & kLeafFlag) != 0) {
+            continue;
+        }
+        for (const std::uint32_t child : {n.left_or_first, n.left_or_first + 1}) {
+            if (child == 0 || in_degree[child] != 0) {
+                return MakeError(ErrorCode::Internal,
+                                 "bvh: a node has two parents, or the root is a "
+                                 "child — the graph is not a tree");
+            }
+            in_degree[child] = 1;
+        }
+    }
+    // Every node except the root must be reachable. An unreferenced node is not
+    // dangerous, but it means the blob carries something the tree does not use,
+    // which is a decoded-size discrepancy an attacker chose — reject rather than
+    // wonder about it later.
+    for (std::uint32_t i = 1; i < h.node_count; ++i) {
+        if (in_degree[i] == 0) {
+            return MakeError(ErrorCode::Internal,
+                             "bvh: a node is unreachable from the root");
         }
     }
 

@@ -238,6 +238,23 @@ jobs:
           ./build/linux-fuzz/fuzz_asset fuzz/corpus/asset/ \
             -max_total_time=60 -print_final_stats=1
 
+      # Step 5.5 — the BVH loader. It stands in for flatbuffers::Verifier on the
+      # asset path (D-0069) and its output becomes GPU array indices, so it is
+      # the one parser here that nobody upstream has already fuzzed for us.
+      #
+      # Its harness asserts the CONTRACT — every returned index in range, graph
+      # is a tree — rather than watching for crashes. That distinction is not
+      # theoretical: of the two real defects it found on first run, one (a DAG
+      # with shared children, exponential traversal cost) has nothing for a
+      # sanitizer to see at all. D-0070.
+      - name: Replay the committed BVH corpus
+        run: ./build/linux-fuzz/fuzz_bvh fuzz/corpus/bvh/ -runs=0
+
+      - name: Fuzz the BVH loader for 60s
+        run: |
+          ./build/linux-fuzz/fuzz_bvh fuzz/corpus/bvh/ \
+            -max_total_time=60 -print_final_stats=1
+
       # A crash here is the whole point of the job, so keep the input. Per
       # CONVENTIONS.md §7 T4 it then gets committed as a regression seed — by a
       # human, deliberately, not by this workflow.

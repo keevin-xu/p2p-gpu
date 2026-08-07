@@ -39,6 +39,20 @@ p2pgpu_add_fuzzer(fuzz_protocol fuzz_protocol.cpp)
 # the path, and expensive once a data plane is running on it.
 p2pgpu_add_fuzzer(fuzz_asset fuzz_asset.cpp)
 
-# Phase 4 step 4.13 — asset chunk reassembly. Needed BEFORE Phase 6 makes that
-# path live, since peer-supplied bytes are the least trusted input in the system.
-# p2pgpu_add_fuzzer(fuzz_asset fuzz_asset.cpp)
+# Step 5.5 — the BVH asset loader. This one is OURS: every other input on the
+# network is checked by flatbuffers::Verifier, which libFuzzer has already
+# hammered through fuzz_protocol. `LoadBvh` replaces the Verifier on the asset
+# path (D-0069) and its output becomes GPU array indices, so it gets its own
+# target with a CONTRACT ORACLE rather than a crash check — see the harness.
+p2pgpu_add_fuzzer(fuzz_bvh fuzz_bvh.cpp)
+# p2pgpu-scene already links p2pgpu-protocol publicly; naming both here
+# produced a duplicate-library link warning.
+target_link_libraries(fuzz_bvh PRIVATE p2pgpu-scene)
+
+# Seed generator. The loader rejects anything without a well-formed 64-byte
+# header, so a mutation-only run from nothing never gets past the first `if`
+# and would report a clean campaign having tested one branch.
+add_executable(make_bvh_corpus make_bvh_corpus.cpp)
+set_target_properties(make_bvh_corpus PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+target_link_libraries(make_bvh_corpus PRIVATE p2pgpu-scene)
