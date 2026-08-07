@@ -437,6 +437,34 @@ void Server::Run() {
                                             blob->size()));
              })
 
+        // The composited image (5.15), for the dashboard's progressive display
+        // (5.16) and the demo capture (5.23).
+        //
+        // RAW RGBA8 behind a 16-byte header rather than PNG: a PNG encoder is a
+        // dependency (or ~200 lines of DEFLATE) to produce something the page
+        // immediately decodes back to exactly these bytes for a canvas. The
+        // stack table is short on purpose (D-0008).
+        //
+        // Explicitly NOT cacheable — the opposite of /asset/{hash}, and for the
+        // opposite reason: that URL names its own content and can never change,
+        // this one names a moment and changes every sweep.
+        .get("/render",
+             [this](auto* res, auto*) {
+                 const auto rgba = compositor_.RenderRgba();
+                 const auto& g = compositor_.grid();
+                 std::array<std::uint32_t, 4> head{0x50324752U, g.image_w, g.image_h, 0};
+                 std::string body(sizeof(head) + rgba.size(), '\0');
+                 std::memcpy(body.data(), head.data(), sizeof(head));
+                 if (!rgba.empty()) {
+                     std::memcpy(body.data() + sizeof(head), rgba.data(), rgba.size());
+                 }
+                 res->writeHeader("Content-Type", "application/octet-stream")
+                     ->writeHeader("Access-Control-Allow-Origin", "*")
+                     ->writeHeader("Cross-Origin-Resource-Policy", "cross-origin")
+                     ->writeHeader("Cache-Control", "no-store")
+                     ->end(body);
+             })
+
         .ws<SocketData>("/ws",
             {
                 .compression = uWS::DISABLED,

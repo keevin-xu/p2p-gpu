@@ -356,6 +356,7 @@ if(NOT P2PGPU_WASM)
     add_library(p2pgpu-coordinator-core STATIC
         src/coordinator/affinity.cpp
         src/coordinator/assets.cpp
+        src/coordinator/composite.cpp
         src/coordinator/event_log.cpp
         src/coordinator/quorum.cpp
         src/coordinator/reputation.cpp
@@ -395,6 +396,16 @@ if(NOT P2PGPU_WASM)
 
     # Thin main() over worker-core. If this grows past ~100 lines,
     # logic is leaking out of worker-core (R1).
+    # Dev tool (5.15): render a scene single-machine and write a PPM, so the
+    # image can be LOOKED AT. Every automated check compares numbers; a
+    # rendering bug that satisfies all of them still shows up instantly to an
+    # eye. Skeleton of 5.19's reference render.
+    add_executable(render-preview src/scene/render_preview.cpp)
+    target_link_libraries(render-preview PRIVATE
+        p2pgpu-worker-core p2pgpu-scene-hash p2pgpu-coordinator-core)
+    target_compile_definitions(render-preview PRIVATE
+        P2PGPU_KERNEL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/kernels")
+
     add_executable(worker-native src/worker-native/main.cpp)
     target_link_libraries(worker-native PRIVATE p2pgpu-worker-core CLI11::CLI11)
     # Dev convenience so the binary finds kernels/ without an argument. The

@@ -15,6 +15,7 @@
 #include <unordered_map>
 
 #include "p2pgpu/coordinator/assets.hpp"
+#include "p2pgpu/coordinator/composite.hpp"
 #include "p2pgpu/coordinator/job.hpp"
 #include "p2pgpu/coordinator/kernel_registry.hpp"
 #include "p2pgpu/coordinator/fleet.hpp"
@@ -185,6 +186,10 @@ private:
     Store* store_ = nullptr;
     /// Content-addressed bulk assets served over `GET /asset/{hash}` (5.4).
     AssetStore assets_;
+    /// The image under construction (5.15), served over `GET /render`.
+    /// Default-constructed to a zero-size grid, so a coordinator running a
+    /// non-rendering job serves an empty image rather than failing the route.
+    Compositor compositor_{TileGrid{}};
     ReputationTable reputation_;
     SpotCheckPool spot_checks_;
     QuorumConfig quorum_{};

@@ -1,0 +1,12 @@
+# p2pgpu step 0.11 - calibrate_v1 throughput (browser)
+# adapter=nvidia/turing/ backend=webgpu
+# features=timestamp-query,shader-f16,subgroups timestamp_query=yes
+invocations,iterations,dispatches,flops,wall_ms,gflops
+4096,2048,10,671088640,4.199680,159.795184
+16384,2048,10,2684354560,4.679936,573.587878
+65536,2048,10,10737418240,9.199872,1167.126917
+262144,2048,10,42949672960,31.000064,1385.470461
+1048576,2048,10,171798691840,80.724992,2128.197075
+4194304,2048,10,687194767360,304.045056,2260.174122
+# per_dispatch_overhead_us=8.840192
+# per_submit_overhead_us=4840.192000
