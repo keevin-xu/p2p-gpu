@@ -127,3 +127,63 @@ src.onmessage = (e) => {
 };
 
 src.onerror = () => { status.textContent = "reconnecting"; status.className = "down"; };
+
+// ── 5.16 — the progressive render ────────────────────────────────────────
+//
+// Polled rather than pushed. The SSE feed carries numbers, and a 300 KB image
+// on that channel every sweep would swamp it — and the two have genuinely
+// different natural rates: metrics matter every tick, the picture only needs to
+// look alive.
+//
+// Nothing here decides anything. The coordinator composites (R1); this blits
+// bytes to a canvas. If that ever stops being true, the page has grown a second
+// opinion about the image.
+const renderPanel = document.getElementById("render-panel");
+const renderCanvas = document.getElementById("render");
+const renderInfo = document.getElementById("render-info");
+const renderCtx = renderCanvas.getContext("2d");
+
+const RENDER_MAGIC = 0x50324752;   // "RG2P" little-endian
+let renderInFlight = false;
+
+async function pollRender() {
+  // Skip rather than queue. A slow fetch must not pile up requests behind it —
+  // that turns a briefly busy coordinator into an unbounded backlog.
+  if (renderInFlight) { return; }
+  renderInFlight = true;
+  try {
+    const res = await fetch(base + "/render", { cache: "no-store" });
+    if (!res.ok) { return; }
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength < 16) { return; }
+    const head = new DataView(buf, 0, 16);
+    if (head.getUint32(0, true) !== RENDER_MAGIC) { return; }
+    const w = head.getUint32(4, true);
+    const h = head.getUint32(8, true);
+    if (w === 0 || h === 0) { return; }
+    // The declared size must match the bytes that arrived. Trusting the header
+    // and constructing ImageData from a short buffer throws, which would kill
+    // the interval and freeze the picture on a stale frame.
+    if (buf.byteLength !== 16 + w * h * 4) { return; }
+
+    if (renderCanvas.width !== w || renderCanvas.height !== h) {
+      renderCanvas.width = w;
+      renderCanvas.height = h;
+    }
+    const pixels = new Uint8ClampedArray(buf, 16, w * h * 4);
+    renderCtx.putImageData(new ImageData(pixels, w, h), 0, 0);
+    renderPanel.hidden = false;
+    renderInfo.textContent = w + "x" + h;
+  } catch (err) {
+    // Same reasoning as the SSE handler: a transient failure must not stop the
+    // loop, or the image silently stops updating while everything else looks fine.
+    console.error("dashboard: render fetch failed", err);
+  } finally {
+    renderInFlight = false;
+  }
+}
+
+// 1 Hz. Fast enough to look live as tiles land, slow enough that the image is
+// not the dominant load on a coordinator whose actual job is scheduling.
+pollRender();
+setInterval(pollRender, 1000);

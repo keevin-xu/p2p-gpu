@@ -114,6 +114,18 @@
         10&times;, a value sitting exactly at 10 means the estimator has run out of room.
       </p>
     </main>
+    <!-- 5.16 — the progressive render. THE DEMO.
+         Hidden until the coordinator reports a non-zero image, so a dashboard
+         watching a non-rendering job shows no empty black box. -->
+    <section id="render-panel" hidden>
+      <h2>render <span id="render-info" class="note"></span></h2>
+      <canvas id="render" width="1" height="1"></canvas>
+      <p class="note">
+        Tiles appear as their results are <b>accepted</b>, never as they arrive
+        &mdash; an unvalidated payload must not reach the most persuasive surface
+        in the project. A black tile has no samples yet.
+      </p>
+    </section>
     <script src="dashboard.js"></script>
   </body>
 </html>

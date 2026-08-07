@@ -17,6 +17,7 @@
 #include "p2pgpu/coordinator/quorum.hpp"
 #include "p2pgpu/coordinator/reputation.hpp"
 #include "p2pgpu/coordinator/spot_check.hpp"
+#include "p2pgpu/coordinator/composite.hpp"
 #include "p2pgpu/coordinator/job.hpp"
 #include "p2pgpu/coordinator/fleet.hpp"
 #include "p2pgpu/coordinator/kernel_registry.hpp"
@@ -109,6 +110,11 @@ public:
     /// per session would only ever hold answers this worker itself produced.
     void SetSpotChecks(SpotCheckPool* pool) noexcept { spot_checks_ = pool; }
 
+    /// Where accepted render tiles go (5.15/5.16). Injected like the other
+    /// cross-cutting collaborators, so `Session` stays constructible without one
+    /// and every non-render test keeps working unchanged.
+    void SetCompositor(Compositor* c) noexcept { compositor_ = c; }
+
 private:
     /// The actual routing. `OnMessage` wraps this so revokes are appended to
     /// every reply without each handler having to remember.
@@ -139,6 +145,7 @@ private:
     std::uint64_t conn_id_ = 0;
     std::uint32_t lease_ms_ = 30000;
     ReferenceStats* reference_stats_ = nullptr;
+    Compositor* compositor_ = nullptr;
     EventLog* events_ = nullptr;
     ReputationTable* reputation_ = nullptr;
     QuorumConfig quorum_{};

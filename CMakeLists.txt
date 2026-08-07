@@ -389,6 +389,7 @@ if(NOT P2PGPU_WASM)
         src/coordinator/net.cpp
     )
     target_link_libraries(coordinator PRIVATE
+        p2pgpu-scene-hash
         p2pgpu-coordinator-core
         CLI11::CLI11
         unofficial::uwebsockets::uwebsockets)

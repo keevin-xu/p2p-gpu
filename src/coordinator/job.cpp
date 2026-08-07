@@ -13,7 +13,7 @@ using protocol::MakeError;
 }  // namespace
 
 JobId JobManager::CreateJob(std::string kernel_id, std::uint64_t total_units,
-                            std::uint64_t seed) {
+                            std::uint64_t seed, std::uint64_t units_per_group) {
     const JobId job_id{0, next_id_++};
     Job job;
     job.id = job_id;
@@ -21,6 +21,7 @@ JobId JobManager::CreateJob(std::string kernel_id, std::uint64_t total_units,
     job.seed = seed;
     job.total_units = total_units;
     job.next_unit = 0;
+    job.units_per_group = units_per_group;
     // NO tasks yet. They are carved by Grant, sized for whoever asks (D-0043).
     jobs_.emplace(job_id, std::move(job));
     MarkJobDirty(job_id);
@@ -221,6 +222,15 @@ std::optional<Task> JobManager::Grant(WorkerId worker, std::uint64_t now_ms,
         // which may be less than the R5 floor — correct, because the
         // alternative is leaving a remainder unsearched (D-0043).
         t.unit_count = std::min(units, job.remaining_units());
+        // Never across a group boundary (a TILE, for the path tracer). Applied
+        // AFTER the size and the remaining-units cap, so it can only ever
+        // shrink a task — it is a constraint on where a task may end, not a
+        // sizing input, and D-0043's rule order stays intact.
+        if (job.units_per_group != 0) {
+            const std::uint64_t offset_in_group = t.start_unit % job.units_per_group;
+            const std::uint64_t to_boundary = job.units_per_group - offset_in_group;
+            t.unit_count = std::min(t.unit_count, to_boundary);
+        }
         t.state = TaskState::Leased;
         t.holder = worker;
         t.lease_expires_at_ms = now_ms + lease_ms;

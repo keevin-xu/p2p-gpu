@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "p2pgpu/kernels/params.hpp"
+#include "p2pgpu/kernels/pathtrace_params.hpp"
 
 namespace p2pgpu::coordinator {
 namespace {
@@ -87,6 +88,72 @@ protocol::Result<std::vector<std::byte>> BuildParams(const KernelSpec& spec,
         p.target_bits = Mix32(job.seed) & p.mask;
         p.rounds = 8;  // must match the manifest's `rounds`
 
+        return ToBytes(p);
+    }
+
+    if (spec.param_layout == "PathTraceParams") {
+        if (!job.render) {
+            // LOUD. A render kernel on a job with no render config would
+            // otherwise produce a params blob of zeros — a 0x0 tile, a camera
+            // at the origin looking nowhere — and the worker would dutifully
+            // render nothing and report success.
+            return MakeError(ErrorCode::Internal,
+                             "pathtrace task on a job with no render config");
+        }
+        const RenderConfig& r = *job.render;
+        if (r.samples_per_tile == 0) {
+            return MakeError(ErrorCode::Internal, "render job has 0 samples per tile");
+        }
+
+        // The linearization: unit = tile_index * samples_per_tile + sample.
+        // `Job::units_per_group` guarantees a task never crosses a tile
+        // boundary, so this division is exact for the whole range.
+        const std::uint64_t tile_index = task.start_unit / r.samples_per_tile;
+        const std::uint64_t sample_offset = task.start_unit % r.samples_per_tile;
+        const auto tile = r.grid.TileAt(static_cast<std::uint32_t>(tile_index));
+        if (!tile) {
+            return MakeError(ErrorCode::Internal,
+                             "task maps to a tile outside the render grid");
+        }
+        if (sample_offset + task.unit_count > r.samples_per_tile) {
+            // Would mean the carve let a task cross a tile. Checked rather than
+            // assumed: the failure renders half a range into the wrong tile and
+            // still produces a well-formed accumulator of the right size, which
+            // nothing downstream could detect (the D-0040 shape).
+            return MakeError(ErrorCode::Internal,
+                             "task spans more than one tile");
+        }
+
+        kernels::PathTraceParams p{};
+        p.start_unit = static_cast<std::uint32_t>(sample_offset);
+        p.unit_count = static_cast<std::uint32_t>(task.unit_count);
+        p.tile_x = tile->x;
+        p.tile_y = tile->y;
+        p.tile_w = tile->w;
+        p.tile_h = tile->h;
+        p.image_w = r.grid.image_w;
+        p.image_h = r.grid.image_h;
+        for (int i = 0; i < 3; ++i) {
+            p.cam_origin[i] = r.cam_origin[i];
+            p.cam_lower_left[i] = r.cam_lower_left[i];
+            p.cam_horizontal[i] = r.cam_horizontal[i];
+            p.cam_vertical[i] = r.cam_vertical[i];
+        }
+        p.max_bounces = r.max_bounces;
+        p.rr_start_bounce = r.rr_start_bounce;
+        p.node_count = r.node_count;
+        p.prim_count = r.prim_count;
+        p.material_count = r.material_count;
+
+        // THE SEED IS PER-JOB, NOT PER-TASK — the opposite of brute_search.
+        //
+        // The kernel already keys its RNG on (seed, image pixel, absolute
+        // sample index), so two tasks covering different sample ranges of the
+        // same tile draw different numbers from one seed. Mixing the seed per
+        // task would instead make the samples depend on HOW THE RANGE WAS
+        // CARVED, and a replica sized differently would legitimately disagree —
+        // destroying K2 and with it the comparator's premise.
+        p.seed = Mix32(job.seed);
         return ToBytes(p);
     }
 

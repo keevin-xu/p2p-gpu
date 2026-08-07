@@ -227,6 +227,13 @@ private:
     /// Consecutive empty replies. Drives jittered exponential backoff (2.15) so
     /// a 200-worker fleet does not synchronise into a thundering herd against
     /// an empty queue (RISKS.md §2).
+    /// Can this worker obtain bulk assets (`TaskEnvelope.input_ref`)?
+    ///
+    /// FALSE until the asset transport lands. A task naming an asset is
+    /// REFUSED rather than attempted while this is false — running a kernel
+    /// whose storage bindings nothing supplies aborts the process rather than
+    /// returning a wrong answer (see HandleTaskGrant).
+    bool assets_available_ = false;
     std::uint32_t empty_replies_ = 0;
     /// Earliest time the next lease request may go out, under backoff.
     std::chrono::steady_clock::time_point next_action_{};

@@ -122,25 +122,28 @@ r5_note = """
 #     lease clamp, so leases must be revisited for accumulating kernels (5.13)
 #     or the sizer will produce tasks that outlive their own leases.
 #
-# [kernels.pathtrace_tile_v1]
-# file            = "pathtrace_tile.wgsl"
-# entry_point     = "main"
-# workgroup_size  = [8, 8, 1]
-# determinism     = "statistical"
-# output_bytes    = 65536          # 64x64 x vec4<f32>; LOCKED by the gate
-# output_dtype    = "f32"
-# param_layout    = "PathTraceParams"
-# accumulates     = true
-# min_iterations  = 32768          # 4.6x over R5 at the worst modelled scene
-# flop_per_unit   = 20480000       # 4096 px x F(=5e3), counted from source
-# r5_min_units    = 7143           # R5 floor at the counted worst case F=2240
-# r5_ratio        = 1.02e7         # at min_iterations, central F
-# r5_note         = "see D-0068 (gate) and D-0071 (counted F)"
-#
-# STILL COMMENTED OUT: the kernel needs three read-only storage bindings and
-# the host binds two (params + output). Registering it now would advertise a
-# kernel in `Welcome` that no worker can execute. Uncomment at 5.12, which is
-# step 5.10.
+[kernels.pathtrace_tile_v1]
+file            = "pathtrace_tile.wgsl"
+entry_point     = "main"
+workgroup_size  = [8, 8, 1]
+determinism     = "statistical"
+output_bytes    = 65536          # 64x64 x vec4<f32>; LOCKED by the gate
+output_dtype    = "f32"
+param_layout    = "PathTraceParams"
+accumulates     = true
+min_iterations  = 32768          # 4.6x over R5 at the worst modelled scene
+flop_per_unit   = 20480000       # 4096 px x F(=5e3), counted from source
+r5_min_units    = 7143           # R5 floor at the counted worst case F=2240
+r5_ratio        = 1.02e7         # at min_iterations, central F
+r5_note = """
+REGISTERED at step 5.10, once 5.12 landed the three read-only storage bindings
+this kernel needs. Before that it stayed commented out deliberately: a kernel in
+the registry is advertised in `Welcome`, and advertising one no worker can
+execute makes every grant fail with "kernel is not in the registry".
+
+The R5 derivation is D-0068 (the gate, and why tile size cancels out of it) and
+D-0071 (F counted from the WGSL rather than estimated).
+"""
 
 # ── Calibration — added in step 0.10 ─────────────────────────────────────
 # The join-time benchmark kernel. Compute-bound with an exactly known FLOP

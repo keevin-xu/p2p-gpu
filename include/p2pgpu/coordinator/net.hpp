@@ -114,6 +114,12 @@ public:
     }
     [[nodiscard]] const AssetStore& assets() const noexcept { return assets_; }
 
+    /// Configure the image this server is building (5.15). Must be called
+    /// before any worker connects, since sessions capture the compositor when
+    /// they are created.
+    void SetRenderGrid(TileGrid grid) { compositor_ = Compositor(grid); }
+    void SetRenderExposure(float e) { compositor_.SetExposure(e); }
+
     /// DEV ONLY (step 1.26): invoked once when every task is terminal, under
     /// --exit-when-complete. Returns the process exit code.
     using OnCompleteFn = std::function<int()>;

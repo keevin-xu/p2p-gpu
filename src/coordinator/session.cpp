@@ -561,9 +561,45 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
                 ob.add_dtype(wire::DType::U32);
                 auto os = ob.Finish();
 
+                // The bulk input this task reads, if the job has one. Struct
+                // fields must be created BEFORE the table builder opens.
+                std::optional<wire::Hash32> input;
+                if (job->input_ref) {
+                    // AssetId is 32 raw bytes; Hash32 is four u64 lanes. Built
+                    // by reading the bytes in a FIXED little-endian order
+                    // rather than memcpy-ing the array over the struct — the
+                    // struct's layout is the wire's business, and the two
+                    // agreeing today on arm64 says nothing about a big-endian
+                    // reader (the D-0027 lesson: "it works on our machines" is
+                    // not evidence about layout).
+                    const auto& id = *job->input_ref;
+                    std::array<std::uint64_t, 4> lanes{};
+                    for (std::size_t lane = 0; lane < 4; ++lane) {
+                        std::uint64_t v = 0;
+                        for (std::size_t byte = 0; byte < 8; ++byte) {
+                            v |= static_cast<std::uint64_t>(
+                                     std::to_integer<std::uint8_t>(id[lane * 8 + byte]))
+                                 << (byte * 8);
+                        }
+                        lanes[lane] = v;
+                    }
+                    input = wire::Hash32(lanes[0], lanes[1], lanes[2], lanes[3]);
+                }
+
                 wire::TaskEnvelopeBuilder tb(fbb);
                 tb.add_task_id(&tid);
                 tb.add_job_id(&jid);
+                if (input) {
+                    // TELLING THE WORKER IT NEEDS AN ASSET IS WHAT LETS IT
+                    // REFUSE CLEANLY. Without this field a worker runs a kernel
+                    // whose WGSL declares storage bindings nothing supplies —
+                    // observed at 5.16 bring-up as a Rust panic inside
+                    // wgpu-native that aborted the whole process. A worker that
+                    // cannot obtain the asset must release with
+                    // AssetUnavailable, which is exactly what that
+                    // ReleaseReason is for.
+                    tb.add_input_ref(&*input);
+                }
                 tb.add_kernel_id(kid);
                 tb.add_seed(job->seed);
                 tb.add_params(pv);
@@ -1013,6 +1049,33 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
             if (const Task* done = jobs_.Find(task_id); done != nullptr) {
                 spot_checks_->Remember(done->start_unit, done->unit_count,
                                        header.checksum());
+            }
+        }
+
+        // ── INTO THE IMAGE (5.15/5.16) ──────────────────────────────────
+        //
+        // BEFORE Finish, because Finish is what frees the task record this
+        // needs to locate the tile. Only a VALIDATED result reaches here: a
+        // tile composited from an unvalidated payload would put a liar's pixels
+        // on the demo, and the dashboard is the most persuasive surface in the
+        // project.
+        if (compositor_ != nullptr) {
+            if (const Task* done = jobs_.Find(task_id); done != nullptr) {
+                if (const Job* j = jobs_.FindJob(done->job);
+                    j != nullptr && j->render && j->render->samples_per_tile > 0) {
+                    const auto tile =
+                        done->start_unit / j->render->samples_per_tile;
+                    if (!compositor_->AcceptTile(static_cast<std::uint32_t>(tile),
+                                                 payload)) {
+                        // Never silent. A rejected tile means the payload size
+                        // disagrees with the grid, which is a real mismatch
+                        // between what the coordinator asked for and what came
+                        // back — and it would present as one stubbornly black
+                        // square in an otherwise converging image.
+                        spdlog::warn("composite_rejected task={} tile={} bytes={}",
+                                     task_id.lo(), tile, payload.size());
+                    }
+                }
             }
         }
 

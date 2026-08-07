@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "p2pgpu/coordinator/affinity.hpp"
+#include "p2pgpu/coordinator/composite.hpp"
 #include "p2pgpu/coordinator/task_state.hpp"
 #include "p2pgpu/protocol/error.hpp"
 #include "p2pgpu/protocol/ids.hpp"
@@ -76,6 +77,36 @@ struct Task {
     std::vector<WorkerId> prior_workers;
 };
 
+/// Everything a render job needs that a keyspace job does not (5.15/5.16).
+///
+/// Lives on the Job because it IS job configuration — the camera and the tile
+/// grid are chosen once when the render is submitted and every task of it reads
+/// the same values. Putting it here also keeps `BuildParams` a pure function of
+/// (spec, job, task), which is what makes a task's params reproducible from the
+/// job record alone after a restart.
+struct RenderConfig {
+    TileGrid grid;
+    /// Samples per tile for the whole render. Equals `Job::units_per_group`,
+    /// and the duplication is deliberate: the carve rule must not have to know
+    /// what a "tile" is (R1), while the params builder must.
+    std::uint64_t samples_per_tile = 0;
+
+    float cam_origin[3]{};
+    float cam_lower_left[3]{};
+    float cam_horizontal[3]{};
+    float cam_vertical[3]{};
+    std::uint32_t max_bounces = 8;
+    std::uint32_t rr_start_bounce = 3;
+
+    /// Section sizes of the BVH asset, so the kernel can bounds-check its own
+    /// traversal. Belt to `LoadBvh`'s braces — WGSL clamps an out-of-range
+    /// index rather than faulting, so a validator regression would otherwise
+    /// render a silently wrong image (D-0069).
+    std::uint32_t node_count = 0;
+    std::uint32_t prim_count = 0;
+    std::uint32_t material_count = 0;
+};
+
 struct Job {
     JobId id;
     std::string kernel_id;
@@ -89,12 +120,29 @@ struct Job {
     std::uint64_t total_units = 0;
     std::uint64_t next_unit = 0;
 
+    /// A task may never cross a multiple of this. 0 disables the constraint.
+    ///
+    /// The path tracer linearizes a 2D job — `unit = tile_index *
+    /// units_per_group + sample_offset` — so one task must belong to exactly
+    /// ONE tile. A task spanning two tiles would carry a single set of tile
+    /// coordinates and render the wrong half of its range into the wrong place,
+    /// and the result would still be a well-formed accumulator of the right
+    /// size. Nothing downstream could detect it (the D-0040 shape).
+    ///
+    /// Enforced at the CARVE, not by asking the sizer to cooperate: the sizer
+    /// answers "how much work suits this worker" and has no business knowing
+    /// about tiles (R1, and the D-0043 rule order).
+    std::uint64_t units_per_group = 0;
+
     /// The bulk input every task of this job reads, if any (2.16).
     ///
     /// Always absent today: nothing creates assets until Phase 6. It is a real
     /// field rather than a placeholder so the affinity path in `Grant` is the
     /// same code before and after assets exist (D-0047).
     std::optional<AssetId> input_ref;
+
+    /// Present only for render jobs (5.15). Absent means a plain keyspace job.
+    std::optional<RenderConfig> render;
 
     /// Tasks carved so far. Grows as the job runs; empty at creation.
     std::vector<TaskId> tasks;
@@ -115,7 +163,8 @@ public:
     /// they are carved on demand by `Grant` (D-0043), because a task's size
     /// depends on which worker asks for it.
     [[nodiscard]] JobId CreateJob(std::string kernel_id, std::uint64_t total_units,
-                                  std::uint64_t seed);
+                                  std::uint64_t seed,
+                                  std::uint64_t units_per_group = 0);
 
     /// Hand `worker` a task of `units` work, or nullopt if there is nothing to
     /// give.

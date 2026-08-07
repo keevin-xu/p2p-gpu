@@ -20,6 +20,8 @@
 #include <memory>
 
 #include "p2pgpu/coordinator/net.hpp"
+#include "p2pgpu/scene/bvh.hpp"
+#include "p2pgpu/scene/scene.hpp"
 
 int main(int argc, char** argv) {
     p2pgpu::coordinator::Config cfg;
@@ -48,8 +50,20 @@ int main(int argc, char** argv) {
     // without this there is no way to put a job in the queue at all. Kept
     // deliberately crude so nobody mistakes it for the real interface.
     std::string seed_kernel;
+    std::string seed_render_scene;
+    std::string render_size = "384x256";
+    std::uint64_t render_spp = 512;
+    p2pgpu::coordinator::TileGrid render_grid{};
+    std::vector<std::byte> render_asset;
     std::uint64_t seed_units = 4'000'000;
     std::uint32_t seed_tasks = 4;
+    app.add_option("--seed-render", seed_render_scene,
+                   "DEV ONLY: queue a path-trace render of this .scene file")
+        ->check(CLI::ExistingFile);
+    app.add_option("--render-size", render_size,
+                   "DEV ONLY: WxH for --seed-render")->capture_default_str();
+    app.add_option("--render-spp", render_spp,
+                   "DEV ONLY: samples per pixel for --seed-render")->capture_default_str();
     app.add_option("--seed-job", seed_kernel,
                    "DEV ONLY: queue one job for this kernel id at startup");
     app.add_option("--seed-units", seed_units, "units in the seeded job")
@@ -153,6 +167,81 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // ── DEV: queue a render (5.15/5.16) ──────────────────────────────────
+    if (!seed_render_scene.empty()) {
+        // Refuse rather than queue work no worker can run — the SAME guard
+        // --seed-job has, and its absence here produced a job that carved tasks
+        // forever while every grant died with "kernel is not in the registry".
+        // The 5.15 bring-up hit exactly that; D-0066's stall detector named the
+        // symptom correctly, but the coordinator should never have started.
+        if (registry->Find("pathtrace_tile_v1") == nullptr) {
+            spdlog::error("--seed-render needs pathtrace_tile_v1 in "
+                          "kernels/manifest.toml, and it is not there");
+            return 1;
+        }
+        std::size_t bad_line = 0;
+        auto scene = p2pgpu::scene::LoadSceneFile(seed_render_scene, &bad_line);
+        if (!scene) {
+            spdlog::error("scene {}: {} (line {})", seed_render_scene,
+                          scene.error().message, bad_line);
+            return 1;
+        }
+        const auto blob = p2pgpu::scene::SerializeBvh(p2pgpu::scene::BuildBvh(*scene));
+        auto bvh = p2pgpu::scene::LoadBvh(blob);
+        if (!bvh) {
+            spdlog::error("bvh: {}", bvh.error().message);
+            return 1;
+        }
+
+        std::uint32_t w = 384;
+        std::uint32_t h = 256;
+        if (const auto x = render_size.find('x'); x != std::string::npos) {
+            w = static_cast<std::uint32_t>(std::stoul(render_size.substr(0, x)));
+            h = static_cast<std::uint32_t>(std::stoul(render_size.substr(x + 1)));
+        }
+
+        p2pgpu::coordinator::RenderConfig rc;
+        rc.grid = p2pgpu::coordinator::TileGrid{w, h, 64, 64};
+        rc.samples_per_tile = render_spp;
+        const float aspect = static_cast<float>(w) / static_cast<float>(h);
+        rc.cam_origin[0] = 0.0F; rc.cam_origin[1] = 1.4F; rc.cam_origin[2] = 4.0F;
+        rc.cam_lower_left[0] = -aspect; rc.cam_lower_left[1] = 0.35F;
+        rc.cam_lower_left[2] = 2.6F;
+        rc.cam_horizontal[0] = 2.0F * aspect;
+        rc.cam_vertical[1] = 2.0F;
+        rc.node_count = static_cast<std::uint32_t>(bvh->nodes.size());
+        rc.prim_count = static_cast<std::uint32_t>(bvh->prims.size());
+        rc.material_count = static_cast<std::uint32_t>(bvh->materials.size());
+
+        // `units_per_group` is what stops a task spanning two tiles. Passed
+        // separately from `RenderConfig` on purpose: the carve rule must not
+        // need to know what a tile is (R1).
+        const std::uint64_t total = static_cast<std::uint64_t>(rc.grid.tile_count()) *
+                                    rc.samples_per_tile;
+        const auto job = jobs.CreateJob("pathtrace_tile_v1", total, /*seed=*/42,
+                                        rc.samples_per_tile);
+        if (auto* mutable_job = jobs.MutableJob(job); mutable_job != nullptr) {
+            mutable_job->render = rc;
+            // THE JOB MUST NAME ITS ASSET, or the grant carries no `input_ref`
+            // and the worker has no way to know it needs one. Setting the
+            // render config without this is what made the 5.16 bring-up crash:
+            // the worker ran a kernel whose storage bindings nothing supplied.
+            const std::string address = p2pgpu::scene::ContentAddress(blob);
+            p2pgpu::coordinator::AssetId id{};
+            for (std::size_t i = 0; i < id.size(); ++i) {
+                id[i] = static_cast<std::byte>(
+                    std::stoul(address.substr(i * 2, 2), nullptr, 16));
+            }
+            mutable_job->input_ref = id;
+        }
+        render_grid = rc.grid;
+        render_asset = std::move(blob);
+        spdlog::warn("DEV: seeded RENDER {}x{} tiles={} spp={} prims={} depth={} "
+                     "job_lo={}",
+                     w, h, rc.grid.tile_count(), rc.samples_per_tile,
+                     bvh->prims.size(), bvh->max_depth, job.lo());
+    }
+
     if (!seed_kernel.empty()) {
         if (registry->Find(seed_kernel) == nullptr) {
             // Refuse rather than queue work no worker can run — the failure
@@ -193,6 +282,17 @@ int main(int argc, char** argv) {
     p2pgpu::coordinator::Server server(cfg, *registry, jobs, fleet,
                                        verify_reference ? &ref_stats : nullptr,
                                        store.get(), events.get());
+    if (render_grid.tile_count() > 0) {
+        server.SetRenderGrid(render_grid);
+        // 0.45 for scenes/default.scene, whose sky is near-white: at 1.0 most
+        // of the frame clips and the picture reads as washed out rather than as
+        // correctly bright. An explicit constant, not auto-exposure — see
+        // composite.hpp.
+        server.SetRenderExposure(0.45F);
+        const std::string address = server.PublishAsset(std::move(render_asset));
+        spdlog::warn("DEV: render asset published address={} (GET /asset/{})",
+                     address, address);
+    }
 
     // Runs from inside the event loop when every task is terminal, under
     // --exit-when-complete. The summary has to be printed there rather than

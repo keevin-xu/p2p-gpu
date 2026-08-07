@@ -339,6 +339,24 @@ void TaskLoop::HandleTaskGrant(const wire::TaskGrant& grant) {
         task.output_bytes = out->bytes();
     }
 
+    // ── A TASK WE CANNOT SUPPLY THE INPUT FOR IS REFUSED, NOT ATTEMPTED ──
+    //
+    // `input_ref` names a bulk asset the kernel reads through storage bindings
+    // this worker must provide. Running the kernel without them is not a wrong
+    // answer, it is a PROCESS ABORT: observed at 5.16 bring-up as a Rust panic
+    // inside wgpu-native when the bind group had two entries and the pipeline
+    // layout wanted five. One misconfigured job would have taken down every
+    // worker in the fleet.
+    //
+    // `AssetUnavailable` is exactly what this ReleaseReason is for, and it keeps
+    // the failure in the coordinator's vocabulary — 3.11 separates broken from
+    // malicious on these codes, and a crash reports nothing at all.
+    if (env->input_ref() != nullptr && !assets_available_) {
+        Log("warn", "granted a task needing a bulk asset this worker cannot fetch yet");
+        SendRelease(task.id, wire::ReleaseReason::AssetUnavailable);
+        return;
+    }
+
     const KernelInfo* info = FindKernel(task.kernel_id);
     if (info == nullptr) {
         Log("warn", "granted an unknown kernel: " + task.kernel_id);
