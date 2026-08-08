@@ -57,6 +57,11 @@ int main(int argc, char** argv) {
     std::vector<std::byte> render_asset;
     std::uint64_t seed_units = 4'000'000;
     std::uint32_t seed_tasks = 4;
+    app.add_flag("--no-p2p", cfg.disable_p2p,
+                 "Disable the peer data plane fleet-wide (6.10). Workers then "
+                 "fetch every asset from the coordinator. This is E6's control "
+                 "condition and the correctness check that the data plane is "
+                 "genuinely optional.");
     app.add_option("--ice-server", cfg.ice_servers,
                    "STUN/TURN URL for the P2P data plane; repeatable. "
                    "WARNING: a TURN URL carries its credentials and is sent to "

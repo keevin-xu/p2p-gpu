@@ -778,7 +778,8 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
         // holds what (R1, populated at 5.18), and the obvious wire shape for
         // worker-side filtering — `has_assets: [Hash32]` — is a vector of
         // structs, which this schema bans (D-0028).
-        if (job->input_ref && !HasAsset(rec->cached_assets, *job->input_ref)) {
+        if (!disable_p2p_ && job->input_ref &&
+            !HasAsset(rec->cached_assets, *job->input_ref)) {
             // A full mesh at N=50 is 1225 connections. Capped so a large fleet
             // never approaches one; 8 is enough to still find a live source
             // after several listed peers have departed.

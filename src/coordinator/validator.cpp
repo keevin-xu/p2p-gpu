@@ -163,10 +163,17 @@ constexpr double kMaxOutlierFraction = 0.03;
 /// thousands of pixels shrinks the noise floor, so a bias that survives it is
 /// not noise, and unlike the per-pixel count it is barely affected by fireflies.
 ///
-/// 5.0 sits in a measured gap, not a round number: the largest z_aggregate from
-/// an honest pair (synthetic or real render) is 2.74, and the smallest from a
-/// tampered one is 7.29.
-constexpr double kAggregateCutoff = 5.0;
+/// 12.0 from 48 REAL comparisons (D-0093), not from a handful: honest values
+/// reach 6.57, a +5% bias bottoms out at 23.6, and a +2% bias at 9.73.
+///
+/// The previous 5.0 mixed a synthetic lower bound with a real-data upper bound
+/// and sat INSIDE the honest range — 6.10's verification run produced a false
+/// positive at 5.59 on two honest renders.
+///
+/// **+1% bias is undetectable**: its range (3.10-105) overlaps honest
+/// (0.05-6.57), so no threshold separates them. That is a property of Monte
+/// Carlo noise, not of this constant.
+constexpr double kAggregateCutoff = 12.0;
 /// Floor on the robust scale, relative to the typical pixel magnitude.
 ///
 /// WITHOUT THIS THE COMPARATOR REJECTS PERFECT AGREEMENT. Identical inputs give

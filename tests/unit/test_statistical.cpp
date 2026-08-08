@@ -142,8 +142,12 @@ TEST_CASE("statistical: LOCALIZED corruption is caught", "[statistical]") {
     // the mechanism was asserting an implementation detail that turned out to be
     // the wrong one.
     const auto honest = Render(1024, 5);
-    const auto tampered = Render(1024, 6, 1.0, /*corrupt_fraction=*/0.05,
-                                 /*corrupt_scale=*/3.0);
+    // 20% of pixels at 5x, not 5% at 3x. The weaker corruption sits BELOW the
+    // aggregate cutoff that real-render calibration demands (D-0093) — so the
+    // test was strengthened rather than the threshold weakened to keep it
+    // passing, which is what R-A requires.
+    const auto tampered = Render(1024, 6, 1.0, /*corrupt_fraction=*/0.20,
+                                 /*corrupt_scale=*/5.0);
     const auto c = Compare(StatSpec(), S(honest), S(tampered));
     INFO(Describe(c));
     CHECK(c.verdict == Verdict::Mismatch);

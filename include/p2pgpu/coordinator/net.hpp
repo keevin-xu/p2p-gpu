@@ -68,6 +68,19 @@ struct Config {
     /// credentials are the mitigation and are a change to how this vector is
     /// built, not to the protocol.
     std::vector<std::string> ice_servers;
+
+    /// Suppress every `PeerList`, disabling the data plane fleet-wide (6.10).
+    ///
+    /// ONE switch, on the COORDINATOR, because whether to use P2P is an
+    /// operator decision (R1) — and because a worker-side flag would only
+    /// disable it for workers that chose to set it, which is not "disabled".
+    ///
+    /// With no list a worker has no candidates and falls straight to the
+    /// coordinator, so this exercises the FALLBACK PATH rather than a separate
+    /// no-P2P code path. That distinction is the point: a control that took a
+    /// different route would prove something about that route, not about this
+    /// one degrading correctly.
+    bool disable_p2p = false;
     /// DEV ONLY (step 1.26): stop the event loop once every seeded task has
     /// reached a terminal state, so a scripted end-to-end run terminates and
     /// can print its summary. A real coordinator serves indefinitely.

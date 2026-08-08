@@ -139,6 +139,9 @@ public:
         ice_servers_ = std::move(urls);
     }
 
+    /// Suppress peer lists, disabling the data plane fleet-wide (6.10).
+    void SetDisableP2P(bool on) noexcept { disable_p2p_ = on; }
+
     /// Clear the signalling rate-limit window. Called once per sweep.
     void ResetSignalWindow() noexcept { signals_this_window_ = 0; }
 
@@ -181,6 +184,7 @@ private:
     const AssetStore* asset_store_ = nullptr;
     PeerRelay peer_relay_;
     std::vector<std::string> ice_servers_;
+    bool disable_p2p_ = false;
     /// Signal frames relayed since the last sweep, for the 6.1 rate limit.
     std::uint32_t signals_this_window_ = 0;
     EventLog* events_ = nullptr;
