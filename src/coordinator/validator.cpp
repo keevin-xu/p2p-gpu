@@ -170,16 +170,30 @@ constexpr double kAggregateCutoff = 8.0;
 /// D-0073 measured honest identical-range disagreement at ~1 ULP, far under
 /// this floor, and any real disagreement is far over it.
 constexpr double kScaleFloorRel = 1e-3;
-/// 1/Phi^-1(3/4): makes the MAD a consistent estimator of sigma for a normal.
-constexpr double kMadToSigma = 1.4826;
+/// Quantile of |d| used for the robust scale, and the half-normal quantile that
+/// converts it to sigma (D-0080).
+///
+/// NOT the median. `1.4826 * MAD` is a consistent estimator of sigma for a
+/// distribution WITH ONE SIGMA, and a rendered tile does not have one: pixels
+/// whose rays hit the sky or an emissive surface directly have essentially zero
+/// variance, and there are enough of them to drive the median to ~0. The scale
+/// then collapses and every pixel with genuine indirect-lighting variance reads
+/// as tens of sigma out. Measured on a real render: p99/p50 = 168, where a
+/// half-normal gives 3.8.
+///
+/// p90 reads the pixels that actually have variance. On Gaussian data the two
+/// estimators agree exactly, so D-0075's synthetic calibration still holds.
+constexpr double kScaleQuantile = 0.90;
+constexpr double kHalfNormalP90 = 1.2816;
 
-double Median(std::vector<double>& v) {
+double Quantile(std::vector<double>& v, double p) {
     if (v.empty()) {
         return 0.0;
     }
-    const std::size_t mid = v.size() / 2;
-    std::nth_element(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(mid), v.end());
-    return v[mid];
+    const auto at = static_cast<std::size_t>(
+        p * static_cast<double>(v.size() - 1));
+    std::nth_element(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(at), v.end());
+    return v[at];
 }
 
 Comparison CompareStatistical(std::span<const std::byte> a,
@@ -259,13 +273,14 @@ Comparison CompareStatistical(std::span<const std::byte> a,
         abs_d.push_back(std::abs(v));
     }
     std::vector<double> mag_copy = magnitude;
-    const double typical = Median(mag_copy);
-    // MAD about zero: the difference of two unbiased estimators is centred on
-    // zero by construction, so subtracting a sample median would only absorb a
-    // genuine global bias into the scale — precisely what the aggregate test
-    // below exists to catch.
+    const double typical = Quantile(mag_copy, 0.5);
+    // About zero, not about a sample centre: the difference of two unbiased
+    // estimators is centred on zero by construction, so subtracting a sample
+    // median would absorb a genuine global bias into the scale — precisely what
+    // the aggregate test below exists to catch.
     const double scale =
-        std::max(kMadToSigma * Median(abs_d), kScaleFloorRel * std::max(typical, 1e-9));
+        std::max(Quantile(abs_d, kScaleQuantile) / kHalfNormalP90,
+                 kScaleFloorRel * std::max(typical, 1e-9));
 
     std::size_t outliers = 0;
     double worst = 0.0;

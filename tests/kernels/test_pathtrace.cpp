@@ -316,3 +316,127 @@ TEST_CASE("a disjoint sample range adds to the accumulator", "[kernel]") {
     }
     platform::ReleaseDevice(ctx);
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// 5.19/5.20 — GPU against the CPU reference. THE ONLY GROUND TRUTH HERE.
+// ─────────────────────────────────────────────────────────────────────────
+
+#include "p2pgpu/coordinator/validator.hpp"
+#include "p2pgpu/kernels/pathtrace_reference.hpp"
+
+TEST_CASE("the GPU agrees with the CPU reference within sampling error",
+          "[kernel][reference]") {
+    // 1.26 IS THE REASON THIS EXISTS. The first end-to-end brute_search run
+    // reported 1000/1000 correct and every answer was wrong; chunk invariance,
+    // reduction agreement and the pipeline tests all passed because every one
+    // of them compared the GPU against itself. Two defects survived all of them.
+    //
+    // The reference here does NOT reproduce the kernel's RNG, and that is the
+    // point (see pathtrace_reference.hpp): it uses mt19937 not PCG, doubles not
+    // floats, and brute-forces every primitive instead of walking the BVH. Two
+    // independent estimators of the same integral. So they cannot agree by
+    // sharing a mistake — only by both being right.
+    //
+    // Comparison is by 5.14's comparator, which is also the first time that has
+    // seen REAL render noise rather than the Gaussian it was calibrated on
+    // (D-0075's open caveat).
+    platform::GpuContext ctx;
+    REQUIRE(platform::AcquireDevice(ctx));
+    const Fixture fx;
+    const std::string wgsl = KernelSource();
+
+    // A small tile: the reference is single-threaded and brute-force by design.
+    constexpr std::uint32_t kRefTile = 16;
+    constexpr std::uint64_t kSamples = 512;
+
+    const auto gpu = Render(ctx, fx, wgsl, kSamples, kSamples / 4, 4242);
+
+    p2pgpu::kernels::ReferenceRequest rr;
+    const PathTraceParams p = fx.Params(4242);
+    std::copy_n(p.cam_origin, 3, rr.camera.origin);
+    std::copy_n(p.cam_lower_left, 3, rr.camera.lower_left);
+    std::copy_n(p.cam_horizontal, 3, rr.camera.horizontal);
+    std::copy_n(p.cam_vertical, 3, rr.camera.vertical);
+    rr.image_w = kRefTile;
+    rr.image_h = kRefTile;
+    rr.tile_w = kRefTile;
+    rr.tile_h = kRefTile;
+    rr.samples = kSamples;
+    rr.seed = 99;              // a DIFFERENT seed; the estimates are independent
+    rr.max_bounces = p.max_bounces;
+    rr.rr_start_bounce = p.rr_start_bounce;
+
+    const auto cpu = p2pgpu::kernels::PathTraceReference(fx.bvh, rr);
+    REQUIRE(cpu.size() == gpu.size() * 4);
+
+    const auto gpu_bytes = std::as_bytes(std::span<const AccumPixel>(gpu));
+    const auto cpu_bytes = std::as_bytes(std::span<const float>(cpu));
+
+    p2pgpu::coordinator::KernelSpec spec;
+    spec.determinism = p2pgpu::coordinator::Determinism::Statistical;
+    const auto c = p2pgpu::coordinator::Compare(spec, gpu_bytes, cpu_bytes);
+    INFO(p2pgpu::coordinator::Describe(c));
+    CHECK(c.verdict == p2pgpu::coordinator::Verdict::Match);
+
+    platform::ReleaseDevice(ctx);
+}
+
+TEST_CASE("the reference disagrees with a DELIBERATELY wrong image",
+          "[kernel][reference]") {
+    // Without this, the agreement above could come from a comparator that
+    // accepts anything on real data — which is exactly D-0075's open worry,
+    // since its thresholds were tuned on synthetic Gaussian noise.
+    platform::GpuContext ctx;
+    REQUIRE(platform::AcquireDevice(ctx));
+    const Fixture fx;
+
+    constexpr std::uint32_t kRefTile = 16;
+    constexpr std::uint64_t kSamples = 256;
+
+    p2pgpu::kernels::ReferenceRequest rr;
+    const PathTraceParams p = fx.Params(1);
+    std::copy_n(p.cam_origin, 3, rr.camera.origin);
+    std::copy_n(p.cam_lower_left, 3, rr.camera.lower_left);
+    std::copy_n(p.cam_horizontal, 3, rr.camera.horizontal);
+    std::copy_n(p.cam_vertical, 3, rr.camera.vertical);
+    rr.image_w = kRefTile; rr.image_h = kRefTile;
+    rr.tile_w = kRefTile;  rr.tile_h = kRefTile;
+    rr.samples = kSamples;
+    rr.max_bounces = p.max_bounces;
+    rr.rr_start_bounce = p.rr_start_bounce;
+
+    rr.seed = 7;
+    const auto a = p2pgpu::kernels::PathTraceReference(fx.bvh, rr);
+    rr.seed = 8;
+    auto b = p2pgpu::kernels::PathTraceReference(fx.bvh, rr);
+
+    p2pgpu::coordinator::KernelSpec spec;
+    spec.determinism = p2pgpu::coordinator::Determinism::Statistical;
+
+    // Two honest reference renders agree...
+    const auto honest = p2pgpu::coordinator::Compare(
+        spec, std::as_bytes(std::span<const float>(a)),
+        std::as_bytes(std::span<const float>(b)));
+    INFO("honest: " << p2pgpu::coordinator::Describe(honest));
+    CHECK(honest.verdict == p2pgpu::coordinator::Verdict::Match);
+
+    // ...and a 5% uniform brightening does not. That is a change no eye would
+    // catch in a noisy render, and it is the class a fixed pixel threshold
+    // cannot separate from honest variance.
+    //
+    // 5% and not 1%: on REAL heavy-tailed render noise the measured detection
+    // floor is ~2-5%, against the 0.2% D-0075 found on synthetic Gaussians
+    // (D-0080). Asserting 1% here would be asserting something untrue.
+    for (std::size_t i = 0; i < b.size(); i += 4) {
+        b[i + 0] *= 1.05F;
+        b[i + 1] *= 1.05F;
+        b[i + 2] *= 1.05F;
+    }
+    const auto tampered = p2pgpu::coordinator::Compare(
+        spec, std::as_bytes(std::span<const float>(a)),
+        std::as_bytes(std::span<const float>(b)));
+    INFO("tampered: " << p2pgpu::coordinator::Describe(tampered));
+    CHECK(tampered.verdict == p2pgpu::coordinator::Verdict::Mismatch);
+
+    platform::ReleaseDevice(ctx);
+}

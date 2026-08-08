@@ -96,7 +96,7 @@ add_executable(kernel_tests
     kernels/test_pathtrace.cpp # 5.6/5.8/5.12 — accumulation, chunk invariance, determinism
     kernels/test_brute_search.cpp        # 1.19 — chunk invariance + the D-0033 window
 )
-target_link_libraries(kernel_tests PRIVATE Catch2::Catch2WithMain p2pgpu-worker-core p2pgpu-scene-hash)
+target_link_libraries(kernel_tests PRIVATE Catch2::Catch2WithMain p2pgpu-worker-core p2pgpu-scene-hash p2pgpu-coordinator-core)
 target_compile_definitions(kernel_tests PRIVATE
     P2PGPU_KERNEL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../kernels")
 p2pgpu_harden(kernel_tests)

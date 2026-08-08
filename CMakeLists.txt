@@ -275,6 +275,7 @@ add_library(p2pgpu-worker-core STATIC
     src/worker-core/recovery.cpp           # portable: device-loss recovery (0.14)
     src/worker-core/checksum.cpp           # portable: BLAKE3-64, invariant 9
     src/worker-core/asset_cache.cpp        # 5.4/5.5 portable: verify-before-use cache
+    src/worker-core/pathtrace_reference.cpp # 5.19 portable: CPU ground truth
 )
 target_include_directories(p2pgpu-worker-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(p2pgpu-worker-core PUBLIC p2pgpu-protocol p2pgpu-transport p2pgpu-scene)
