@@ -49,4 +49,41 @@ template <typename BuildFn>
     return EncodeFrame({p, fbb.GetSize()}, payload);
 }
 
+/// Build `AssetMsg{body}` for the PEER data channel (6.6).
+///
+/// ── WHY A DIFFERENT ROOT, AND NOT `Envelope` ─────────────────────────────
+/// The same three tables are members of `Body` too (D-0077), so the control
+/// link could carry them and does. Using `Envelope` here as well would reuse
+/// more code — and would mean a peer could express EVERY control message.
+/// A `TaskGrant` arriving over a data channel would then have to be rejected by
+/// a check someone remembered to write.
+///
+/// With `AssetMsg` as the root, **a peer cannot form a control message at all**.
+/// The vocabulary is restricted by the type system rather than by a switch arm,
+/// which is the same reasoning that makes `VerifiedFrame` a type rather than a
+/// convention (R11).
+///
+/// ── NO FRAME HEADER ──────────────────────────────────────────────────────
+/// A DataChannel is message-oriented, like a WebSocket, so one message is one
+/// buffer and there is nothing to delimit. `VerifyAssetMsg` bounds the size
+/// itself. The 16-byte control-plane header exists to carry magic, version and
+/// length AND to guarantee 8-byte alignment for the Envelope (D-0027) — here
+/// the receiver checks alignment directly, because what arrives is a
+/// `std::vector<std::byte>` whose data is already over-aligned rather than a
+/// view into someone else's buffer.
+template <typename BuildFn>
+[[nodiscard]] std::vector<std::byte> EncodeAssetMsg(wire::AssetBody type,
+                                                    BuildFn&& build) {
+    flatbuffers::FlatBufferBuilder fbb;
+    const auto body = build(fbb);
+    wire::AssetMsgBuilder mb(fbb);
+    mb.add_body_type(type);
+    mb.add_body(body.Union());
+    fbb.Finish(mb.Finish());
+
+    const auto* p = static_cast<const std::byte*>(
+        static_cast<const void*>(fbb.GetBufferPointer()));
+    return std::vector<std::byte>(p, p + fbb.GetSize());
+}
+
 }  // namespace p2pgpu::protocol

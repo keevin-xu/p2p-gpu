@@ -330,6 +330,11 @@ if(P2PGPU_WASM)
                       -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_datachannel_wasm.cmake)
     FetchContent_MakeAvailable(datachannel_wasm)
     target_link_libraries(p2pgpu-transport PUBLIC datachannel-wasm)
+    # The THIRD-PARTY library needs -pthread too (6.6). Its `PeerConnection`
+    # holds shared_ptrs, so its objects emit atomics, and every object in a
+    # --shared-memory link must agree. Set here rather than patched upstream:
+    # it is a property of how WE link it, not of the library.
+    target_compile_options(datachannel-wasm PUBLIC -pthread)
 else()
     target_sources(p2pgpu-worker-core PRIVATE
         src/worker-core/platform/gpu_native.cpp
@@ -576,11 +581,26 @@ else()
         -pthread
         -sPTHREAD_POOL_SIZE=1
     )
-    # -pthread has to be on the COMPILE line too, and on worker-core rather
-    # than just the executable: atomics and TLS codegen differ, and mixing
+    # -pthread has to be on the COMPILE line too, and on EVERY library in the
+    # link, not just the executable: atomics and TLS codegen differ, and mixing
     # objects built with and without it is an ODR violation the linker will not
-    # catch.
-    target_compile_options(p2pgpu-worker-core PUBLIC -pthread)
+    # generally catch.
+    #
+    # It was on worker-core alone until 6.6, which was wrong and only looked
+    # right because nothing beneath it emitted atomics. `peer_link.cpp` holds a
+    # `std::shared_ptr<rtc::DataChannel>`, whose refcount IS atomic, and the
+    # wasm link failed outright:
+    #
+    #   wasm-ld: error: --shared-memory is disallowed by peer_link.cpp.o
+    #   because it was not compiled with 'atomics' or 'bulk-memory' features
+    #
+    # That was luck. The comment above already said the linker will not catch
+    # this in general — here it did, because --shared-memory makes the mismatch
+    # checkable. A library that merely differed in TLS codegen would have linked
+    # and misbehaved.
+    foreach(lib p2pgpu-worker-core p2pgpu-transport p2pgpu-scene p2pgpu-protocol)
+        target_compile_options(${lib} PUBLIC -pthread)
+    endforeach()
 
 endif()
 

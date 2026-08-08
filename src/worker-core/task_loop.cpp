@@ -18,6 +18,7 @@
 #include "p2pgpu/protocol/invariants.hpp"
 #include "p2pgpu/protocol/limits.hpp"
 #include "p2pgpu/protocol/verify.hpp"
+#include "p2pgpu/protocol/limits.hpp"
 #include "p2pgpu/scene/bvh.hpp"
 
 namespace p2pgpu::worker {
@@ -956,6 +957,132 @@ void TaskLoop::HandleAssetChunk(const wire::AssetChunk& chunk) {
     }
 }
 
+// ── Peer data plane (6.6, D-0090) ────────────────────────────────────────
+
+void TaskLoop::SendToPeer(const std::vector<std::byte>& msg) {
+    if (peer_ && peer_->IsOpen()) {
+        (void)peer_->Send(msg);
+    }
+}
+
+void TaskLoop::OnPeerBytes(std::span<const std::byte> bytes) {
+    // ── THE LEAST TRUSTED INPUT IN THE SYSTEM ────────────────────────────
+    // No coordinator mediation at all. Verified as `AssetMsg`, whose root is
+    // deliberately NOT `Envelope`: a peer therefore cannot form a control
+    // message, rather than forming one that a switch arm has to remember to
+    // reject (D-0090).
+    //
+    // ALIGNMENT. `flatbuffers::Verifier` assumes the buffer base is aligned to
+    // minalign and checks only RELATIVE offsets — that is D-0027, which was UB
+    // on every message for weeks and ran correctly on two architectures. What
+    // arrives here is a `std::vector<std::byte>`, so it is over-aligned; the
+    // check is cheap and states the requirement rather than inheriting it from
+    // a library's allocator.
+    std::vector<std::byte> aligned;
+    if ((std::bit_cast<std::uintptr_t>(bytes.data()) %
+         protocol::kFrameAlignment) != 0) {
+        aligned.assign(bytes.begin(), bytes.end());
+        bytes = aligned;
+    }
+
+    const auto verified = protocol::VerifyAssetMsg(bytes);
+    if (!verified) {
+        Log("warn", "peer sent an unverifiable asset message; dropped");
+        return;
+    }
+    const wire::AssetMsg* msg = *verified;
+    switch (msg->body_type()) {
+        case wire::AssetBody::AssetRequest:
+            if (const auto* m = msg->body_as_AssetRequest()) {
+                ServePeerAssetRequest(*m);
+            }
+            return;
+        case wire::AssetBody::AssetChunk:
+            if (const auto* m = msg->body_as_AssetChunk()) {
+                // THE SAME reassembly the coordinator path uses. Invariant 10,
+                // the 64-bit offset arithmetic and the BLAKE3 check are enforced
+                // once, so a second transport cannot get a weaker version of
+                // them (4.13 is why that matters).
+                HandleAssetChunk(*m);
+            }
+            return;
+        case wire::AssetBody::AssetMiss:
+            if (const auto* m = msg->body_as_AssetMiss()) {
+                HandleAssetMiss(*m);
+            }
+            return;
+        case wire::AssetBody::NONE:
+            return;
+    }
+}
+
+void TaskLoop::ServePeerAssetRequest(const wire::AssetRequest& req) {
+    // We serve only what we hold and have already VALIDATED (5.5). Serving
+    // unvalidated bytes would make this worker an amplifier for a blob it never
+    // checked — and the requester verifies the hash anyway, so the only thing
+    // that would buy is wasted bandwidth on both ends.
+    const wire::Hash32* want = req.hash();
+    if (want == nullptr || resident_asset_.empty() || resident_bytes_.empty()) {
+        return;
+    }
+    std::string address;
+    address.reserve(64);
+    static constexpr char kHexDigits[] = "0123456789abcdef";
+    for (const std::uint64_t lane : {want->a(), want->b(), want->c(), want->d()}) {
+        for (std::size_t byte = 0; byte < 8; ++byte) {
+            const auto v = static_cast<std::uint8_t>((lane >> (byte * 8)) & 0xFFU);
+            address.push_back(kHexDigits[v >> 4]);
+            address.push_back(kHexDigits[v & 0x0FU]);
+        }
+    }
+    if (address != resident_asset_) {
+        SendToPeer(protocol::EncodeAssetMsg(
+            wire::AssetBody::AssetMiss, [&](flatbuffers::FlatBufferBuilder& fbb) {
+                wire::AssetMissBuilder b(fbb);
+                b.add_hash(want);
+                return b.Finish();
+            }));
+        return;
+    }
+
+    const std::size_t total =
+        (resident_bytes_.size() + protocol::kChunkBytes - 1) / protocol::kChunkBytes;
+    // CLAMPED to what exists. `chunk_to` is attacker-chosen, and an unclamped
+    // range turns one request into an unbounded send loop — an amplification
+    // attack costing the requester one message (the same guard the coordinator
+    // has at 5.16).
+    const std::uint32_t from = req.chunk_from();
+    const auto to = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(req.chunk_to(), total));
+    if (from >= to) {
+        return;
+    }
+    constexpr std::uint32_t kMaxChunksPerPeerRequest = 64;
+    const std::uint32_t end = std::min(to, from + kMaxChunksPerPeerRequest);
+
+    for (std::uint32_t i = from; i < end; ++i) {
+        const auto offset = protocol::ChunkOffset(i);
+        if (!offset || *offset >= resident_bytes_.size()) {
+            break;
+        }
+        const std::size_t len =
+            std::min<std::size_t>(protocol::kChunkBytes, resident_bytes_.size() - *offset);
+        SendToPeer(protocol::EncodeAssetMsg(
+            wire::AssetBody::AssetChunk, [&](flatbuffers::FlatBufferBuilder& fbb) {
+                auto bytes = fbb.CreateVector(
+                    static_cast<const std::uint8_t*>(
+                        static_cast<const void*>(resident_bytes_.data() + *offset)),
+                    len);
+                wire::AssetChunkBuilder b(fbb);
+                b.add_hash(want);
+                b.add_index(i);
+                b.add_total(static_cast<std::uint32_t>(total));
+                b.add_bytes(bytes);
+                return b.Finish();
+            }));
+    }
+}
+
 void TaskLoop::HandleAssetMiss(const wire::AssetMiss& /*miss*/) {
     // The source does not have it. Releasing is right here and parking is not:
     // waiting cannot help, and the coordinator may be able to hand the task to
@@ -991,6 +1118,10 @@ void TaskLoop::FinishAssetFetch() {
         const auto* p = static_cast<const std::byte*>(static_cast<const void*>(v.data()));
         return std::vector<std::byte>(p, p + v.size() * sizeof(v[0]));
     };
+    // Kept so this worker can SERVE the asset to peers (6.6). The parsed arrays
+    // below are for our own GPU; a peer wants the bytes, and re-serialising them
+    // would produce a different blob with a different hash.
+    resident_bytes_ = fetch_->bytes;
     asset_nodes_ = to_bytes(bvh->nodes);
     asset_prims_ = to_bytes(bvh->prims);
     asset_materials_ = to_bytes(bvh->materials);

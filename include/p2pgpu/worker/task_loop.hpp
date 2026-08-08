@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "p2pgpu/protocol/ids.hpp"
+#include "p2pgpu/transport/peer_link.hpp"
 #include "p2pgpu/worker/kernel_host.hpp"
 #include "p2pgpu/worker/recovery.hpp"
 #include "p2pgpu/transport/transport.hpp"
@@ -276,6 +277,14 @@ private:
 
     /// Validated, GPU-ready views of the resident asset. Rebuilt when a new
     /// asset arrives, and kept alive for as long as tasks reference them.
+    /// The raw asset blob we hold, kept so we can SERVE it to peers (6.6).
+    /// The parsed arrays below are for our own GPU; a peer wants the bytes.
+    std::vector<std::byte> resident_bytes_;
+    /// The one peer connection, if any (6.4). One at a time: a worker fetching
+    /// one asset needs one source, and the connection cap is a scheduling
+    /// question (6.12) that does not belong in the fetch path.
+    std::unique_ptr<transport::PeerLink> peer_;
+
     std::vector<std::byte> asset_nodes_;
     std::vector<std::byte> asset_prims_;
     std::vector<std::byte> asset_materials_;
@@ -284,6 +293,21 @@ private:
     void RequestAssetChunks();
     void HandleAssetChunk(const wire::AssetChunk& chunk);
     void HandleAssetMiss(const wire::AssetMiss& miss);
+
+    // ── Peer data plane (6.6) ────────────────────────────────────────────
+
+    /// Bytes off a DataChannel. Verified as an `AssetMsg` — a DIFFERENT root
+    /// from the control link's `Envelope`, so a peer cannot express a control
+    /// message at all (D-0090). Routed into the SAME reassembly the coordinator
+    /// path uses: one implementation, two transports, so invariant 10 cannot be
+    /// enforced on one and forgotten on the other.
+    void OnPeerBytes(std::span<const std::byte> bytes);
+
+    /// Serve a peer's `AssetRequest` from what we hold.
+    void ServePeerAssetRequest(const wire::AssetRequest& req);
+
+    /// Send an `AssetMsg` to the connected peer, if any.
+    void SendToPeer(const std::vector<std::byte>& msg);
     /// Verify, validate, and publish a fully-received asset. Releases every
     /// parked task on failure — the bytes are wrong and re-requesting them
     /// from the same source would produce the same wrong bytes.
