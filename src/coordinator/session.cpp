@@ -2,6 +2,8 @@
 
 #include "p2pgpu/coordinator/session.hpp"
 
+#include "p2pgpu/kernels/pathtrace_params.hpp"
+
 #include <blake3.h>
 #include <spdlog/spdlog.h>
 
@@ -635,12 +637,36 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
                     params->size());
                 const wire::Uuid tid = task->id.to_wire();
                 const wire::Uuid jid = task->job.to_wire();
-                wire::OutputSpecBuilder ob(fbb);
-                // From the MANIFEST, not a literal. The worker allocates against
+                // ── SIZE COMES FROM THE TASK WHEN THE TASK DECIDES IT ────
+                //
+                // From the MANIFEST by default — the worker allocates against
                 // this number, so a hardcoded 32 would break the first kernel
-                // whose output is not 32 bytes — and break it as a garbage
-                // result rather than an error.
-                ob.add_bytes(spec->output_bytes);
+                // whose output is not 32 bytes, and break it as a garbage result
+                // rather than an error.
+                //
+                // But a RENDER task's output is its TILE's size, and an image
+                // whose height is not a multiple of the tile size has a short
+                // bottom row. The manifest's 65536 assumes a full 64x64 tile, so
+                // every partial tile produced a payload the compositor refused
+                // — 6 of 30 tiles in a 384x288 render, an image permanently
+                // stuck at 88.9% coverage with the whole bottom edge black.
+                //
+                // Found by LOOKING AT THE PICTURE (5.23). Every automated check
+                // passed: the tasks completed, the results validated, the
+                // reference check compared a 16x16 probe that fits inside even a
+                // short tile. Only the composited image showed it.
+                std::uint32_t output_bytes = spec->output_bytes;
+                if (job->render) {
+                    const std::uint64_t tile_index =
+                        task->start_unit / job->render->samples_per_tile;
+                    if (const auto t = job->render->grid.TileAt(
+                            static_cast<std::uint32_t>(tile_index))) {
+                        output_bytes = kernels::TileOutputBytes(t->w, t->h);
+                    }
+                }
+
+                wire::OutputSpecBuilder ob(fbb);
+                ob.add_bytes(output_bytes);
                 ob.add_dtype(wire::DType::U32);
                 auto os = ob.Finish();
 
