@@ -35,6 +35,20 @@ struct WorkerRecord {
     std::uint64_t last_seen_ms = 0;
     std::uint32_t tasks_completed = 0;
 
+    // ── Time-to-ready (6.16) ─────────────────────────────────────────────
+    /// When this worker joined, and when its first result arrived. Both on OUR
+    /// clock, for the 2.21 reason: a worker reporting its own readiness is
+    /// telemetry it chooses (invariant 8), and time-to-ready is exactly the
+    /// number a worker would want to look good on.
+    ///
+    /// `first_result_ms` stays 0 until a result actually lands. A worker that
+    /// joined and never produced anything is NOT ready, and recording a
+    /// readiness time for it would let the slowest joiners vanish from the
+    /// statistic — which is the direction that flatters the result.
+    std::uint64_t joined_ms = 0;
+    std::uint64_t first_grant_ms = 0;
+    std::uint64_t first_result_ms = 0;
+
     // ── Sizing state (2.11-2.14) ─────────────────────────────────────────
     /// Device throughput in **arithmetic ops per second**, from the join-time
     /// benchmark. NOT units/sec: a worker cannot know which kernel it will be

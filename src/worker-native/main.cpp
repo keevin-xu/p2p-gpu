@@ -60,7 +60,8 @@ std::string Escape(const std::string& s) {
 // worker-native and worker-browser differ ONLY in how they get WGSL and how
 // they drive the loop, and both of those are two lines each. If this function
 // starts growing, logic is leaking out of worker-core (R1).
-int RunGrid(const std::string& url, const std::string& dir, std::uint64_t chunk) {
+int RunGrid(const std::string& url, const std::string& dir, std::uint64_t chunk,
+            bool corrupt) {
     p2pgpu::worker::DeviceSession device;
     if (!device.Start()) {
         std::fprintf(stderr, "no WebGPU device available; declining to join\n");
@@ -70,6 +71,7 @@ int RunGrid(const std::string& url, const std::string& dir, std::uint64_t chunk)
     p2pgpu::worker::TaskLoopConfig cfg;
     cfg.coordinator_url = url;
     cfg.units_per_chunk = chunk;
+    cfg.serve_corrupt_assets = corrupt;   // 6.17's attacker; off unless asked for
 
     // THE ONLY THING THE NATIVE TARGET DOES DIFFERENTLY: read WGSL from disk.
     // The browser fetches the same text over HTTP from the coordinator (1.12).
@@ -450,12 +452,16 @@ int main(int argc, char** argv) {
     // produced the EVALUATION.md numbers and stay because the evidence has to
     // be reproducible.
     std::string mode = "run";
+    bool corrupt = false;
     app.add_option("mode", mode,
                    "run | smoke | bench | chunking | recovery | adapter")
         ->capture_default_str();
     app.add_option("--coordinator", url, "coordinator WebSocket URL")
         ->capture_default_str();
     app.add_option("--kernel-dir", dir, "WGSL directory")->capture_default_str();
+    app.add_flag("--serve-corrupt-assets", corrupt,
+                 "CHAOS: serve corrupted asset bytes to peers (6.17). "
+                 "A byte flipped mid-chunk, so only the hash can catch it.");
     app.add_option("--units-per-chunk", chunk,
                    "bounds ONE dispatch so it stays far under the ~2s TDR limit (R4)")
         ->capture_default_str();
@@ -464,7 +470,7 @@ int main(int argc, char** argv) {
     CLI11_PARSE(app, argc, argv);
 
     if (mode == "run") {
-        return RunGrid(url, dir, chunk);
+        return RunGrid(url, dir, chunk, corrupt);
     }
 
     if (mode == "recovery") {

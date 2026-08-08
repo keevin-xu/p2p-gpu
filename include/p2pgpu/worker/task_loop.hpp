@@ -69,6 +69,20 @@ struct TaskLoopConfig {
 
     /// How many tasks to ask for at once. A hint the coordinator may ignore.
     std::uint32_t max_tasks_in_flight = 1;
+
+    /// **CHAOS KNOB — corrupt every asset chunk this worker serves to peers.**
+    ///
+    /// The attacker for 6.17, and the only way to run that experiment end to
+    /// end against the real fetch path. Off by default, reachable only through
+    /// an explicit `--serve-corrupt-assets` flag on `worker-native`, and never
+    /// wired into the browser worker.
+    ///
+    /// It flips a byte in the MIDDLE of each chunk rather than truncating or
+    /// resizing: every length check still passes, `received` still reaches
+    /// `total`, and **only the BLAKE3 comparison can notice**. Corrupting a
+    /// length instead would be caught by cheaper checks and would not exercise
+    /// the path this experiment is about.
+    bool serve_corrupt_assets = false;
 };
 
 /// What the UI shows and the user controls (R7). Read-only from outside.
@@ -339,6 +353,15 @@ private:
     /// whole point of the data plane, and the fallback is what makes it safe to
     /// try something unreliable first.
     void TryNextPeerOrFallBack();
+    /// Discard bytes that failed verification and continue with the next
+    /// source (D-0097). Abandons only when the coordinator itself served them.
+    void RejectBytesAndRetry(const char* why);
+
+    /// How many times a source served bytes that failed verification (6.17).
+    /// Reported so a fetch that succeeded after being lied to is
+    /// distinguishable from one that was never attacked.
+    std::uint32_t assets_rejected_ = 0;
+
     /// Abandon the peer attempt and fetch from the coordinator instead.
     void FallBackToCoordinator(const char* why);
     /// Route a relayed `Signal` into the peer connection.

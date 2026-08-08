@@ -1377,12 +1377,20 @@ void TaskLoop::ServePeerAssetRequest(const wire::AssetRequest& req) {
         }
         const std::size_t len =
             std::min<std::size_t>(protocol::kChunkBytes, resident_bytes_.size() - *offset);
+
+        // 6.17's attacker. A byte flipped mid-chunk: correct length, correct
+        // count, correct index — nothing but the hash can catch it.
+        std::vector<std::uint8_t> payload(
+            static_cast<const std::uint8_t*>(
+                static_cast<const void*>(resident_bytes_.data() + *offset)),
+            static_cast<const std::uint8_t*>(
+                static_cast<const void*>(resident_bytes_.data() + *offset)) + len);
+        if (config_.serve_corrupt_assets && !payload.empty()) {
+            payload[payload.size() / 2] ^= 0xFFU;
+        }
         SendToPeer(protocol::EncodeAssetMsg(
             wire::AssetBody::AssetChunk, [&](flatbuffers::FlatBufferBuilder& fbb) {
-                auto bytes = fbb.CreateVector(
-                    static_cast<const std::uint8_t*>(
-                        static_cast<const void*>(resident_bytes_.data() + *offset)),
-                    len);
+                auto bytes = fbb.CreateVector(payload.data(), payload.size());
                 wire::AssetChunkBuilder b(fbb);
                 b.add_hash(want);
                 b.add_index(i);
@@ -1422,7 +1430,9 @@ void TaskLoop::FinishAssetFetch() {
     // thing between one and the GPU.
     const std::string actual = Blake3Hex(fetch_->bytes);
     if (actual != address) {
-        AbandonAssetFetch("asset failed verification and was discarded");
+        // D-0097 — DISCARD AND CONTINUE, not abandon. Abandoning here let one
+        // peer serving garbage cost its victim the task, repeatably.
+        RejectBytesAndRetry("asset failed verification");
         return;
     }
 
@@ -1430,7 +1440,12 @@ void TaskLoop::FinishAssetFetch() {
     // any of it becomes a GPU array index (D-0069/D-0070).
     auto bvh = scene::LoadBvh(fetch_->bytes);
     if (!bvh) {
-        AbandonAssetFetch("asset hashed correctly but failed structural validation");
+        // Reachable only from the COORDINATOR: bytes that hash to the address
+        // we asked for are the bytes the coordinator published, so a peer
+        // cannot get here — it would have had to break BLAKE3. Retrying
+        // another source cannot help, but the same call handles it correctly
+        // (no peer to blame, so it falls through to abandon).
+        RejectBytesAndRetry("asset hashed correctly but failed structural validation");
         return;
     }
 
@@ -1470,6 +1485,43 @@ void TaskLoop::FinishAssetFetch() {
         }
     }
     waiting_on_asset_.clear();
+}
+
+/// Throw away bytes that failed verification and try the next source (D-0097).
+///
+/// The buffer RESET is the half that is easy to miss. Chunks are idempotent by
+/// index — `if (have[i]) return;` — so continuing with a poisoned buffer means
+/// the honest chunks that follow are dropped as duplicates, `received` stays at
+/// `total`, and completion never re-fires. The fetch would hang to the stall
+/// timeout and abandon anyway, and the fallback would look implemented while
+/// doing nothing.
+void TaskLoop::RejectBytesAndRetry(const char* why) {
+    if (!fetch_) {
+        return;
+    }
+    const bool from_peer = static_cast<bool>(peer_);
+    Log("error", std::string("rejecting asset bytes from ") +
+                     (from_peer ? "a peer" : "the coordinator") + ": " + why);
+
+    if (!from_peer) {
+        // The coordinator is the last source. Nothing left to fall back to.
+        AbandonAssetFetch(why);
+        return;
+    }
+    ++assets_rejected_;
+
+    // Wipe the reassembly state, keeping only what the COORDINATOR told us
+    // (D-0091). `expected_bytes` and `total` are not a peer's to influence.
+    std::fill(fetch_->bytes.begin(), fetch_->bytes.end(), std::byte{0});
+    std::fill(fetch_->have.begin(), fetch_->have.end(), false);
+    fetch_->received = 0;
+    fetch_->last_progress = Clock::now();
+
+    // The offending peer is at `peer_attempt_ - 1` and this advances past it,
+    // so it is not retried for THIS fetch. It is not reported to the
+    // coordinator: a false accusation would be free, and acting on one would
+    // put a trust decision in the worker (R1). See D-0097.
+    TryNextPeerOrFallBack();
 }
 
 void TaskLoop::AbandonAssetFetch(const char* why) {

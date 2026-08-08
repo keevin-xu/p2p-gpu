@@ -40,6 +40,13 @@ struct WorkerMetrics {
     /// self-reported `gpu_ms`, which is telemetry a worker chooses
     /// (invariant 8).
     double observed_units_per_sec = 0.0;
+
+    /// 6.16 — milliseconds from join to first grant, and from join to first
+    /// ACCEPTED result. `-1` means it has not happened yet, which is a
+    /// meaningful state and not a zero: a worker that has never finished
+    /// anything must not be averaged in as instantly ready.
+    double ms_to_first_grant = -1.0;
+    double ms_to_first_result = -1.0;
 };
 
 /// Everything the dashboard shows, at one instant.

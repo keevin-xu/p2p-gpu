@@ -824,6 +824,9 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
             mrec->predicted_ms = 1000.0 * static_cast<double>(task->unit_count) /
                                  (rec->score_ops_per_sec / granted_ops_per_unit);
             mrec->granted_at_ms = now_ms;
+            if (mrec->first_grant_ms == 0) {
+                mrec->first_grant_ms = now_ms;   // 6.16
+            }
             if (events_ != nullptr) {
                 events_->Grant(now_ms, task->id, worker_id_, task->unit_count,
                                mrec->predicted_ms, task->replica_of != TaskId{});
@@ -1500,6 +1503,11 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
         // 2.21 — observed throughput, accumulated from the SAME measurement the
         // correction uses. Two numbers derived from one observation cannot
         // disagree; two independently maintained ones eventually do.
+        // 6.16 — the moment this worker first produced anything. An ACCEPTED
+        // result, so a worker is "ready" only once it has done real work.
+        if (rec->first_result_ms == 0) {
+            rec->first_result_ms = now_ms_;
+        }
         if (const Task* done = jobs_.Find(task_id); done != nullptr) {
             rec->units_completed += done->unit_count;
             rec->observed_ms_total += actual_ms;

@@ -11,6 +11,7 @@ void Fleet::Join(WorkerId id, std::uint64_t conn_id, std::uint64_t now_ms) {
     r.id = id;
     r.conn_id = conn_id;
     r.last_seen_ms = now_ms;
+    r.joined_ms = now_ms;
     workers_[id] = r;
 }
 

@@ -58,6 +58,14 @@ Snapshot Collect(const JobManager& jobs, const Fleet& fleet,
         wm.score_ops_per_sec = rec.score_ops_per_sec;
         wm.correction = rec.correction;
         wm.throttle = rec.throttle;
+        if (rec.first_grant_ms != 0) {
+            wm.ms_to_first_grant =
+                static_cast<double>(rec.first_grant_ms - rec.joined_ms);
+        }
+        if (rec.first_result_ms != 0) {
+            wm.ms_to_first_result =
+                static_cast<double>(rec.first_result_ms - rec.joined_ms);
+        }
         // Guarded rather than trusted: a worker that has completed nothing has
         // no observed time, and 0/0 would put a NaN on the dashboard.
         wm.observed_units_per_sec =
@@ -120,6 +128,8 @@ std::string ToJson(const Snapshot& snap) {
         out += ",\"correction\":" + Num(w.correction);
         out += ",\"throttle\":" + Num(w.throttle);
         out += ",\"observed_units_per_sec\":" + Num(w.observed_units_per_sec);
+        out += ",\"ms_to_first_grant\":" + Num(w.ms_to_first_grant);
+        out += ",\"ms_to_first_result\":" + Num(w.ms_to_first_result);
         out += "}";
     }
     out += "]}";
