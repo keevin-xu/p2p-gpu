@@ -8,6 +8,7 @@
 // about the scheduler being good.
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -18,6 +19,7 @@
 
 #include "p2pgpu/coordinator/affinity.hpp"
 #include "p2pgpu/coordinator/composite.hpp"
+#include "p2pgpu/scene/bvh.hpp"
 #include "p2pgpu/coordinator/task_state.hpp"
 #include "p2pgpu/protocol/error.hpp"
 #include "p2pgpu/protocol/ids.hpp"
@@ -105,6 +107,12 @@ struct RenderConfig {
     std::uint32_t node_count = 0;
     std::uint32_t prim_count = 0;
     std::uint32_t material_count = 0;
+
+    /// The scene, for the DEV-ONLY reference check (5.20). Absent in normal
+    /// operation — the coordinator has no business owning geometry, and holding
+    /// it would make every job carry a copy of an asset it already publishes by
+    /// hash.
+    std::shared_ptr<const scene::Bvh> reference_bvh;
 };
 
 struct Job {

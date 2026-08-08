@@ -225,6 +225,14 @@ int main(int argc, char** argv) {
             // Per-tile granted counters (5.17). Sized here rather than lazily,
             // so `Grant` never has to decide whether the vector is ready.
             mutable_job->tile_granted.assign(rc.grid.tile_count(), 0);
+            // DEV ONLY (5.20). The coordinator has no business owning geometry
+            // in normal operation — it publishes the asset by hash and holds
+            // nothing else. Attached only when the reference check is on, so a
+            // production coordinator never carries a copy.
+            if (verify_reference) {
+                mutable_job->render->reference_bvh =
+                    std::make_shared<const p2pgpu::scene::Bvh>(std::move(*bvh));
+            }
             // THE JOB MUST NAME ITS ASSET, or the grant carries no `input_ref`
             // and the worker has no way to know it needs one. Setting the
             // render config without this is what made the 5.16 bring-up crash:

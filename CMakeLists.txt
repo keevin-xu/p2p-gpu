@@ -177,6 +177,12 @@ target_include_directories(p2pgpu-protocol SYSTEM PUBLIC
 add_library(p2pgpu-scene STATIC
     src/scene/scene.cpp
     src/scene/bvh.cpp
+    # The CPU path tracer (5.19) lives HERE, not in worker-core, because both
+    # sides need it and only one of them may link GPU code: the worker uses it
+    # for local checks, and the coordinator's dev-only reference check (5.20)
+    # cannot pull in wgpu. It depends on nothing but scene types and <cmath>,
+    # which is also what keeps this library fuzz-buildable (D-0069).
+    src/scene/pathtrace_reference.cpp
 )
 target_include_directories(p2pgpu-scene PUBLIC include)
 target_link_libraries(p2pgpu-scene PUBLIC p2pgpu-protocol)
@@ -275,7 +281,6 @@ add_library(p2pgpu-worker-core STATIC
     src/worker-core/recovery.cpp           # portable: device-loss recovery (0.14)
     src/worker-core/checksum.cpp           # portable: BLAKE3-64, invariant 9
     src/worker-core/asset_cache.cpp        # 5.4/5.5 portable: verify-before-use cache
-    src/worker-core/pathtrace_reference.cpp # 5.19 portable: CPU ground truth
 )
 target_include_directories(p2pgpu-worker-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(p2pgpu-worker-core PUBLIC p2pgpu-protocol p2pgpu-transport p2pgpu-scene)

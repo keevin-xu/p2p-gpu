@@ -158,11 +158,15 @@ constexpr double kSigmaCutoff = 6.0;
 /// Tile fails if more than this fraction of channels are outliers. Non-zero
 /// because a handful of genuine tail samples in a Monte Carlo image is normal —
 /// fireflies are not fraud.
-constexpr double kMaxOutlierFraction = 0.005;
-/// Aggregate cutoff, deliberately stricter in sigma terms: averaging over
-/// thousands of pixels shrinks the noise floor, so a global bias that survives
-/// it is not noise.
-constexpr double kAggregateCutoff = 8.0;
+constexpr double kMaxOutlierFraction = 0.03;
+/// Aggregate cutoff. **THIS TEST DOES THE WORK** — see D-0081. Averaging over
+/// thousands of pixels shrinks the noise floor, so a bias that survives it is
+/// not noise, and unlike the per-pixel count it is barely affected by fireflies.
+///
+/// 5.0 sits in a measured gap, not a round number: the largest z_aggregate from
+/// an honest pair (synthetic or real render) is 2.74, and the smallest from a
+/// tampered one is 7.29.
+constexpr double kAggregateCutoff = 5.0;
 /// Floor on the robust scale, relative to the typical pixel magnitude.
 ///
 /// WITHOUT THIS THE COMPARATOR REJECTS PERFECT AGREEMENT. Identical inputs give
@@ -183,8 +187,8 @@ constexpr double kScaleFloorRel = 1e-3;
 ///
 /// p90 reads the pixels that actually have variance. On Gaussian data the two
 /// estimators agree exactly, so D-0075's synthetic calibration still holds.
-constexpr double kScaleQuantile = 0.90;
-constexpr double kHalfNormalP90 = 1.2816;
+constexpr double kScaleQuantile = 0.99;
+constexpr double kHalfNormalQuantile = 2.5758;
 
 double Quantile(std::vector<double>& v, double p) {
     if (v.empty()) {
@@ -279,7 +283,7 @@ Comparison CompareStatistical(std::span<const std::byte> a,
     // median would absorb a genuine global bias into the scale — precisely what
     // the aggregate test below exists to catch.
     const double scale =
-        std::max(Quantile(abs_d, kScaleQuantile) / kHalfNormalP90,
+        std::max(Quantile(abs_d, kScaleQuantile) / kHalfNormalQuantile,
                  kScaleFloorRel * std::max(typical, 1e-9));
 
     std::size_t outliers = 0;

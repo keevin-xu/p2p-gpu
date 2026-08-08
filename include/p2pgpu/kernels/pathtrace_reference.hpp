@@ -15,6 +15,12 @@
 // accumulation, compositing — and says nothing about whether the kernel
 // computes light transport correctly.
 //
+// ── IT LIVES IN p2pgpu-scene, NOT worker-core ───────────────────────────
+// Both sides need it and only one of them may link GPU code: the worker uses it
+// for local checks, and the coordinator's dev-only reference check (5.20) must
+// not pull in wgpu. It depends on nothing but scene types and <cmath>, which is
+// also what keeps `p2pgpu-scene` fuzz-buildable (D-0069).
+//
 // ── IT DOES NOT REPRODUCE THE GPU'S RNG, ON PURPOSE ──────────────────────
 // `BruteSearchReference` had to be bit-identical because that kernel is
 // `Exact`. This one must NOT be: an independent implementation that happens to

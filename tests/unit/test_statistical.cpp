@@ -128,17 +128,25 @@ TEST_CASE("statistical: a UNIFORM bias is caught by the aggregate test",
     CHECK(c.verdict == Verdict::Mismatch);
 }
 
-TEST_CASE("statistical: LOCALIZED corruption is caught by the outlier test",
-          "[statistical]") {
-    // The blind spot of an aggregate-only test: corrupting 5% of pixels barely
-    // moves the mean. Only the per-pixel outlier count catches this.
+TEST_CASE("statistical: LOCALIZED corruption is caught", "[statistical]") {
+    // Caught by the AGGREGATE test, not the per-pixel one — and that is a
+    // measured correction, not the original design (D-0081).
+    //
+    // The first version asserted `differing_elements > 0`, i.e. that the outlier
+    // count was the mechanism. On real render data the per-pixel test had to be
+    // detuned until it no longer fires here: path-tracer noise is bimodal, ~1%
+    // of pixels being fireflies orders of magnitude from the mean, so any scale
+    // sensitive enough to see localized corruption also flags honest variance.
+    //
+    // So the assertion is the VERDICT, which is what actually matters. Asserting
+    // the mechanism was asserting an implementation detail that turned out to be
+    // the wrong one.
     const auto honest = Render(1024, 5);
     const auto tampered = Render(1024, 6, 1.0, /*corrupt_fraction=*/0.05,
                                  /*corrupt_scale=*/3.0);
     const auto c = Compare(StatSpec(), S(honest), S(tampered));
     INFO(Describe(c));
     CHECK(c.verdict == Verdict::Mismatch);
-    CHECK(c.differing_elements > 0);
 }
 
 TEST_CASE("statistical: a zeroed result is caught", "[statistical]") {
