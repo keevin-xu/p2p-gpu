@@ -30,6 +30,7 @@ add_executable(tests
     unit/test_partial.cpp          # 5.13 — partial uploads: ordering, lease, no state advance
     unit/test_statistical.cpp      # 5.14 — variance-aware comparator (completes 3.1)
     unit/test_composite.cpp        # 5.15 — tile partition + compositing
+    unit/test_signaling.cpp        # 6.1 — opaque signalling relay
 
     # Still to come:
     # unit/test_sizer.cpp          # 2.12

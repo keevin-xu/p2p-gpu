@@ -215,13 +215,11 @@ Reaction Session::Dispatch(const protocol::VerifiedFrame& frame, std::uint64_t n
             }
             break;
 
-        // Not yet implemented, but explicitly listed so that adding a Body
-        // variant breaks THIS switch too (-Werror=switch). A silent default
-        // would let a new message type be ignored without anyone noticing.
         case wire::Body::Signal:
-            spdlog::debug("unhandled conn_id={} body_type={}", conn_id_,
-                          static_cast<int>(env.body_type()));
-            return {};
+            if (const auto* m = env.body_as_Signal()) {
+                return OnSignal(*m);
+            }
+            break;
 
         // Coordinator -> worker messages. A worker sending one of these is
         // confused or probing; either way it is not something we accept.
@@ -804,6 +802,64 @@ Reaction Session::OnProgress(const wire::Progress& progress, std::uint64_t now_m
 }
 
 // ── Serving a bulk asset over the control link (5.16, D-0077) ────────────
+
+// ── Signalling relay (6.1, D-0085) ───────────────────────────────────────
+
+Reaction Session::OnSignal(const wire::Signal& signal) {
+    // Chatty by nature — ICE trickles dozens of candidates per negotiation — so
+    // the cap is generous. Bounded anyway, or one worker can use the relay to
+    // flood another; over the cap the frame is DROPPED and counted, feeding
+    // 3.12's existing tiers rather than inventing a second mechanism.
+    constexpr std::uint32_t kMaxSignalsPerWindow = 64;
+    if (++signals_this_window_ > kMaxSignalsPerWindow) {
+        spdlog::debug("signal_dropped conn_id={} reason=rate_limited", conn_id_);
+        return NonFatal(wire::ErrorCode::MalformedMessage, "signalling rate limit");
+    }
+
+    const wire::Uuid* dest = signal.peer();
+    const auto* payload = signal.payload();
+    if (dest == nullptr || payload == nullptr) {
+        return NonFatal(wire::ErrorCode::MalformedMessage,
+                        "Signal without a peer or payload");
+    }
+    // BOUNDED, NEVER PARSED. The coordinator brokers and does not join the media
+    // path; an SDP parser here would be a large text-parsing attack surface in
+    // the one process the whole fleet depends on (D-0085).
+    if (payload->size() > protocol::kMaxSignalBytes) {
+        spdlog::warn("signal_rejected conn_id={} bytes={} limit={}", conn_id_,
+                     payload->size(), protocol::kMaxSignalBytes);
+        return NonFatal(wire::ErrorCode::MalformedMessage, "signal payload too large");
+    }
+
+    const WorkerId target{*dest};
+    if (target == worker_id_) {
+        // A worker signalling itself is confused, and relaying it would be a
+        // free way to make the coordinator echo arbitrary bytes back.
+        return NonFatal(wire::ErrorCode::MalformedMessage, "cannot signal yourself");
+    }
+
+    // `peer` is DESTINATION inbound and SOURCE outbound — one symmetric table,
+    // as G1 ruled. The relay rewrites exactly that field and copies the payload
+    // verbatim.
+    const wire::Uuid from = worker_id_.to_wire();
+    auto frame = protocol::EncodeMessage(
+        wire::Body::Signal, [&](flatbuffers::FlatBufferBuilder& fbb) {
+            auto bytes = fbb.CreateVector(payload->data(), payload->size());
+            wire::SignalBuilder b(fbb);
+            b.add_peer(&from);
+            b.add_payload(bytes);
+            return b.Finish();
+        });
+
+    // SILENT DROP for an unknown or departed peer. An error here would be an
+    // enumeration oracle telling an attacker which worker ids exist, and WebRTC
+    // already handles a peer that never answers — the attempt times out at the
+    // peer, which is where the timeout belongs.
+    const bool delivered = peer_relay_ && peer_relay_(target, frame);
+    spdlog::debug("signal conn_id={} to={} bytes={} delivered={}", conn_id_,
+                  target.hi(), payload->size(), delivered);
+    return {};
+}
 
 Reaction Session::OnAssetRequest(const wire::AssetRequest& req) {
     const auto reply_miss = [&](const wire::Hash32* h) {

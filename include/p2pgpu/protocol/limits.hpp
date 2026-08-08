@@ -52,6 +52,17 @@ inline constexpr std::uint32_t kMaxOutputBytes = 8u * 1024u * 1024u;
 /// do NOT assume 256 KiB EOR support.
 inline constexpr std::uint32_t kChunkBytes = 16u * 1024u;
 
+/// Largest `Signal.payload` the coordinator will relay (6.1, D-0085).
+///
+/// The coordinator NEVER parses this — it is opaque bytes carrying SDP and ICE
+/// candidates between two peers. Bounding it is therefore the only check
+/// available, and the only one wanted: an SDP parser in the coordinator would be
+/// a large text-parsing attack surface in the one process the fleet depends on.
+///
+/// 16 KiB is well above a full offer with candidates and far below what would
+/// let a peer use the relay as free bandwidth.
+inline constexpr std::uint32_t kMaxSignalBytes = 16u * 1024u;
+
 /// Largest bulk asset a worker will reassemble (5.16).
 ///
 /// R11: the chunk COUNT is attacker-controlled, and a receiver that allocates

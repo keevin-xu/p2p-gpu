@@ -209,6 +209,15 @@ void Server::Sweep() {
         }
     }
 
+    // Signalling windows reset per sweep (6.1). Counted per SESSION rather than
+    // fleet-wide: the limit exists so one worker cannot flood another, and a
+    // shared budget would let a busy honest negotiation starve everyone else.
+    for (auto& [worker, conn] : live_) {
+        if (conn.session != nullptr) {
+            conn.session->ResetSignalWindow();
+        }
+    }
+
     // 2.19 — durability, ONE transaction per sweep (D-0048). Last in the pass,
     // deliberately: expiry and revocation both mutate task state, so flushing
     // first would write rows this same tick is about to change and leave the
@@ -488,6 +497,19 @@ void Server::Run() {
                     data->session->SetQuorum(this->quorum_);
                     data->session->SetCompositor(&this->compositor_);
                     data->session->SetAssetStore(&this->assets_);
+                    // Cross-connection delivery for signalling (6.1, D-0085).
+                    // `live_` is the WorkerId -> connection map D-0046 already
+                    // built for revoke pushes; this reuses it rather than
+                    // keeping a second registry that could disagree.
+                    data->session->SetPeerRelay(
+                        [this](WorkerId to, std::span<const std::byte> frame) {
+                            const auto it = this->live_.find(to);
+                            if (it == this->live_.end() || it->second.send == nullptr) {
+                                return false;
+                            }
+                            it->second.send(frame);
+                            return true;
+                        });
                     if (this->config_.spot_checks) {
                         data->session->SetSpotChecks(&this->spot_checks_);
                     }

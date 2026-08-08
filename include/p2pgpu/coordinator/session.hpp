@@ -9,6 +9,7 @@
 // uWebSockets.
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -120,6 +121,22 @@ public:
     /// coordinator has no bulk assets, and every request gets `AssetMiss`.
     void SetAssetStore(const AssetStore* store) noexcept { asset_store_ = store; }
 
+    /// Deliver a frame to ANOTHER worker's connection (6.1, D-0085).
+    ///
+    /// `Reaction` addresses the connection that sent the frame; signalling has
+    /// to reach a different one, and this class is deliberately transport-free
+    /// (1.15). So routing arrives as a callback the `Server` injects, the same
+    /// shape that made `Transport` GPU-free (D-0042): a test supplies a stub and
+    /// asserts on what it captured, with no socket anywhere.
+    ///
+    /// Returns false if that worker has no live connection — which the caller
+    /// treats as "drop", never as an error to report back.
+    using PeerRelay = std::function<bool(WorkerId, std::span<const std::byte>)>;
+    void SetPeerRelay(PeerRelay relay) { peer_relay_ = std::move(relay); }
+
+    /// Clear the signalling rate-limit window. Called once per sweep.
+    void ResetSignalWindow() noexcept { signals_this_window_ = 0; }
+
 private:
     /// The actual routing. `OnMessage` wraps this so revokes are appended to
     /// every reply without each handler having to remember.
@@ -133,6 +150,9 @@ private:
     [[nodiscard]] Reaction OnGoodbye();
     /// Serve a bulk asset over the control link (5.16, D-0077).
     [[nodiscard]] Reaction OnAssetRequest(const wire::AssetRequest& req);
+    /// Relay one signalling frame to its destination (6.1). Opaque: the payload
+    /// is never parsed, only bounded.
+    [[nodiscard]] Reaction OnSignal(const wire::Signal& signal);
 
     [[nodiscard]] Reaction OnBenchmarkResult(const wire::BenchmarkResult& result);
     [[nodiscard]] Reaction OnThrottle(const wire::Throttle& throttle);
@@ -154,6 +174,9 @@ private:
     ReferenceStats* reference_stats_ = nullptr;
     Compositor* compositor_ = nullptr;
     const AssetStore* asset_store_ = nullptr;
+    PeerRelay peer_relay_;
+    /// Signal frames relayed since the last sweep, for the 6.1 rate limit.
+    std::uint32_t signals_this_window_ = 0;
     EventLog* events_ = nullptr;
     ReputationTable* reputation_ = nullptr;
     QuorumConfig quorum_{};
