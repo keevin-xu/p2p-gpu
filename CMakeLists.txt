@@ -256,7 +256,13 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(bvhtool PRIVATE p2pgpu-scene-hash)
 endif()
 
-add_library(p2pgpu-transport STATIC src/transport/transport.cpp)
+add_library(p2pgpu-transport STATIC
+    src/transport/transport.cpp
+    # 6.4 — the data plane. Portable for the same reason and by the same
+    # measurement as the control plane: D-0088 diffs PeerConnection/DataChannel
+    # across both libraries, as D-0032 instructed before Phase 6 relied on them.
+    src/transport/peer_link.cpp
+)
 target_include_directories(p2pgpu-transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(p2pgpu-transport PUBLIC p2pgpu-protocol)
 if(NOT P2PGPU_WASM)

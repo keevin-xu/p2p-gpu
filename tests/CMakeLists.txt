@@ -32,6 +32,9 @@ add_executable(tests
     unit/test_composite.cpp        # 5.15 — tile partition + compositing
     unit/test_signaling.cpp        # 6.1 — opaque signalling relay
 
+    # T2 — integration: a REAL WebRTC negotiation over loopback.
+    integration/test_peer_link.cpp # 6.4 — peer connection + data channel
+
     # Still to come:
     # unit/test_sizer.cpp          # 2.12
     # unit/test_reputation.cpp     # 3.7
@@ -56,7 +59,7 @@ add_executable(tests
 # touches a device, which is what keeps `tests` runnable on a machine with no
 # GPU. GPU tests live in `kernel_tests`.
 target_link_libraries(tests PRIVATE Catch2::Catch2WithMain
-    p2pgpu-coordinator-core p2pgpu-worker-core p2pgpu-scene-hash)
+    p2pgpu-coordinator-core p2pgpu-worker-core p2pgpu-scene-hash p2pgpu-transport)
 # test_session.cpp loads the REAL kernel manifest — granting a task now needs
 # the job's kernel to be in the registry, so a stub registry would exercise a
 # path production never takes.
