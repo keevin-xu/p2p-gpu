@@ -707,6 +707,24 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
                 wire::TaskEnvelopeBuilder tb(fbb);
                 tb.add_task_id(&tid);
                 tb.add_job_id(&jid);
+                // The asset's exact length, so the worker can compute the chunk
+                // count itself instead of believing whatever a peer claims
+                // (6.7, D-0091).
+                std::uint64_t input_bytes = 0;
+                if (job->input_ref && asset_store_ != nullptr) {
+                    // Same hex conversion the grant already does for the hash.
+                    std::string addr;
+                    addr.reserve(64);
+                    static constexpr char kHex[] = "0123456789abcdef";
+                    for (const std::byte b : *job->input_ref) {
+                        const auto v = std::to_integer<std::uint8_t>(b);
+                        addr.push_back(kHex[v >> 4]);
+                        addr.push_back(kHex[v & 0x0FU]);
+                    }
+                    if (const auto* blob = asset_store_->Find(addr)) {
+                        input_bytes = blob->size();
+                    }
+                }
                 if (input) {
                     // TELLING THE WORKER IT NEEDS AN ASSET IS WHAT LETS IT
                     // REFUSE CLEANLY. Without this field a worker runs a kernel
@@ -717,6 +735,7 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
                     // AssetUnavailable, which is exactly what that
                     // ReleaseReason is for.
                     tb.add_input_ref(&*input);
+                    tb.add_input_bytes(input_bytes);
                 }
                 tb.add_kernel_id(kid);
                 tb.add_seed(job->seed);

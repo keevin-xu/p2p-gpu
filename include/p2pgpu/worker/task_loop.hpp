@@ -249,6 +249,10 @@ private:
         std::vector<std::byte> bytes;
         std::vector<bool> have;      ///< per chunk, so a duplicate is idempotent
         std::uint32_t total = 0;
+        /// The coordinator's authoritative byte length (D-0091). A peer cannot
+        /// influence it, so a claimed chunk count can be REJECTED rather than
+        /// believed.
+        std::uint64_t expected_bytes = 0;
         std::uint32_t received = 0;
         std::chrono::steady_clock::time_point started{};
         std::chrono::steady_clock::time_point last_progress{};

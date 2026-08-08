@@ -469,6 +469,10 @@ void TaskLoop::HandleTaskGrant(const wire::TaskGrant& grant) {
                 // spend bandwidth on bytes nothing is waiting for.
                 fetch_ = AssetFetch{};
                 fetch_->address = address;
+                // AUTHORITATIVE, from the coordinator (D-0091). A peer cannot
+                // influence it, which is what lets us reject a claimed chunk
+                // count instead of believing one.
+                fetch_->expected_bytes = env->input_bytes();
                 fetch_->started = Clock::now();
                 fetch_->last_progress = fetch_->started;
                 Log("info", "fetching asset " + address.substr(0, 12) + "...");
@@ -909,16 +913,33 @@ void TaskLoop::HandleAssetChunk(const wire::AssetChunk& chunk) {
     // an unsigned wrap is not UB — no sanitizer fires, and the write lands
     // somewhere it should not.
     if (fetch_->total == 0) {
-        const std::uint32_t declared = chunk.total();
-        const auto expected_bytes =
-            static_cast<std::uint64_t>(declared) * protocol::kChunkBytes;
-        if (declared == 0 || expected_bytes > protocol::kMaxAssetBytes) {
-            AbandonAssetFetch("asset declares more chunks than the limit allows");
+        // ── THE SIZE IS OURS, NOT THE SENDER'S (6.7, D-0091) ─────────────
+        //
+        // `expected_chunks_for(hash)`, computed from the length the COORDINATOR
+        // gave us. Before this the count came from whatever the first arriving
+        // chunk claimed, which let a peer choose the size of this buffer.
+        if (fetch_->expected_bytes == 0 ||
+            fetch_->expected_bytes > protocol::kMaxAssetBytes) {
+            AbandonAssetFetch("no authoritative asset size, or it exceeds the limit");
             return;
         }
-        fetch_->total = declared;
-        fetch_->have.assign(declared, false);
-        fetch_->bytes.assign(static_cast<std::size_t>(expected_bytes), std::byte{0});
+        const std::uint64_t expected_chunks =
+            (fetch_->expected_bytes + protocol::kChunkBytes - 1) / protocol::kChunkBytes;
+        if (expected_chunks == 0 || expected_chunks > 0xFFFFFFFFULL) {
+            AbandonAssetFetch("asset chunk count is out of range");
+            return;
+        }
+        if (chunk.total() != static_cast<std::uint32_t>(expected_chunks)) {
+            // The sender disagrees with the coordinator about how big this asset
+            // is. One of them is lying and it is not the one that owns it.
+            AbandonAssetFetch("sender's chunk count disagrees with the coordinator");
+            return;
+        }
+        fetch_->total = static_cast<std::uint32_t>(expected_chunks);
+        fetch_->have.assign(fetch_->total, false);
+        // Sized to the TRUE length, so there is nothing to trim afterwards.
+        fetch_->bytes.assign(static_cast<std::size_t>(fetch_->expected_bytes),
+                             std::byte{0});
     }
     if (const auto s = protocol::CheckAssetChunk(chunk.index(), chunk.total(),
                                                  fetch_->total, bytes->size());
@@ -935,6 +956,23 @@ void TaskLoop::HandleAssetChunk(const wire::AssetChunk& chunk) {
         return;   // duplicate; idempotent by design, retries are normal
     }
 
+    // A NON-FINAL CHUNK MUST BE EXACTLY kChunkBytes.
+    //
+    // The subtle one. A short non-final chunk leaves a HOLE at a computed
+    // offset: every individual bound still holds, the received count still
+    // reaches `total`, and only the final BLAKE3 notices — reporting "the asset
+    // was corrupt" about a peer that actually lied about a length. Rejecting it
+    // here names the real fault.
+    const bool is_final = (chunk.index() + 1 == fetch_->total);
+    const std::size_t want =
+        is_final ? static_cast<std::size_t>(fetch_->expected_bytes) -
+                       (static_cast<std::size_t>(fetch_->total - 1) * protocol::kChunkBytes)
+                 : protocol::kChunkBytes;
+    if (bytes->size() != want) {
+        AbandonAssetFetch("chunk length disagrees with its position in the asset");
+        return;
+    }
+
     const auto* src = static_cast<const std::byte*>(
         static_cast<const void*>(bytes->data()));
     std::copy(src, src + bytes->size(), fetch_->bytes.begin() +
@@ -943,12 +981,10 @@ void TaskLoop::HandleAssetChunk(const wire::AssetChunk& chunk) {
     ++fetch_->received;
     fetch_->last_progress = Clock::now();
 
-    // The LAST chunk is short. Trim to the real length before hashing, or the
-    // trailing zero padding changes the digest and every asset fails
-    // verification — which would look exactly like a corrupt transfer.
-    if (chunk.index() + 1 == fetch_->total) {
-        fetch_->bytes.resize(static_cast<std::size_t>(*offset) + bytes->size());
-    }
+    // No trim: the buffer was sized to the coordinator's exact length, so the
+    // last chunk fills it precisely. Trimming used to be necessary because the
+    // buffer was a whole number of chunks, and it is the kind of step that
+    // quietly stops being correct when the sizing changes (D-0091).
 
     if (fetch_->received == fetch_->total) {
         FinishAssetFetch();

@@ -164,6 +164,22 @@ table TaskEnvelope {
   lease_ms:    uint;
   replica_of:  Uuid;            // optional; set => this is a verification replica
   accumulate:  AccumulationSpec;
+
+  /// Exact byte length of `input_ref`'s asset (6.7, D-0091). 0 when absent.
+  ///
+  /// APPENDED — and it was first written between `input_ref` and `output_spec`,
+  /// where it belonged logically and would have shifted the vtable slot of every
+  /// field after it. FlatBuffers assigns ids positionally; that is a silent wire
+  /// break, and it is the D-0035 mistake. `tools/check_protocol_doc.py` caught
+  /// it by comparing the field list IN ORDER.
+  ///
+  /// AUTHORITATIVE. The implementation originally took the chunk count from
+  /// whatever the first arriving chunk claimed, which let a PEER choose the size
+  /// of our reassembly buffer. The coordinator owns the asset and knows its
+  /// length exactly, so size and hash now come from the same party over the same
+  /// message — which is what makes 6.7's `total == expected_chunks_for(hash)` a
+  /// check that can be written at all.
+  input_bytes: ulong;
 }
 
 // ── Worker description ───────────────────────────────────────────────────
