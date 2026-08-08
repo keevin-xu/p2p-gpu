@@ -64,6 +64,11 @@ struct Snapshot {
     /// lower, and E5 owns measuring the difference.
     std::uint64_t wasted_units = 0;
 
+    /// Cache affinity (5.18). Two counts, not a ratio — a rate alone hides
+    /// whether it came from 3 grants or 30,000.
+    std::uint64_t asset_grants = 0;
+    std::uint64_t asset_grants_hit = 0;
+
     // Hygiene, deliberately separate from task reputation (3.11) — conflating
     // them is how an honest-but-buggy client gets blacklisted.
     std::uint64_t rejected_frames = 0;

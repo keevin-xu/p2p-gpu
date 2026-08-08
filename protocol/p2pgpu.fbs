@@ -252,6 +252,21 @@ table Hello {
   protocol_version: uint;
   resume_token:     string;     // a prior Welcome.session_token; optional
   capabilities:     WorkerCapabilities;
+
+  /// Bulk assets this worker already holds, as 64-char lowercase hex (5.18).
+  ///
+  /// APPENDED in D-0079, and `[string]` rather than the obvious `[Hash32]`
+  /// because **vectors of structs are BANNED on this wire** (D-0028): the
+  /// Verifier does not check alignment of vector-of-struct element data, which
+  /// made `[Hash32]` an attacker-craftable misaligned read that passed
+  /// verification. A vector of strings is a vector of offsets and is checked
+  /// completely.
+  ///
+  /// ADVISORY. A worker claiming to hold an asset it does not have gets a task
+  /// it must then fetch anyway; a worker under-reporting loses affinity. Neither
+  /// is a correctness question, which is why a malformed entry is dropped rather
+  /// than rejected.
+  cached_assets:    [string];
 }
 
 table BenchmarkResult {
@@ -263,6 +278,17 @@ table BenchmarkResult {
 table LeaseRequest {
   max_tasks: uint;      // pull-based (D-0005). The worker asks WHETHER,
                         // never HOW MUCH — sizing is the coordinator's (R1).
+
+  /// What this worker holds RIGHT NOW, 64-char lowercase hex (5.18, D-0079).
+  ///
+  /// Also on `Hello`, and that copy is nearly useless on its own: the handshake
+  /// always precedes every fetch, so a connecting worker truthfully reports an
+  /// empty cache and never mentions it again. Measured as 0% affinity before
+  /// this field existed.
+  ///
+  /// `[string]` not `[Hash32]` — vectors of structs are banned on this wire
+  /// (D-0028).
+  cached_assets: [string];
 }
 
 table Progress {

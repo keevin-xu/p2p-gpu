@@ -633,10 +633,23 @@ void TaskLoop::SendHello() {
             cb.add_supports_webrtc(true);
             auto caps = cb.Finish();
 
+            // What this worker already holds (5.18). Advisory: the coordinator
+            // uses it to prefer tasks whose asset is resident, and a worker that
+            // over-reports simply fetches something it claimed to have.
+            //
+            // Created BEFORE the HelloBuilder opens — a nested vector cannot be
+            // built while a table is under construction.
+            std::vector<flatbuffers::Offset<flatbuffers::String>> held;
+            if (!resident_asset_.empty()) {
+                held.push_back(fbb.CreateString(resident_asset_));
+            }
+            auto cached = fbb.CreateVector(held);
+
             wire::HelloBuilder hb(fbb);
             hb.add_protocol_version(protocol::kProtocolVersion);
             hb.add_resume_token(resume);
             hb.add_capabilities(caps);
+            hb.add_cached_assets(cached);
             return hb.Finish();
         });
 
@@ -682,7 +695,17 @@ void TaskLoop::RequestLease() {
 
     auto frame = protocol::EncodeMessage(
         wire::Body::LeaseRequest, [&](flatbuffers::FlatBufferBuilder& fbb) {
+            // What we hold RIGHT NOW (5.18). Sent on every request rather than
+            // once at Hello, because the handshake precedes every fetch and so
+            // always reports an empty cache. Built before the table opens.
+            std::vector<flatbuffers::Offset<flatbuffers::String>> held;
+            if (!resident_asset_.empty()) {
+                held.push_back(fbb.CreateString(resident_asset_));
+            }
+            auto cached = fbb.CreateVector(held);
+
             wire::LeaseRequestBuilder b(fbb);
+            b.add_cached_assets(cached);
             // A HINT. The coordinator decides how much work we get and how big
             // it is (R1/D-0005); asking is not the same as sizing.
             b.add_max_tasks(config_.max_tasks_in_flight);

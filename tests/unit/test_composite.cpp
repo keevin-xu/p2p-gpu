@@ -296,3 +296,104 @@ TEST_CASE("the whole sample budget is carved exactly once", "[composite][schedul
         CHECK(samples == 300);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// 5.18 — cache affinity, finally exercisable now that assets exist
+// ─────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+AssetId MakeAsset(std::uint8_t fill) {
+    AssetId id{};
+    id.fill(static_cast<std::byte>(fill));
+    return id;
+}
+
+}  // namespace
+
+TEST_CASE("a fresh carve prefers a job whose asset the worker holds",
+          "[affinity]") {
+    // 2.16's affinity has been WIRED AND NEVER TAKEN since Phase 2 (D-0047),
+    // because `cached_assets` was always empty. This is the first check that
+    // could have failed.
+    //
+    // EIGHT jobs, and the assertion is made once per job. The first version
+    // used two, and it PASSED with the affinity pass stubbed out — `jobs_` is
+    // an unordered_map, so the wanted job was simply first often enough. A
+    // coin-flip test is not a test; asking all eight makes passing by luck a
+    // 1-in-8^8 event.
+    constexpr int kJobs = 8;
+    for (int wanted = 0; wanted < kJobs; ++wanted) {
+        JobManager jobs;
+        std::vector<JobId> ids;
+        for (int i = 0; i < kJobs; ++i) {
+            const auto id = jobs.CreateJob("k", 1000, static_cast<std::uint64_t>(i));
+            jobs.MutableJob(id)->input_ref = MakeAsset(static_cast<std::uint8_t>(i));
+            ids.push_back(id);
+        }
+        const std::vector<AssetId> holds{MakeAsset(static_cast<std::uint8_t>(wanted))};
+        const auto t = jobs.Grant(WorkerId{1, 1}, 1000, 5000, 100, holds);
+        REQUIRE(t.has_value());
+        INFO("wanted job index " << wanted);
+        CHECK(t->job == ids[static_cast<std::size_t>(wanted)]);
+        CHECK(jobs.asset_grants_hit() == 1);
+    }
+}
+
+TEST_CASE("no affinity NEVER means no work", "[affinity]") {
+    // The D-0047 failure in a new place: a preferring pass that does not fall
+    // through starves every worker holding nothing, which is every worker at
+    // the start of a render.
+    JobManager jobs;
+    const auto job = jobs.CreateJob("k", 1000, 1);
+    jobs.MutableJob(job)->input_ref = MakeAsset(0xAA);
+
+    const auto t = jobs.Grant(WorkerId{1, 1}, 1000, 5000, 100, {});
+    REQUIRE(t.has_value());
+    CHECK(t->job == job);
+    // Counted as a MISS, which is what makes the rate meaningful.
+    CHECK(jobs.asset_grants() == 1);
+    CHECK(jobs.asset_grants_hit() == 0);
+}
+
+TEST_CASE("a worker holding an unrelated asset still gets work", "[affinity]") {
+    JobManager jobs;
+    const auto job = jobs.CreateJob("k", 1000, 1);
+    jobs.MutableJob(job)->input_ref = MakeAsset(0xAA);
+
+    const std::vector<AssetId> unrelated{MakeAsset(0x11)};
+    const auto t = jobs.Grant(WorkerId{1, 1}, 1000, 5000, 100, unrelated);
+    REQUIRE(t.has_value());
+    CHECK(jobs.asset_grants_hit() == 0);
+}
+
+TEST_CASE("assetless grants are not counted as affinity misses", "[affinity]") {
+    // The denominator is "grants that COULD have hit". Counting plain keyspace
+    // work as a miss would make the rate fall whenever the fleet does anything
+    // other than render — a number that moves for reasons unrelated to what it
+    // claims to measure.
+    JobManager jobs;
+    (void)jobs.CreateJob("k", 1000, 1);   // no input_ref
+    const auto t = jobs.Grant(WorkerId{1, 1}, 1000, 5000, 100, {});
+    REQUIRE(t.has_value());
+    CHECK(jobs.asset_grants() == 0);
+    CHECK(jobs.asset_grants_hit() == 0);
+}
+
+TEST_CASE("affinity holds across repeated grants to the same worker",
+          "[affinity]") {
+    // The steady state a render actually runs in: once a worker has fetched the
+    // asset, every subsequent grant should hit.
+    JobManager jobs;
+    const auto job = jobs.CreateJob("k", 10000, 1);
+    jobs.MutableJob(job)->input_ref = MakeAsset(0xAA);
+    const std::vector<AssetId> holds{MakeAsset(0xAA)};
+
+    for (int i = 0; i < 10; ++i) {
+        const auto t = jobs.Grant(WorkerId{1, static_cast<std::uint64_t>(i + 1)},
+                                  1000, 5000, 100, holds);
+        REQUIRE(t.has_value());
+    }
+    CHECK(jobs.asset_grants() == 10);
+    CHECK(jobs.asset_grants_hit() == 10);
+}

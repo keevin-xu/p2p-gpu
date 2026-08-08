@@ -212,7 +212,27 @@ std::optional<Task> JobManager::Grant(WorkerId worker, std::uint64_t now_ms,
     if (units == 0) {
         return std::nullopt;
     }
+    // ── AFFINITY ON THE FRESH CARVE TOO (5.18) ───────────────────────────
+    //
+    // The queue scan above prefers a REQUEUED task whose asset this worker
+    // holds, which was the whole of 2.16. That is not enough on its own: a
+    // render fleet spends nearly all its time carving FRESH keyspace, and the
+    // asset belongs to the JOB — so the choice that matters is which job to
+    // carve from, not which queued task to re-hand-out.
+    //
+    // Two passes rather than a sort: the first considers only jobs whose asset
+    // this worker already holds, the second considers everything. FALLING
+    // THROUGH IS ESSENTIAL — "no affinity" must never mean "no work", which is
+    // the D-0047 failure in a new place.
+    for (int pass = 0; pass < 2; ++pass) {
+    const bool affinity_pass = (pass == 0);
+    if (affinity_pass && cached.empty()) {
+        continue;   // nothing cached, so the preferring pass cannot match
+    }
     for (auto& [job_id, job] : jobs_) {
+        if (affinity_pass && (!job.input_ref || !HasAsset(cached, *job.input_ref))) {
+            continue;
+        }
         if (job.keyspace_exhausted()) {
             continue;
         }
@@ -288,9 +308,18 @@ std::optional<Task> JobManager::Grant(WorkerId worker, std::uint64_t now_ms,
         // creation — and the field that decides what a restart re-carves.
         MarkJobDirty(job_id);
         MarkTaskDirty(t.id);
+        // 5.18's numerator and denominator, counted at the one place a grant of
+        // an asset-bearing task actually happens.
+        if (job.input_ref) {
+            ++asset_grants_;
+            if (HasAsset(cached, *job.input_ref)) {
+                ++asset_grants_hit_;
+            }
+        }
         const Task copy = t;
         tasks_.emplace(t.id, std::move(t));
         return copy;
+    }
     }
     return std::nullopt;
 }

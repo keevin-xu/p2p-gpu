@@ -409,6 +409,18 @@ public:
     /// nobody can argue with.
     [[nodiscard]] std::uint64_t wasted_units() const noexcept { return wasted_units_; }
 
+    /// Cache-affinity hit rate (5.18): grants of a task whose bulk asset the
+    /// worker ALREADY held, over all grants of a task that needs one.
+    ///
+    /// The denominator is "grants that COULD have hit". Counting assetless
+    /// grants as misses would report a rate that falls whenever the fleet does
+    /// non-render work, which says nothing about affinity.
+    [[nodiscard]] std::uint64_t asset_grants() const noexcept { return asset_grants_; }
+    [[nodiscard]] std::uint64_t asset_grants_hit() const noexcept {
+        return asset_grants_hit_;
+    }
+
+
     /// Fraction of the job's keyspace that has reached a terminal accepted
     /// state. Drives the speculation threshold.
     [[nodiscard]] double CompletionFraction(JobId job) const;
@@ -457,6 +469,9 @@ private:
     /// a long-running job does not accumulate the payload of every tile it has
     /// already finished.
     std::unordered_map<TaskId, PartialResult> partials_;
+
+    std::uint64_t asset_grants_ = 0;
+    std::uint64_t asset_grants_hit_ = 0;
 
     /// Mark a row for the next flush. Called from every mutating path; the
     /// alternative — remembering to call it at each site — is the kind of

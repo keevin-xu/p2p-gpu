@@ -238,6 +238,58 @@ Reaction Session::Dispatch(const protocol::VerifiedFrame& frame, std::uint64_t n
     return {};
 }
 
+namespace {
+
+/// Parse advertised cache entries into `rec.cached_assets` (5.18, D-0079).
+///
+/// Every byte here came off the wire. A malformed entry is DROPPED, not
+/// rejected: a worker advertising junk has told us nothing useful about its
+/// cache, which costs it affinity and costs us nothing — while refusing the
+/// whole message would disconnect a worker that is otherwise perfectly able to
+/// compute.
+void AdoptCachedAssets(
+    WorkerRecord& rec,
+    const flatbuffers::Vector<flatbuffers::Offset<flatbuffers::String>>* advertised) {
+    rec.cached_assets.clear();
+    if (advertised == nullptr) {
+        return;
+    }
+    // Bounded BEFORE the loop: an attacker declaring thousands of entries must
+    // not be able to make us allocate for all of them (R11). A worker holds a
+    // handful.
+    constexpr std::size_t kMaxAdvertisedAssets = 32;
+    const std::size_t take =
+        std::min<std::size_t>(advertised->size(), kMaxAdvertisedAssets);
+    rec.cached_assets.reserve(take);
+
+    for (std::size_t i = 0; i < take; ++i) {
+        const auto* entry = advertised->Get(static_cast<flatbuffers::uoffset_t>(i));
+        if (entry == nullptr) {
+            continue;
+        }
+        const std::string_view hex = entry->string_view();
+        // Exactly the shape AssetStore::IsWellFormedAddress insists on, and
+        // lowercase for the same reason: one function emits addresses, so a
+        // second spelling would create two names for one asset and make the
+        // 5.18 hit rate measure the wrong thing.
+        if (!AssetStore::IsWellFormedAddress(hex)) {
+            continue;
+        }
+        AssetId id{};
+        for (std::size_t b = 0; b < id.size(); ++b) {
+            const auto nibble = [](char c) -> std::uint8_t {
+                return c <= '9' ? static_cast<std::uint8_t>(c - '0')
+                                : static_cast<std::uint8_t>(c - 'a' + 10);
+            };
+            id[b] = static_cast<std::byte>(
+                (nibble(hex[b * 2]) << 4) | nibble(hex[b * 2 + 1]));
+        }
+        rec.cached_assets.push_back(id);
+    }
+}
+
+}  // namespace
+
 Reaction Session::OnHello(const wire::Hello& hello) {
     if (handshaked_) {
         return NonFatal(wire::ErrorCode::MalformedMessage, "duplicate Hello");
@@ -285,6 +337,16 @@ Reaction Session::OnHello(const wire::Hello& hello) {
     // `released=0` makes the log look harmless while the worker is silently
     // removed from the fleet and can never be granted work.
     fleet_.Join(worker_id_, conn_id_, now_ms_);
+
+    // ── WHAT THIS WORKER ALREADY HOLDS (5.18, D-0079) ────────────────────
+    //
+    // A CONNECT-TIME SNAPSHOT, and nearly useless on its own: the handshake
+    // always precedes every fetch, so a fresh worker truthfully reports an
+    // empty cache. It matters only for a RESUMING worker whose cache is warm.
+    // `LeaseRequest` carries the copy affinity actually reads.
+    if (WorkerRecord* joined = fleet_.Mutable(worker_id_); joined != nullptr) {
+        AdoptCachedAssets(*joined, hello.cached_assets());
+    }
 
     spdlog::info("handshake conn_id={} worker_id={} kernels={}", conn_id_,
                  worker_id_.hi(), kernels_.size());
@@ -410,6 +472,14 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
     // (R1, D-0005). `max_tasks` is a hint we may grant fewer than, and is
     // clamped so a worker cannot ask for an unbounded backlog.
     const std::uint32_t want = std::min(std::max(req.max_tasks(), 1U), 4U);
+
+    // THE COPY AFFINITY ACTUALLY READS (5.18, D-0079). `Hello`'s snapshot is
+    // taken before the worker has fetched anything, so it reports an empty cache
+    // for the life of a connection; this one arrives immediately before the
+    // decision it informs. Measured 0% affinity before this existed.
+    if (WorkerRecord* mut = fleet_.Mutable(worker_id_); mut != nullptr) {
+        AdoptCachedAssets(*mut, req.cached_assets());
+    }
 
     const WorkerRecord* rec = fleet_.Find(worker_id_);
     if (rec == nullptr) {

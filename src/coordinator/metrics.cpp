@@ -40,6 +40,10 @@ Snapshot Collect(const JobManager& jobs, const Fleet& fleet,
     snap.units_total = jobs.total_units();
     snap.units_remaining = jobs.remaining_units();
     snap.wasted_units = jobs.wasted_units();
+    // 5.18. Reported as the two counts rather than a ratio: a rate alone hides
+    // whether it came from 3 grants or 30,000.
+    snap.asset_grants = jobs.asset_grants();
+    snap.asset_grants_hit = jobs.asset_grants_hit();
     snap.rejected_frames = rejected_frames;
 
     snap.fleet.reserve(fleet.size());
@@ -70,6 +74,8 @@ std::string ToJson(const Snapshot& snap) {
     out += ",\"units_total\":" + std::to_string(snap.units_total);
     out += ",\"units_remaining\":" + std::to_string(snap.units_remaining);
     out += ",\"wasted_units\":" + std::to_string(snap.wasted_units);
+    out += ",\"asset_grants\":" + std::to_string(snap.asset_grants);
+    out += ",\"asset_grants_hit\":" + std::to_string(snap.asset_grants_hit);
     out += ",\"rejected_frames\":" + std::to_string(snap.rejected_frames);
 
     out += ",\"tasks_by_state\":[";
