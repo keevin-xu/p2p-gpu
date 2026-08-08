@@ -727,6 +727,47 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
                 return gb.Finish();
             });
         out.push_back(std::move(frame));
+
+        // ── PEER LIST, only when this worker actually lacks the asset ────
+        //
+        // Sent WITH the grant that creates the need: this is the moment the
+        // coordinator knows both which asset is required and that this worker
+        // does not have it. A worker-initiated request would cost a round trip
+        // at exactly the point latency matters — the worker is parked and idle —
+        // and tell us nothing we did not already know (D-0086).
+        //
+        // ALREADY FILTERED. The coordinator is the only party that tracks who
+        // holds what (R1, populated at 5.18), and the obvious wire shape for
+        // worker-side filtering — `has_assets: [Hash32]` — is a vector of
+        // structs, which this schema bans (D-0028).
+        if (job->input_ref && !HasAsset(rec->cached_assets, *job->input_ref)) {
+            // A full mesh at N=50 is 1225 connections. Capped so a large fleet
+            // never approaches one; 8 is enough to still find a live source
+            // after several listed peers have departed.
+            constexpr std::size_t kMaxPeersPerList = 8;
+            const auto peers =
+                fleet_.PeersHolding(*job->input_ref, worker_id_, kMaxPeersPerList);
+            if (!peers.empty()) {
+                out.push_back(protocol::EncodeMessage(
+                    wire::Body::PeerList,
+                    [&](flatbuffers::FlatBufferBuilder& fbb) {
+                        std::vector<flatbuffers::Offset<wire::PeerInfo>> entries;
+                        entries.reserve(peers.size());
+                        for (const WorkerId p : peers) {
+                            const wire::Uuid id = p.to_wire();
+                            wire::PeerInfoBuilder pb(fbb);
+                            pb.add_worker_id(&id);
+                            entries.push_back(pb.Finish());
+                        }
+                        auto vec = fbb.CreateVector(entries);
+                        wire::PeerListBuilder b(fbb);
+                        b.add_peers(vec);
+                        return b.Finish();
+                    }));
+                spdlog::debug("peer_list conn_id={} task={} peers={}", conn_id_,
+                              task->id.lo(), peers.size());
+            }
+        }
         ++granted;
 
         // Remember what we predicted, on OUR clock. 2.13 compares this against

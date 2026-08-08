@@ -258,6 +258,10 @@ void TaskLoop::OnFrame(std::span<const std::byte> bytes) {
 
         case wire::Body::LeaseAck:
         case wire::Body::PeerList:
+            if (const auto* m = env.body_as_PeerList()) {
+                HandlePeerList(*m);
+            }
+            return;
         case wire::Body::Throttle:
             Log("debug", "unhandled coordinator message");
             return;
@@ -558,6 +562,37 @@ void TaskLoop::HandleBenchmarkRequest(const wire::BenchmarkRequest& request) {
     measured_ops_per_sec_ = best_ops_per_sec;
     (void)transport_.Send(frame);
     Log("info", "benchmark: " + std::to_string(best_ops_per_sec / 1e9) + " Gops/s");
+}
+
+void TaskLoop::HandlePeerList(const wire::PeerList& list) {
+    // Candidate sources for the asset this worker was just told it needs
+    // (6.2, D-0086). A HINT, not an instruction: a listed peer may have
+    // departed, may refuse, or may serve corrupt bytes. All three are safe
+    // because whatever arrives is verified against the address we asked for
+    // (5.4) and the coordinator remains the fallback (D-0007).
+    //
+    // Stored, not acted on — 6.4 is what opens a connection. Keeping those
+    // separate means this step can be tested without a WebRTC stack.
+    peer_candidates_.clear();
+    const auto* peers = list.peers();
+    if (peers == nullptr) {
+        return;
+    }
+    // Bounded on receipt regardless of what the coordinator claims. The
+    // coordinator is not more trusted than any other peer (R11), and a worker
+    // that opened a connection per listed entry would be one malicious frame
+    // away from building the mesh 6.2 exists to avoid.
+    constexpr std::size_t kMaxPeerCandidates = 8;
+    for (flatbuffers::uoffset_t i = 0;
+         i < peers->size() && peer_candidates_.size() < kMaxPeerCandidates; ++i) {
+        const auto* entry = peers->Get(i);
+        if (entry == nullptr || entry->worker_id() == nullptr) {
+            continue;
+        }
+        peer_candidates_.push_back(protocol::WorkerId{*entry->worker_id()});
+    }
+    Log("info", "peer list: " + std::to_string(peer_candidates_.size()) +
+                    " candidate source(s) for the asset");
 }
 
 void TaskLoop::HandleShutdown() {

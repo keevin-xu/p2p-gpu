@@ -2,6 +2,8 @@
 
 #include "p2pgpu/coordinator/fleet.hpp"
 
+#include <algorithm>
+
 namespace p2pgpu::coordinator {
 
 void Fleet::Join(WorkerId id, std::uint64_t conn_id, std::uint64_t now_ms) {
@@ -51,6 +53,32 @@ void Fleet::RecordCompletion(WorkerId id) {
     if (it != workers_.end()) {
         ++it->second.tasks_completed;
     }
+}
+
+std::vector<WorkerId> Fleet::PeersHolding(const AssetId& asset, WorkerId exclude,
+                                          std::size_t max) const {
+    std::vector<WorkerId> out;
+    if (max == 0) {
+        return out;
+    }
+    for (const auto& [id, rec] : workers_) {
+        if (id == exclude) {
+            continue;
+        }
+        if (HasAsset(rec.cached_assets, asset)) {
+            out.push_back(id);
+        }
+    }
+    // Sorted BEFORE truncating, so the cap takes a deterministic prefix rather
+    // than whatever the hash map happened to iterate first. Truncating an
+    // unordered set would make the list vary between identical runs.
+    std::ranges::sort(out, [](WorkerId a, WorkerId b) {
+        return a.hi() != b.hi() ? a.hi() < b.hi() : a.lo() < b.lo();
+    });
+    if (out.size() > max) {
+        out.resize(max);
+    }
+    return out;
 }
 
 }  // namespace p2pgpu::coordinator

@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <memory>
 
+#include "p2pgpu/coordinator/fleet.hpp"
 #include "p2pgpu/coordinator/kernel_registry.hpp"
 #include "p2pgpu/coordinator/session.hpp"
 #include "p2pgpu/protocol/encode.hpp"
@@ -218,4 +219,73 @@ TEST_CASE("signalling is rate limited per connection and the window resets",
     const auto after = fx.Deliver(SignalFrame(fx.other, 16));
     CHECK(after.replies.empty());
     CHECK(fx.relayed.size() == 65);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 6.2 — peer list distribution (D-0086)
+// ─────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+AssetId Asset(std::uint8_t fill) {
+    AssetId a{};
+    a.fill(static_cast<std::byte>(fill));
+    return a;
+}
+
+WorkerId W(std::uint64_t n) { return WorkerId{n, n}; }
+
+}  // namespace
+
+TEST_CASE("PeersHolding returns only holders, excludes self, and is sorted",
+          "[peers]") {
+    Fleet fleet;
+    for (std::uint64_t i = 1; i <= 6; ++i) {
+        fleet.Join(W(i), i, 1000);
+    }
+    // 5, 2 and 4 hold it; 3 holds something else; 1 holds nothing.
+    for (const std::uint64_t i : {5ULL, 2ULL, 4ULL}) {
+        fleet.Mutable(W(i))->cached_assets = {Asset(0xAA)};
+    }
+    fleet.Mutable(W(3))->cached_assets = {Asset(0xBB)};
+
+    const auto peers = fleet.PeersHolding(Asset(0xAA), W(4), 8);
+    // 4 is excluded as self; 1 and 3 do not hold it; result is SORTED, which
+    // is what makes 6.13's runs comparable rather than a fairness nicety.
+    CHECK(peers == std::vector<WorkerId>{W(2), W(5)});
+}
+
+TEST_CASE("the peer list is CAPPED, and the cap takes a deterministic prefix",
+          "[peers]") {
+    // A full mesh at N=50 is 1225 connections. Truncating an unordered set
+    // would also make identical runs return different peers.
+    Fleet fleet;
+    for (std::uint64_t i = 1; i <= 40; ++i) {
+        fleet.Join(W(i), i, 1000);
+        fleet.Mutable(W(i))->cached_assets = {Asset(0xAA)};
+    }
+    const auto a = fleet.PeersHolding(Asset(0xAA), W(99), 8);
+    const auto b = fleet.PeersHolding(Asset(0xAA), W(99), 8);
+    REQUIRE(a.size() == 8);
+    CHECK(a == b);
+    CHECK(a.front() == W(1));
+    CHECK(a.back() == W(8));
+}
+
+TEST_CASE("no holders means an empty list, not every worker", "[peers]") {
+    // The failure this guards: a filter that falls through to "send everyone"
+    // when nothing matches would build the mesh 6.2 exists to avoid, and would
+    // do it precisely when the asset is rarest.
+    Fleet fleet;
+    for (std::uint64_t i = 1; i <= 5; ++i) {
+        fleet.Join(W(i), i, 1000);
+    }
+    CHECK(fleet.PeersHolding(Asset(0xAA), W(99), 8).empty());
+}
+
+TEST_CASE("max of zero returns nothing rather than everything", "[peers]") {
+    Fleet fleet;
+    fleet.Join(W(1), 1, 1000);
+    fleet.Mutable(W(1))->cached_assets = {Asset(0xAA)};
+    CHECK(fleet.PeersHolding(Asset(0xAA), W(99), 0).empty());
 }

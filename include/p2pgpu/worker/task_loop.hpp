@@ -143,6 +143,9 @@ private:
     /// would silently mean "units of whatever I happened to benchmark".
     void HandleBenchmarkRequest(const wire::BenchmarkRequest& request);
     void HandleShutdown();
+    /// Candidate peers holding the asset this worker needs (6.2). Stored only;
+    /// 6.4 is what connects to them.
+    void HandlePeerList(const wire::PeerList& list);
     void HandleError(const wire::Error& error);
 
     // Outbound
@@ -250,6 +253,15 @@ private:
         std::chrono::steady_clock::time_point last_progress{};
     };
     std::optional<AssetFetch> fetch_;
+
+    /// Peers the coordinator believes hold the asset we are fetching (6.2).
+    ///
+    /// A HINT. A listed peer may have departed, may refuse, or may serve corrupt
+    /// bytes — all safe, because whatever arrives is verified against the
+    /// address we asked for and the coordinator remains the fallback (D-0007).
+    /// Bounded on receipt: a worker that opened a connection per listed entry
+    /// would be one malicious frame from the mesh 6.2 exists to avoid.
+    std::vector<protocol::WorkerId> peer_candidates_;
 
     /// Tasks waiting on an asset. PARKED, not released: releasing returns the
     /// task to the queue where this same worker is likely to be granted it

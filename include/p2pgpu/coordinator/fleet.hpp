@@ -116,6 +116,22 @@ public:
 
     /// Mutable access for the sizing state. Deliberately narrow — everything
     /// else about a record is set through the methods above.
+    /// Workers believed to hold `asset`, excluding `exclude`, at most `max`
+    /// of them (6.2, D-0086).
+    ///
+    /// "Believed" is exact: this reads what workers ADVERTISED on their last
+    /// `LeaseRequest` (D-0079). A peer may have departed or been lying since.
+    /// That is safe because the list is a hint — the requester verifies BLAKE3
+    /// against the address it asked for and falls back to the coordinator, so a
+    /// wrong entry costs a retry and never a wrong answer.
+    ///
+    /// Sorted by worker id, lowest first. Not fairness — REPLAYABILITY: 6.13
+    /// compares runs, and a list that varied between identical runs would make
+    /// two measurements incomparable for a reason unrelated to the experiment.
+    [[nodiscard]] std::vector<WorkerId> PeersHolding(const AssetId& asset,
+                                                     WorkerId exclude,
+                                                     std::size_t max) const;
+
     [[nodiscard]] WorkerRecord* Mutable(WorkerId id) noexcept;
 
 private:
