@@ -10,6 +10,7 @@
 #include "p2pgpu/worker/task_loop.hpp"
 
 #include <algorithm>
+#include <deque>
 #include <utility>
 
 #include "p2pgpu/protocol/encode.hpp"
@@ -213,6 +214,15 @@ void TaskLoop::Poll() {
     // rather than failure-only: ICE can take many seconds to admit defeat, and
     // a merely slow peer must not block a task the coordinator could already
     // have served.
+    // A finished SERVING connection is torn down here rather than in its own
+    // callback (see above). `fetch_` being absent is what distinguishes a
+    // serving link from one we are fetching over.
+    if (peer_serving_done_ && !fetch_) {
+        peer_serving_done_ = false;
+        peer_.reset();
+        peer_target_ = protocol::WorkerId{};
+    }
+
     if (fetch_ && peer_ && Clock::now() > peer_deadline_) {
         peer_.reset();
         TryNextPeerOrFallBack();
@@ -1048,6 +1058,55 @@ void TaskLoop::HandleAssetChunk(const wire::AssetChunk& chunk) {
 
 // ── Peer data plane (6.6, D-0090) ────────────────────────────────────────
 
+void TaskLoop::PumpSignalling() {
+    // ── SERVING A PEER MUST NOT REQUIRE BEING IDLE ───────────────────────
+    //
+    // The inbox is drained in `Poll()`, and `Poll()` is blocked inside
+    // `RunTask` for the whole task. With multi-second tasks that makes a BUSY
+    // worker unable to answer a peer's offer at all — the offerer waits out its
+    // deadline and falls back to the coordinator.
+    //
+    // Measured as E6's curve failing to flatten: at 6 workers, 4 still fetched
+    // from the coordinator, because the workers that HELD the asset were all
+    // mid-task and therefore unreachable. **The swarm worked only among idle
+    // workers, which is exactly when it is least needed.**
+    //
+    // R4's chunking is what makes the fix cheap: the host already calls back
+    // between dispatches, so there is a natural point to service signalling
+    // without interrupting GPU work.
+    //
+    // ONLY signalling is handled here. A `TaskGrant` processed mid-task would
+    // start a second task inside the first, so everything else is put back in
+    // order and waits for `Poll()`.
+    std::deque<std::vector<std::byte>> pending;
+    {
+        std::lock_guard<std::mutex> lock(inbox_mutex_);
+        pending.swap(inbox_);
+    }
+    std::deque<std::vector<std::byte>> keep;
+    for (auto& frame : pending) {
+        const auto verified = protocol::VerifyFrame(frame);
+        if (verified) {
+            const auto* env = verified->envelope();
+            if (env != nullptr && env->body_type() == wire::Body::Signal) {
+                if (const auto* m = env->body_as_Signal()) {
+                    HandleSignal(*m);
+                }
+                continue;
+            }
+        }
+        keep.push_back(std::move(frame));
+    }
+    if (!keep.empty()) {
+        std::lock_guard<std::mutex> lock(inbox_mutex_);
+        // Order preserved: anything that arrived while we were pumping goes
+        // after what was already queued.
+        for (auto it = keep.rbegin(); it != keep.rend(); ++it) {
+            inbox_.push_front(std::move(*it));
+        }
+    }
+}
+
 void TaskLoop::SendSignal(protocol::WorkerId to, const transport::SignalOut& out) {
     // The inner PeerSignal, verified by the RECEIVING worker. The coordinator
     // relays `payload` without reading it (D-0085), so the structure is ours to
@@ -1115,6 +1174,20 @@ void TaskLoop::HandleSignal(const wire::Signal& signal) {
         peer_->OnOpen([this](bool open) {
             Log("info", open ? "peer channel open (serving)"
                              : "peer channel closed (serving)");
+            if (!open) {
+                // FREE THE SLOT. A worker holds one connection at a time, and
+                // without this a worker that served ONE peer kept `peer_` set
+                // forever and refused every later offer — so each holder could
+                // seed exactly one other worker for the life of the process,
+                // capping peer fetches at roughly half the fleet. That is the
+                // shape E6 measured: coordinator fetches of 1, 1, 2, 4 for
+                // fleets of 1, 2, 4, 6.
+                //
+                // DEFERRED to Poll(), not done here: this runs inside the
+                // link's own callback, and destroying the object mid-callback
+                // is the D-0060 use-after-free in a new place.
+                peer_serving_done_ = true;
+            }
         });
         Log("info", "accepting a peer connection from worker " +
                         std::to_string(from.hi()));
@@ -1489,6 +1562,10 @@ bool TaskLoop::Execute(const PendingTask& task) {
     const auto outcome = RunTask(
         device_.context(), req, ChunkUnitsFor(*info),
         [&](std::uint64_t done, std::uint64_t total) {
+            // Between dispatches (R4/K1). Service peer signalling here or a
+            // busy worker cannot answer an offer at all — see PumpSignalling.
+            PumpSignalling();
+
             const auto now = std::chrono::steady_clock::now();
             if (now - last_renew < std::chrono::seconds(3)) {
                 return;

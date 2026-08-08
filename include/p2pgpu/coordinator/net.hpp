@@ -192,6 +192,9 @@ private:
     /// not task reputation: conflating the two is how an honest-but-buggy
     /// client gets blacklisted (3.11).
     std::uint64_t rejected_frames_total_ = 0;
+    /// Asset bytes served over the CONTROL LINK (6.13). The HTTP path tallies
+    /// into `assets_` directly; both are summed for E6.
+    std::uint64_t asset_bytes_served_ = 0;
 
     /// Consecutive sweeps with work outstanding, workers connected, and nothing
     /// leased. Counted rather than latched so the warning fires once per stall

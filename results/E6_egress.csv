@@ -1,0 +1,9 @@
+workers,p2p,egress_bytes,from_peer,from_coordinator,from_cache,fetches,workers_seen,tasks_done
+1,off,256704,0,1,10,1,1,11
+2,off,513408,0,2,30,2,2,32
+4,off,1026816,0,4,48,4,4,52
+6,off,1540224,0,6,66,6,5,72
+1,on,256704,0,1,10,1,1,11
+2,on,256704,1,1,30,2,2,32
+4,on,256704,3,1,49,4,4,53
+6,on,256704,5,1,71,6,6,77

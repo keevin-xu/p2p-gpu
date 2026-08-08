@@ -78,6 +78,11 @@ struct Snapshot {
     std::uint64_t asset_from_coordinator = 0;
     std::uint64_t asset_from_cache = 0;
 
+    /// **E6's headline number** (6.13): asset bytes the coordinator actually
+    /// sent, over both transports. What the coordinator KNOWS, as against what
+    /// workers claim.
+    std::uint64_t coordinator_asset_egress = 0;
+
     // Hygiene, deliberately separate from task reputation (3.11) — conflating
     // them is how an honest-but-buggy client gets blacklisted.
     std::uint64_t rejected_frames = 0;

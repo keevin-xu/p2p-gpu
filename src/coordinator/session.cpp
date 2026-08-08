@@ -1007,6 +1007,7 @@ Reaction Session::OnAssetRequest(const wire::AssetRequest& req) {
 
     std::vector<std::vector<std::byte>> out;
     out.reserve(end - from);
+    std::uint64_t served_bytes = 0;
     for (std::uint32_t i = from; i < end; ++i) {
         const auto offset = protocol::ChunkOffset(i);
         if (!offset || *offset >= blob->size()) {
@@ -1015,6 +1016,7 @@ Reaction Session::OnAssetRequest(const wire::AssetRequest& req) {
         const std::size_t len =
             std::min<std::size_t>(protocol::kChunkBytes, blob->size() - *offset);
         const std::byte* start = blob->data() + *offset;
+        served_bytes += len;
         out.push_back(protocol::EncodeMessage(
             wire::Body::AssetChunk, [&](flatbuffers::FlatBufferBuilder& fbb) {
                 auto bytes = fbb.CreateVector(
@@ -1027,6 +1029,12 @@ Reaction Session::OnAssetRequest(const wire::AssetRequest& req) {
                 b.add_bytes(bytes);
                 return b.Finish();
             }));
+    }
+    // E6 (6.13). The control-link path serves the same bytes as the HTTP one and
+    // must be counted the same way, or a "saving" could just be workers changing
+    // transport.
+    if (asset_served_ != nullptr) {
+        *asset_served_ += served_bytes;
     }
     spdlog::debug("asset_serve conn_id={} address={} chunks={}..{} of {}",
                   conn_id_, address, from, end, total_chunks);
@@ -1201,6 +1209,32 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
     // telemetry (invariant 8): recorded for E6, never acted on.
     if (const auto* stats = header.stats()) {
         jobs_.RecordAssetSource(stats->asset_source());
+    }
+
+    // ── A SUBMITTED RESULT PROVES THE WORKER HOLDS THE ASSET (6.13) ──────
+    //
+    // Cache state otherwise rides on `LeaseRequest` (D-0079), so it LAGS BY A
+    // WHOLE TASK: a worker fetches the asset at its grant, computes for tens of
+    // seconds, and only advertises the asset when it next asks for work. During
+    // that window it is invisible as a peer, so newcomers are told there is one
+    // holder when there are several and fall back to the coordinator.
+    //
+    // Measured: with 3 staggered workers the third was offered `peers=1` while
+    // two workers held the asset, and E6's egress curve failed to flatten
+    // because of it.
+    //
+    // This signal is not a claim and needs no trust — a worker cannot produce a
+    // result for a task with an `input_ref` without having had the asset. It is
+    // INFERRED FROM WORK DONE, which is the strongest evidence available and
+    // costs nothing to collect.
+    if (const Task* done = jobs_.Find(task_id); done != nullptr) {
+        if (const Job* j = jobs_.FindJob(done->job); j != nullptr && j->input_ref) {
+            if (WorkerRecord* rec = fleet_.Mutable(worker_id_); rec != nullptr) {
+                if (!HasAsset(rec->cached_assets, *j->input_ref)) {
+                    rec->cached_assets.push_back(*j->input_ref);
+                }
+            }
+        }
     }
 
     // OPTIONAL, DEV-ONLY (step 1.26): recompute the task on the CPU and compare.

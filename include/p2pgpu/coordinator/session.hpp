@@ -120,6 +120,10 @@ public:
     /// Where `AssetRequest` is served from (5.16, D-0077). Null means this
     /// coordinator has no bulk assets, and every request gets `AssetMiss`.
     void SetAssetStore(const AssetStore* store) noexcept { asset_store_ = store; }
+    /// Where control-link asset bytes are tallied for E6 (6.13).
+    void SetAssetServedCounter(std::uint64_t* counter) noexcept {
+        asset_served_ = counter;
+    }
 
     /// Deliver a frame to ANOTHER worker's connection (6.1, D-0085).
     ///
@@ -182,6 +186,7 @@ private:
     ReferenceStats* reference_stats_ = nullptr;
     Compositor* compositor_ = nullptr;
     const AssetStore* asset_store_ = nullptr;
+    std::uint64_t* asset_served_ = nullptr;
     PeerRelay peer_relay_;
     std::vector<std::string> ice_servers_;
     bool disable_p2p_ = false;

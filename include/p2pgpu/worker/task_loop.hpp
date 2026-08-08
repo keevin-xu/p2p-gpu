@@ -299,6 +299,10 @@ private:
     /// one asset needs one source, and the connection cap is a scheduling
     /// question (6.12) that does not belong in the fetch path.
     std::unique_ptr<transport::PeerLink> peer_;
+    /// A serving connection has closed and its slot should be freed. Handled in
+    /// `Poll()` rather than in the callback that sets it — tearing the link down
+    /// from inside its own callback is a use-after-free (D-0060).
+    bool peer_serving_done_ = false;
 
     std::vector<std::byte> asset_nodes_;
     std::vector<std::byte> asset_prims_;
@@ -341,6 +345,11 @@ private:
     void HandleSignal(const wire::Signal& signal);
     /// Send one signalling message to the peer we are negotiating with.
     void SendSignal(protocol::WorkerId to, const transport::SignalOut& out);
+    /// Handle queued `Signal` frames WITHOUT running a task. Called between
+    /// dispatches, because a worker blocked in `RunTask` cannot otherwise
+    /// answer a peer's offer — which made the swarm work only among idle
+    /// workers.
+    void PumpSignalling();
 
     /// Serve a peer's `AssetRequest` from what we hold.
     void ServePeerAssetRequest(const wire::AssetRequest& req);

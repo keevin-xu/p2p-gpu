@@ -83,6 +83,7 @@ std::string ToJson(const Snapshot& snap) {
     out += ",\"asset_from_peer\":" + std::to_string(snap.asset_from_peer);
     out += ",\"asset_from_coordinator\":" + std::to_string(snap.asset_from_coordinator);
     out += ",\"asset_from_cache\":" + std::to_string(snap.asset_from_cache);
+    out += ",\"coordinator_asset_egress\":" + std::to_string(snap.coordinator_asset_egress);
     out += ",\"rejected_frames\":" + std::to_string(snap.rejected_frames);
 
     out += ",\"tasks_by_state\":[";

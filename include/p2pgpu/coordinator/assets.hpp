@@ -52,11 +52,26 @@ public:
     [[nodiscard]] std::size_t count() const noexcept { return blobs_.size(); }
     [[nodiscard]] std::uint64_t total_bytes() const noexcept { return total_bytes_; }
 
+    /// Asset bytes this coordinator has SERVED — E6's headline number (6.13).
+    ///
+    /// Measured here rather than derived from worker telemetry, because that is
+    /// the whole point: `TaskStats.asset_source` is what workers CLAIM
+    /// (invariant 8), and this is what the coordinator KNOWS. A fleet reporting
+    /// peer fetches while this number grows linearly is contradicted by it.
+    ///
+    /// Counted on both paths — `GET /asset/{hash}` and `AssetChunk` over the
+    /// control link — because a measurement that missed one would report a
+    /// saving that came from workers switching transports rather than from
+    /// peers serving each other.
+    void RecordServed(std::uint64_t bytes) noexcept { bytes_served_ += bytes; }
+    [[nodiscard]] std::uint64_t bytes_served() const noexcept { return bytes_served_; }
+
 private:
     /// `std::less<>` so a `string_view` looks up without allocating a string —
     /// this runs on the event-loop thread for every asset request.
     std::map<std::string, std::vector<std::byte>, std::less<>> blobs_;
     std::uint64_t total_bytes_ = 0;
+    std::uint64_t bytes_served_ = 0;
 };
 
 }  // namespace p2pgpu::coordinator

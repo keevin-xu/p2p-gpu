@@ -83,8 +83,9 @@ void Server::PublishMetrics(std::uint64_t now_ms) {
     }
     // Collected ONCE for all subscribers. Two dashboards must not see two
     // different instants and disagree about the same moment.
-    const std::string payload =
-        "data: " + ToJson(Collect(jobs_, fleet_, rejected_frames_total_, now_ms)) + "\n\n";
+    auto snap = Collect(jobs_, fleet_, rejected_frames_total_, now_ms);
+    snap.coordinator_asset_egress = assets_.bytes_served() + asset_bytes_served_;
+    const std::string payload = "data: " + ToJson(snap) + "\n\n";
     for (auto* res : sse_->open) {
         res->write(payload);
     }
@@ -366,10 +367,16 @@ void Server::Run() {
         // stream, so the two cannot report different things.
         .get("/metrics",
              [this](auto* res, auto* /*req*/) {
+                 auto snap = Collect(this->jobs_, this->fleet_,
+                                     this->rejected_frames_total_, 0);
+                 // E6 (6.13): both transports summed. Assembled here rather
+                 // than inside Collect because the counters live on the server,
+                 // and Collect is deliberately pure.
+                 snap.coordinator_asset_egress =
+                     this->assets_.bytes_served() + this->asset_bytes_served_;
                  res->writeHeader("Content-Type", "application/json")
                      ->writeHeader("Access-Control-Allow-Origin", "*")
-                     ->end(ToJson(Collect(this->jobs_, this->fleet_,
-                                          this->rejected_frames_total_, 0)));
+                     ->end(ToJson(snap));
              })
 
         // Serve WGSL by kernel id (step 1.12). Workers fetch the source they
@@ -438,6 +445,8 @@ void Server::Run() {
                  // body, so the bytes at an address can never change. This is
                  // the one place in the system where an infinite cache lifetime
                  // is a theorem rather than a gamble.
+                 // E6 (6.13). Counted where the bytes actually leave.
+                 this->assets_.RecordServed(blob->size());
                  res->writeHeader("Content-Type", "application/octet-stream")
                      ->writeHeader("Access-Control-Allow-Origin", "*")
                      ->writeHeader("Cross-Origin-Resource-Policy", "cross-origin")
@@ -499,6 +508,7 @@ void Server::Run() {
                     data->session->SetAssetStore(&this->assets_);
                     data->session->SetIceServers(this->config_.ice_servers);
                     data->session->SetDisableP2P(this->config_.disable_p2p);
+                    data->session->SetAssetServedCounter(&this->asset_bytes_served_);
                     // Cross-connection delivery for signalling (6.1, D-0085).
                     // `live_` is the WorkerId -> connection map D-0046 already
                     // built for revoke pushes; this reuses it rather than
