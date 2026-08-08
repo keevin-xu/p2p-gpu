@@ -57,6 +57,11 @@ int main(int argc, char** argv) {
     std::vector<std::byte> render_asset;
     std::uint64_t seed_units = 4'000'000;
     std::uint32_t seed_tasks = 4;
+    app.add_option("--ice-server", cfg.ice_servers,
+                   "STUN/TURN URL for the P2P data plane; repeatable. "
+                   "WARNING: a TURN URL carries its credentials and is sent to "
+                   "EVERY worker, all of which are untrusted — use one you are "
+                   "willing to see used by strangers (D-0089).");
     app.add_option("--seed-render", seed_render_scene,
                    "DEV ONLY: queue a path-trace render of this .scene file")
         ->check(CLI::ExistingFile);

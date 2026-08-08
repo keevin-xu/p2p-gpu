@@ -407,12 +407,23 @@ Reaction Session::OnHello(const wire::Hello& hello) {
             auto token = fbb.CreateString(
                 reputation_ != nullptr ? reputation_->MintToken(worker_id_) : std::string{});
             const wire::Uuid wid = worker_id_.to_wire();
+            // ICE servers for the data plane (6.5). Built PER WELCOME rather
+            // than sent from a static config, which is what makes short-lived
+            // per-worker TURN credentials a later change to this expression
+            // instead of a protocol change (D-0089).
+            std::vector<flatbuffers::Offset<flatbuffers::String>> ice;
+            ice.reserve(ice_servers_.size());
+            for (const std::string& url : ice_servers_) {
+                ice.push_back(fbb.CreateString(url));
+            }
+            auto iv = fbb.CreateVector(ice);
 
             wire::WelcomeBuilder wb(fbb);
             wb.add_worker_id(&wid);
             wb.add_session_token(token);
             wb.add_heartbeat_ms(kHeartbeatMs);
             wb.add_kernels(dv);
+            wb.add_ice_servers(iv);
             return wb.Finish();
         });
 

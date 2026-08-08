@@ -364,6 +364,25 @@ table Welcome {
                                  // the connection dropped (R8).
   heartbeat_ms:  uint;
   kernels:       [KernelDescriptor];
+
+  /// STUN/TURN URLs for the P2P data plane (6.5). APPENDED in D-0089.
+  ///
+  /// The COORDINATOR supplies these because a browser page has no CLI flags —
+  /// per-worker configuration would mean baking URLs into the wasm bundle and
+  /// rebuilding it to rotate a TURN server.
+  ///
+  /// URLs rather than parsed fields: `IceServer(const string&)` is the one
+  /// constructor present on both targets (D-0088). Note the two libraries treat
+  /// it DIFFERENTLY — native parses it, the browser passes it through — so a
+  /// malformed URL fails in different places on the two targets (D-0089).
+  ///
+  /// **A TURN URL carries its credentials, and every worker is untrusted (R11).**
+  /// Anything configured here is handed to anyone who connects. The mitigation
+  /// is short-lived per-worker credentials (the TURN REST API), which is a
+  /// change to what the coordinator puts in this vector and NOT a protocol
+  /// change — that is why this is a list built per Welcome rather than a static
+  /// server config.
+  ice_servers:   [string];
 }
 
 table BenchmarkRequest {

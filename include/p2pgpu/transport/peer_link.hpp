@@ -100,6 +100,26 @@ public:
 
     [[nodiscard]] bool IsOpen() const;
 
+    /// ICE candidate types this end GATHERED (6.5). Portable, and weaker than
+    /// it looks.
+    ///
+    /// `getSelectedCandidatePair()` — which answers "was this connection
+    /// relayed?" exactly — is NATIVE ONLY (D-0088). What both targets expose is
+    /// the candidate strings, and an ICE candidate line carries its own type.
+    ///
+    /// **Gathering a relay candidate means TURN was reachable and offered a
+    /// path. It does NOT mean the connection used one**, because ICE prefers
+    /// host and server-reflexive pairs and only falls back to relay. So this is
+    /// a LOWER BOUND: no relay candidate gathered means definitely not relayed,
+    /// and the definitive ratio 6.15 wants needs the native-only call from
+    /// `worker-native` (D-0089).
+    struct CandidateTypes {
+        bool host = false;
+        bool server_reflexive = false;   ///< STUN worked
+        bool relay = false;              ///< TURN was reachable
+    };
+    [[nodiscard]] CandidateTypes GatheredTypes() const noexcept { return gathered_; }
+
     /// Tear down. Idempotent, and called by the destructor.
     ///
     /// Destroys rather than merely closes, for the D-0060 reason: `close()` does
@@ -115,6 +135,7 @@ private:
     SignalHandler on_signal_;
     MessageHandler on_message_;
     StateHandler on_state_;
+    CandidateTypes gathered_{};
 };
 
 }  // namespace p2pgpu::transport

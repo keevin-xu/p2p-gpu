@@ -263,6 +263,11 @@ private:
     /// would be one malicious frame from the mesh 6.2 exists to avoid.
     std::vector<protocol::WorkerId> peer_candidates_;
 
+    /// STUN/TURN URLs from `Welcome` (6.5). Bounded on receipt — an unbounded
+    /// list would be an allocation the coordinator chooses, and it is not more
+    /// trusted than any peer (R11).
+    std::vector<std::string> ice_servers_;
+
     /// Tasks waiting on an asset. PARKED, not released: releasing returns the
     /// task to the queue where this same worker is likely to be granted it
     /// again and re-request the same asset — a loop that looks like progress

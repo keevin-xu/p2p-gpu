@@ -60,6 +60,14 @@ struct Config {
     /// How often the ONE sweep timer runs. Not a timer per task
     /// (CONVENTIONS.md §4).
     std::uint32_t sweep_interval_ms = 1000;
+
+    /// STUN/TURN URLs handed to every worker in `Welcome` (6.5, D-0089).
+    ///
+    /// **A TURN URL carries its credentials, and every worker is untrusted.**
+    /// Anything here goes to anyone who connects. Short-lived per-worker
+    /// credentials are the mitigation and are a change to how this vector is
+    /// built, not to the protocol.
+    std::vector<std::string> ice_servers;
     /// DEV ONLY (step 1.26): stop the event loop once every seeded task has
     /// reached a terminal state, so a scripted end-to-end run terminates and
     /// can print its summary. A real coordinator serves indefinitely.

@@ -345,8 +345,25 @@ void TaskLoop::HandleWelcome(const wire::Welcome& welcome) {
         }
     }
 
+    // ICE servers for the data plane (6.5, D-0089). Stored, not connected —
+    // 6.6+ decides when a peer connection is worth opening.
+    ice_servers_.clear();
+    if (const auto* ice = welcome.ice_servers()) {
+        // Bounded like every other list off the wire: the coordinator is not
+        // more trusted than any peer (R11), and an unbounded list would be an
+        // allocation an attacker chooses.
+        constexpr flatbuffers::uoffset_t kMaxIceServers = 8;
+        for (flatbuffers::uoffset_t i = 0;
+             i < ice->size() && ice_servers_.size() < kMaxIceServers; ++i) {
+            if (const auto* url = ice->Get(i); url != nullptr && url->size() > 0) {
+                ice_servers_.emplace_back(url->str());
+            }
+        }
+    }
+
     status_.last_message = "connected";
-    Log("info", "handshake complete; kernels=" + std::to_string(kernel_info_.size()));
+    Log("info", "handshake complete; kernels=" + std::to_string(kernel_info_.size()) +
+                    " ice_servers=" + std::to_string(ice_servers_.size()));
 }
 
 void TaskLoop::HandleTaskGrant(const wire::TaskGrant& grant) {

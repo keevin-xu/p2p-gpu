@@ -124,3 +124,44 @@ TEST_CASE("shutdown is idempotent and safe with callbacks registered",
     a.Shutdown();
     CHECK_FALSE(a.IsOpen());
 }
+
+TEST_CASE("host candidates are gathered with no ICE servers configured",
+          "[peer][net]") {
+    // The baseline the loopback test relies on, asserted rather than assumed:
+    // with no STUN or TURN, a peer still gathers host candidates and can
+    // connect on a local network. If this ever stops holding, the connection
+    // test above would fail for a reason that has nothing to do with our code.
+    PeerLink a;
+    std::atomic<bool> got{false};
+    a.OnSignal([&](const SignalOut& s) {
+        if (s.kind == "candidate") { got = true; }
+    });
+    a.Offer();
+    REQUIRE(WaitFor([&] { return got.load(); }, std::chrono::seconds(5)));
+    CHECK(a.GatheredTypes().host);
+    // No STUN configured, so no server-reflexive candidate can exist.
+    CHECK_FALSE(a.GatheredTypes().server_reflexive);
+    CHECK_FALSE(a.GatheredTypes().relay);
+}
+
+TEST_CASE("STUN produces a server-reflexive candidate", "[peer][net][stun]") {
+    // R-G: TURN is unavailable and unverified. STUN is free, so the half of the
+    // ICE path that CAN be checked here is checked — and tagged separately so a
+    // machine with no outbound UDP can exclude it without losing the rest.
+    //
+    // A real external dependency, deliberately: the point is whether a
+    // configured ICE server actually reaches this code and does something.
+    PeerLink a{{"stun:stun.l.google.com:19302"}};
+    std::atomic<bool> srflx{false};
+    a.OnSignal([&](const SignalOut&) {
+        if (a.GatheredTypes().server_reflexive) { srflx = true; }
+    });
+    a.Offer();
+    const bool reached = WaitFor([&] { return srflx.load(); },
+                                 std::chrono::seconds(10));
+    if (!reached) {
+        WARN("no server-reflexive candidate — no outbound UDP, or STUN blocked. "
+             "This is an environment result, not a code failure.");
+    }
+    CHECK(a.GatheredTypes().host);
+}

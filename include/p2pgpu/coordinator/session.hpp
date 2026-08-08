@@ -134,6 +134,11 @@ public:
     using PeerRelay = std::function<bool(WorkerId, std::span<const std::byte>)>;
     void SetPeerRelay(PeerRelay relay) { peer_relay_ = std::move(relay); }
 
+    /// STUN/TURN URLs to advertise in `Welcome` (6.5).
+    void SetIceServers(std::vector<std::string> urls) {
+        ice_servers_ = std::move(urls);
+    }
+
     /// Clear the signalling rate-limit window. Called once per sweep.
     void ResetSignalWindow() noexcept { signals_this_window_ = 0; }
 
@@ -175,6 +180,7 @@ private:
     Compositor* compositor_ = nullptr;
     const AssetStore* asset_store_ = nullptr;
     PeerRelay peer_relay_;
+    std::vector<std::string> ice_servers_;
     /// Signal frames relayed since the last sweep, for the 6.1 rate limit.
     std::uint32_t signals_this_window_ = 0;
     EventLog* events_ = nullptr;

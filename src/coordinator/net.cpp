@@ -497,6 +497,7 @@ void Server::Run() {
                     data->session->SetQuorum(this->quorum_);
                     data->session->SetCompositor(&this->compositor_);
                     data->session->SetAssetStore(&this->assets_);
+                    data->session->SetIceServers(this->config_.ice_servers);
                     // Cross-connection delivery for signalling (6.1, D-0085).
                     // `live_` is the WorkerId -> connection map D-0046 already
                     // built for revoke pushes; this reuses it rather than

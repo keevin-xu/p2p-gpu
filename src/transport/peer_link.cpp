@@ -9,6 +9,7 @@
 
 #include <rtc/rtc.hpp>
 
+#include <string>
 #include <utility>
 #include <variant>
 
@@ -35,8 +36,20 @@ PeerLink::PeerLink(std::vector<std::string> ice_servers) {
     });
 
     pc_->onLocalCandidate([this](rtc::Candidate candidate) {
+        const std::string text = candidate.candidate();
+        // An ICE candidate line names its own type. Parsed from the STRING
+        // rather than asked of the connection, because the API that answers it
+        // properly is native-only (D-0088/D-0089) — and this is a lower bound,
+        // not the selected pair.
+        if (text.find("typ relay") != std::string::npos) {
+            gathered_.relay = true;
+        } else if (text.find("typ srflx") != std::string::npos) {
+            gathered_.server_reflexive = true;
+        } else if (text.find("typ host") != std::string::npos) {
+            gathered_.host = true;
+        }
         if (on_signal_) {
-            on_signal_(SignalOut{"candidate", candidate.candidate(), candidate.mid()});
+            on_signal_(SignalOut{"candidate", text, candidate.mid()});
         }
     });
 
