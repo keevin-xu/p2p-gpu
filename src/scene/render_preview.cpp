@@ -7,6 +7,7 @@
 // numbers; a rendering bug that satisfies all of them still shows up instantly
 // to an eye.
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -45,6 +46,9 @@ int main(int argc, char** argv) {
     const std::uint32_t height = argc > 3 ? std::stoul(argv[3]) : 128;
     const std::uint64_t spp = argc > 4 ? std::stoull(argv[4]) : 64;
     const std::string out_path = argc > 5 ? argv[5] : "render.ppm";
+    // E2's control switch (5.22). Same work either way; only the upload cadence
+    // changes.
+    const bool no_accum = argc > 6 && std::string(argv[6]) == "--no-accumulation";
 
     std::size_t err_line = 0;
     auto scene = LoadSceneFile(scene_path, &err_line);
@@ -97,6 +101,12 @@ int main(int argc, char** argv) {
     std::printf("image=%ux%u tiles=%u spp=%llu\n", width, height, grid.tile_count(),
                 static_cast<unsigned long long>(spp));
 
+    double total_gpu_ms = 0.0;
+    double total_transfer_ms = 0.0;
+    double total_idle_ms = 0.0;
+    std::uint64_t total_dispatches = 0;
+    const auto wall_start = std::chrono::steady_clock::now();
+
     const float aspect = static_cast<float>(width) / static_cast<float>(height);
     for (std::uint32_t i = 0; i < grid.tile_count(); ++i) {
         const auto tile = grid.TileAt(i);
@@ -131,13 +141,22 @@ int main(int argc, char** argv) {
         req.invocations_x = tile->w;
         req.invocations_y = tile->h;
         req.inputs = inputs;
+        req.readback_every_chunk = no_accum;
 
         // Chunked, so R4's ceiling is exercised rather than bypassed.
-        const auto outcome = p2pgpu::worker::RunTask(ctx, req, std::max<std::uint64_t>(spp / 4, 1));
+        // 16 chunks, so the control has something to pay for per chunk and the
+        // treatment has something to accumulate across. Identical in both runs:
+        // the ONLY difference between the two conditions is the upload cadence.
+        const auto outcome =
+            p2pgpu::worker::RunTask(ctx, req, std::max<std::uint64_t>(spp / 16, 1));
         if (!outcome) {
             std::fprintf(stderr, "tile %u failed to render\n", i);
             return 1;
         }
+        total_gpu_ms += outcome->stats.gpu_ms;
+        total_transfer_ms += outcome->stats.transfer_ms;
+        total_idle_ms += outcome->stats.idle_ms;
+        total_dispatches += outcome->stats.dispatches;
         if (!comp.AcceptTile(i, outcome->output)) {
             std::fprintf(stderr, "tile %u rejected by the compositor\n", i);
             return 1;
@@ -153,8 +172,27 @@ int main(int argc, char** argv) {
         out.put(static_cast<char>(rgba[i + 1]));
         out.put(static_cast<char>(rgba[i + 2]));
     }
+    const double wall_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - wall_start).count();
+    const double accounted = total_gpu_ms + total_transfer_ms + total_idle_ms;
     std::printf("wrote %s  min_samples=%.0f max_samples=%.0f tiles_with_data=%u\n",
                 out_path.c_str(), comp.MinSamples(), comp.MaxSamples(),
                 comp.TilesWithData());
+
+    // ── E2 (5.21/5.22) ───────────────────────────────────────────────────
+    //
+    // `gpu_ms` is SUBMIT time, not GPU execution time — timestamp queries are
+    // not in yet, so it is a LOWER BOUND. That does not weaken the comparison:
+    // both conditions are measured the same way, and the quantity of interest
+    // is the RATIO between them.
+    std::printf("E2 accumulation=%s  wall=%.0fms  gpu=%.0fms (%.1f%%)  "
+                "transfer=%.0fms (%.1f%%)  idle=%.0fms (%.1f%%)  dispatches=%llu\n",
+                no_accum ? "OFF (control)" : "ON",
+                wall_ms,
+                total_gpu_ms, 100.0 * total_gpu_ms / accounted,
+                total_transfer_ms, 100.0 * total_transfer_ms / accounted,
+                total_idle_ms, 100.0 * total_idle_ms / accounted,
+                static_cast<unsigned long long>(total_dispatches));
     return 0;
 }

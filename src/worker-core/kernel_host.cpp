@@ -610,6 +610,70 @@ std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
     const auto task_start = platform::Now();
 
     // ── the chunk loop ──
+    // ── readback ──
+    //
+    // Normally ONCE, after every chunk has accumulated — that single upload per
+    // task IS the arithmetic-intensity design (D-0001/R5). `readback_every_chunk`
+    // turns it into once per dispatch, which is E2's CONTROL CONDITION (5.22):
+    // the same work with accumulation switched off, so the pair of numbers shows
+    // what accumulation actually buys rather than asserting it.
+    std::vector<std::byte> result;
+    const auto ReadBack = [&]() -> bool {
+        const auto readback_start = platform::Now();
+
+        CommandEncoder copy_encoder{wgpuDeviceCreateCommandEncoder(ctx.device, nullptr)};
+        if (!copy_encoder) {
+            Log("error", "readback encoder creation failed");
+            return false;
+        }
+        wgpuCommandEncoderCopyBufferToBuffer(copy_encoder.get(), out_buf.get(), 0,
+                                             stage_buf.get(), 0, req.output_bytes);
+        CommandBuffer copy_cmds{wgpuCommandEncoderFinish(copy_encoder.get(), nullptr)};
+        if (!copy_cmds) {
+            Log("error", "readback command buffer finish failed");
+            return false;
+        }
+        WGPUCommandBuffer copy_raw = copy_cmds.get();
+        wgpuQueueSubmit(ctx.queue, 1, &copy_raw);
+
+        MapResult map_result;
+        WGPUBufferMapCallbackInfo map_cb{};
+        map_cb.mode = WGPUCallbackMode_AllowProcessEvents;
+        map_cb.callback = MapThunk;
+        map_cb.userdata1 = &map_result;
+
+        (void)wgpuBufferMapAsync(stage_buf.get(), WGPUMapMode_Read, 0, req.output_bytes,
+                                 map_cb);
+
+        if (!platform::WaitUntil(ctx, [&] { return map_result.done; })) {
+            Log("error", "result map timed out");
+            return false;
+        }
+        if (map_result.status != WGPUMapAsyncStatus_Success) {
+            Log("error", "result map failed with status " +
+                             std::to_string(static_cast<int>(map_result.status)));
+            return false;
+        }
+
+        const void* mapped = wgpuBufferGetConstMappedRange(stage_buf.get(), 0,
+                                                           req.output_bytes);
+        if (mapped == nullptr) {
+            Log("error", "mapped range was null");
+            wgpuBufferUnmap(stage_buf.get());
+            return false;
+        }
+
+        result.resize(req.output_bytes);
+        const std::span<const std::byte> mapped_view{static_cast<const std::byte*>(mapped),
+                                                     req.output_bytes};
+        std::ranges::copy(mapped_view, result.begin());
+        wgpuBufferUnmap(stage_buf.get());
+
+        stats.transfer_ms += MillisBetween(readback_start, platform::Now());
+
+        return true;
+    };
+
     for (std::uint64_t done = 0; done < req.unit_count;) {
         // Re-check every iteration, not just at entry. A task is many
         // dispatches over seconds and the device can go away between any two of
@@ -689,6 +753,14 @@ std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
         platform::Yield();
         stats.idle_ms += MillisBetween(yield_start, platform::Now());
 
+        // E2's CONTROL (5.22): read the accumulator back after EVERY dispatch.
+        // This is what "accumulation disabled" costs, measured rather than
+        // asserted — and the readback is the whole of it, which is why it is
+        // timed into transfer_ms exactly as the final one is.
+        if (req.readback_every_chunk && !ReadBack()) {
+            return std::nullopt;
+        }
+
         // Proof of life for a long task. The whole task runs inside one Poll(),
         // so without this the worker is silent for its entire duration and gets
         // declared lost while working perfectly.
@@ -697,59 +769,10 @@ std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
         }
     }
 
-    // ── readback, ONCE, after every chunk has accumulated ──
-    const auto readback_start = platform::Now();
 
-    CommandEncoder copy_encoder{wgpuDeviceCreateCommandEncoder(ctx.device, nullptr)};
-    if (!copy_encoder) {
-        Log("error", "readback encoder creation failed");
+    if (!ReadBack()) {
         return std::nullopt;
     }
-    wgpuCommandEncoderCopyBufferToBuffer(copy_encoder.get(), out_buf.get(), 0,
-                                         stage_buf.get(), 0, req.output_bytes);
-    CommandBuffer copy_cmds{wgpuCommandEncoderFinish(copy_encoder.get(), nullptr)};
-    if (!copy_cmds) {
-        Log("error", "readback command buffer finish failed");
-        return std::nullopt;
-    }
-    WGPUCommandBuffer copy_raw = copy_cmds.get();
-    wgpuQueueSubmit(ctx.queue, 1, &copy_raw);
-
-    MapResult map_result;
-    WGPUBufferMapCallbackInfo map_cb{};
-    map_cb.mode = WGPUCallbackMode_AllowProcessEvents;
-    map_cb.callback = MapThunk;
-    map_cb.userdata1 = &map_result;
-
-    (void)wgpuBufferMapAsync(stage_buf.get(), WGPUMapMode_Read, 0, req.output_bytes,
-                             map_cb);
-
-    if (!platform::WaitUntil(ctx, [&] { return map_result.done; })) {
-        Log("error", "result map timed out");
-        return std::nullopt;
-    }
-    if (map_result.status != WGPUMapAsyncStatus_Success) {
-        Log("error", "result map failed with status " +
-                         std::to_string(static_cast<int>(map_result.status)));
-        return std::nullopt;
-    }
-
-    const void* mapped = wgpuBufferGetConstMappedRange(stage_buf.get(), 0,
-                                                       req.output_bytes);
-    if (mapped == nullptr) {
-        Log("error", "mapped range was null");
-        wgpuBufferUnmap(stage_buf.get());
-        return std::nullopt;
-    }
-
-    TaskOutcome outcome;
-    outcome.output.resize(req.output_bytes);
-    const std::span<const std::byte> mapped_view{static_cast<const std::byte*>(mapped),
-                                                 req.output_bytes};
-    std::ranges::copy(mapped_view, outcome.output.begin());
-    wgpuBufferUnmap(stage_buf.get());
-
-    stats.transfer_ms += MillisBetween(readback_start, platform::Now());
 
     // gpu_ms above is SUBMIT time, not GPU execution time — wgpuQueueSubmit is
     // asynchronous, so it measures how long submission took, not how long the
@@ -766,6 +789,8 @@ std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
         stats.gpu_ms = wall_ms - stats.transfer_ms - stats.idle_ms;
     }
 
+    TaskOutcome outcome;
+    outcome.output = std::move(result);
     outcome.stats = stats;
     return outcome;
 }

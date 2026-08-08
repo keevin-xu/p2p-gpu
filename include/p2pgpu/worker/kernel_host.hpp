@@ -132,6 +132,15 @@ struct TaskRequest {
     /// runtime — a mismatch is a pipeline creation failure, which is why
     /// `CompileKernel` builds the pipeline rather than just the module.
     std::span<const std::span<const std::byte>> inputs;
+
+    /// Read the accumulator back after EVERY dispatch instead of once per task.
+    ///
+    /// **E2's control condition (5.22).** One upload per task is the whole of
+    /// the arithmetic-intensity design (D-0001/R5); this switches it off so the
+    /// pair of measurements shows what accumulation buys, rather than asserting
+    /// it. `RISKS.md` R-A applies to the result: if the gap is small, that is a
+    /// finding to report, not an experiment to tune until it agrees.
+    bool readback_every_chunk = false;
 };
 
 /// Facts about an execution. Reported to the coordinator; NEVER used to decide
