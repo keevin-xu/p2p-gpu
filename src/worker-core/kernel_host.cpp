@@ -59,6 +59,7 @@ private:
 
 using ShaderModule    = Handle<WGPUShaderModule,    wgpuShaderModuleRelease>;
 using ComputePipeline = Handle<WGPUComputePipeline, wgpuComputePipelineRelease>;
+using QuerySet        = Handle<WGPUQuerySet,        wgpuQuerySetRelease>;
 using BindGroupLayout = Handle<WGPUBindGroupLayout, wgpuBindGroupLayoutRelease>;
 using BindGroup       = Handle<WGPUBindGroup,       wgpuBindGroupRelease>;
 using Buffer          = Handle<WGPUBuffer,          wgpuBufferRelease>;
@@ -403,6 +404,53 @@ double MillisBetween(std::chrono::steady_clock::time_point a,
 
 }  // namespace
 
+namespace {
+
+struct TimestampPair {
+    std::uint64_t begin = 0;
+    std::uint64_t end = 0;
+};
+
+/// Map the resolved timestamp buffer. Returns false on any failure, and the
+/// caller then falls back to submit time — a timing feature must never be able
+/// to fail a task (K6).
+bool ReadTimestamps(const platform::GpuContext& ctx, const Buffer& ts_read,
+                    TimestampPair& out) {
+    MapResult map_result;
+    WGPUBufferMapCallbackInfo cb{};
+    cb.mode = WGPUCallbackMode_AllowProcessEvents;
+    cb.callback = MapThunk;
+    cb.userdata1 = &map_result;
+    (void)wgpuBufferMapAsync(ts_read.get(), WGPUMapMode_Read, 0,
+                             2 * sizeof(std::uint64_t), cb);
+    if (!platform::WaitUntil(ctx, [&] { return map_result.done; })) {
+        return false;
+    }
+    if (map_result.status != WGPUMapAsyncStatus_Success) {
+        return false;
+    }
+    const void* mapped = wgpuBufferGetConstMappedRange(ts_read.get(), 0,
+                                                       2 * sizeof(std::uint64_t));
+    if (mapped == nullptr) {
+        wgpuBufferUnmap(ts_read.get());
+        return false;
+    }
+    const auto* bytes = static_cast<const std::byte*>(mapped);
+    const auto read_u64 = [&](std::size_t at) {
+        std::array<std::byte, 8> raw{};
+        for (std::size_t i = 0; i < 8; ++i) {
+            raw[i] = bytes[at + i];
+        }
+        return std::bit_cast<std::uint64_t>(raw);
+    };
+    out.begin = read_u64(0);
+    out.end = read_u64(8);
+    wgpuBufferUnmap(ts_read.get());
+    return true;
+}
+
+}  // namespace
+
 std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
                                    const TaskRequest& req,
                                    std::uint64_t units_per_chunk,
@@ -618,6 +666,51 @@ std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
     // the same work with accumulation switched off, so the pair of numbers shows
     // what accumulation actually buys rather than asserting it.
     std::vector<std::byte> result;
+    // ── GPU-SIDE TIMING (5.21, D-0083) ───────────────────────────────────
+    //
+    // `wgpuQueueSubmit` is asynchronous, so wall-clock timing around it measures
+    // how long SUBMISSION took — ~5 ms regardless of workload — while the real
+    // GPU time ends up absorbed into whatever blocks next. D-0082 showed the
+    // consequence: `transfer_ms` scaled linearly with WORK at constant output
+    // size, which made 5.21's utilization question unanswerable.
+    //
+    // A timestamp query set records the GPU's OWN clock at the start and end of
+    // each compute pass, which is the only way to separate the two.
+    //
+    // OPTIONAL (K6). The spec makes it optional because precise timers are a
+    // side-channel risk and a browser may withhold it, so everything below
+    // degrades to the previous behaviour when absent — a worker without it
+    // still computes, it just reports a lower bound.
+    std::uint32_t gpu_timed_dispatches = 0;
+    const bool have_timestamps =
+        platform::HasFeature(ctx, WGPUFeatureName_TimestampQuery);
+    QuerySet timestamps;
+    Buffer ts_resolve;
+    Buffer ts_read;
+    if (have_timestamps) {
+        WGPUQuerySetDescriptor qs_desc{};
+        qs_desc.label = Str("p2pgpu-timestamps");
+        qs_desc.type = WGPUQueryType_Timestamp;
+        qs_desc.count = 2;   // beginning and end of one pass
+        timestamps = QuerySet{wgpuDeviceCreateQuerySet(ctx.device, &qs_desc)};
+
+        WGPUBufferDescriptor rd{};
+        rd.label = Str("p2pgpu-ts-resolve");
+        rd.usage = WGPUBufferUsage_QueryResolve | WGPUBufferUsage_CopySrc;
+        rd.size = 2 * sizeof(std::uint64_t);
+        ts_resolve = Buffer{wgpuDeviceCreateBuffer(ctx.device, &rd)};
+
+        WGPUBufferDescriptor md{};
+        md.label = Str("p2pgpu-ts-read");
+        md.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst;
+        md.size = 2 * sizeof(std::uint64_t);
+        ts_read = Buffer{wgpuDeviceCreateBuffer(ctx.device, &md)};
+    }
+    // Falls back silently rather than failing: a missing optional feature must
+    // never stop a worker contributing (K6).
+    const bool timing_ready =
+        have_timestamps && timestamps && ts_resolve && ts_read;
+
     const auto ReadBack = [&]() -> bool {
         const auto readback_start = platform::Now();
 
@@ -703,7 +796,18 @@ std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
             return std::nullopt;
         }
         {
-            ComputePass pass{wgpuCommandEncoderBeginComputePass(encoder.get(), nullptr)};
+            // Timestamps bracket the PASS, so what is measured is the GPU
+            // executing this dispatch — not the CPU submitting it.
+            WGPUPassTimestampWrites ts_writes{};
+            WGPUComputePassDescriptor pass_desc{};
+            if (timing_ready) {
+                ts_writes.querySet = timestamps.get();
+                ts_writes.beginningOfPassWriteIndex = 0;
+                ts_writes.endOfPassWriteIndex = 1;
+                pass_desc.timestampWrites = &ts_writes;
+            }
+            ComputePass pass{wgpuCommandEncoderBeginComputePass(
+                encoder.get(), timing_ready ? &pass_desc : nullptr)};
             if (!pass) {
                 Log("error", "compute pass creation failed");
                 return std::nullopt;
@@ -729,6 +833,18 @@ std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
             wgpuComputePassEncoderEnd(pass.get());
         }
 
+        // Resolve into a GPU buffer, then stage for mapping. Both must be
+        // encoded into THIS command buffer, after the pass has ended — a
+        // resolve issued before the pass closes reads values that have not been
+        // written.
+        if (timing_ready) {
+            wgpuCommandEncoderResolveQuerySet(encoder.get(), timestamps.get(), 0, 2,
+                                              ts_resolve.get(), 0);
+            wgpuCommandEncoderCopyBufferToBuffer(encoder.get(), ts_resolve.get(), 0,
+                                                 ts_read.get(), 0,
+                                                 2 * sizeof(std::uint64_t));
+        }
+
         CommandBuffer commands{wgpuCommandEncoderFinish(encoder.get(), nullptr)};
         if (!commands) {
             Log("error", "command buffer finish failed");
@@ -738,7 +854,32 @@ std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
         const auto gpu_start = platform::Now();
         WGPUCommandBuffer raw = commands.get();
         wgpuQueueSubmit(ctx.queue, 1, &raw);
-        stats.gpu_ms += MillisBetween(gpu_start, platform::Now());
+        // SUBMIT time, which is not GPU time — asynchronous by definition. Kept
+        // as the fallback and superseded below when timestamps are available.
+        const double submit_ms = MillisBetween(gpu_start, platform::Now());
+
+        if (timing_ready) {
+            // Map the two timestamps. This BLOCKS, which is exactly what the
+            // wall clock could not do: the dispatch is now waited for here, in
+            // the GPU column, instead of leaking into the readback.
+            TimestampPair ts{};
+            if (ReadTimestamps(ctx, ts_read, ts)) {
+                // Nanoseconds on both implementations we target. `end < begin`
+                // is possible if the GPU's counter wrapped or the queue was
+                // reset; treated as no sample rather than as a negative
+                // duration, which would silently deflate the total.
+                if (ts.end > ts.begin) {
+                    stats.gpu_ms += static_cast<double>(ts.end - ts.begin) / 1.0e6;
+                    ++gpu_timed_dispatches;
+                } else {
+                    stats.gpu_ms += submit_ms;
+                }
+            } else {
+                stats.gpu_ms += submit_ms;
+            }
+        } else {
+            stats.gpu_ms += submit_ms;
+        }
 
         ++stats.dispatches;
         stats.iterations += units;
@@ -782,7 +923,12 @@ std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
     // that gpu_ms is a lower bound, and the coordinator must not treat it as
     // anything else — it is untrusted telemetry regardless (invariant 8).
     const double wall_ms = MillisBetween(task_start, platform::Now());
-    if (wall_ms > stats.gpu_ms + stats.transfer_ms + stats.idle_ms) {
+    // ONLY when gpu_ms is the submit-time fallback. With real timestamps the
+    // unattributed remainder is genuinely NOT GPU execution — it is driver and
+    // host overhead — and folding it in would recreate exactly the conflation
+    // D-0082 diagnosed, in the field that was supposed to fix it.
+    if (gpu_timed_dispatches == 0 &&
+        wall_ms > stats.gpu_ms + stats.transfer_ms + stats.idle_ms) {
         // The remainder is time inside the driver we did not attribute. Fold it
         // into gpu_ms rather than leaving the fields summing to less than the
         // wall clock, which would look like a measurement bug downstream.
