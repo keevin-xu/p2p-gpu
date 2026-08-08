@@ -72,10 +72,61 @@ struct MapResult {
     bool done = false;
 };
 
+/// The callback owns a reference to the state it writes into — D-0096.
+///
+/// It used to receive `&some_stack_local`, which is correct exactly as long as
+/// the wait never gives up. `WaitUntil` has a 5 s timeout, so it does give up,
+/// and then the frame holding that local returns while the driver still holds
+/// the pointer. A later completion writes into a dead frame.
 void MapThunk(WGPUMapAsyncStatus status, WGPUStringView, void* ud, void*) {
-    auto* r = static_cast<MapResult*>(ud);
-    r->status = status;
-    r->done = true;
+    // `ud` is an OWNING reference handed to the driver — a heap `shared_ptr`,
+    // not a pointer to the state itself. So the state stays alive even if the
+    // waiter gave up and dropped its own reference, and this writes into a live
+    // object rather than a dead stack frame. WebGPU fires a map callback
+    // exactly once, including on cancellation, so deleting it here neither
+    // leaks nor double-frees.
+    std::unique_ptr<std::shared_ptr<MapResult>> held{
+        static_cast<std::shared_ptr<MapResult>*>(ud)};
+    (*held)->status = status;
+    (*held)->done = true;
+}
+
+/// Map a buffer for reading and wait for it, or fail cleanly.
+///
+/// ── WHY THIS IS ONE FUNCTION AND NOT THREE CALL SITES (D-0096) ───────────
+/// The abandoned-map bug existed identically in all three places that mapped a
+/// buffer. Fixing them separately would have left the next one to be written
+/// free to reintroduce it, and this is not a hazard anyone reasons about twice:
+/// **an async callback plus a wait that can time out is a dangling pointer and
+/// a permanently-mapped buffer, in every case, always.**
+///
+/// On timeout the pending map is CANCELLED with `wgpuBufferUnmap`. WebGPU
+/// specifies that unmapping a buffer with a map in flight aborts it — the
+/// callback still fires, with a failure status, and the buffer is left
+/// unmapped. Without that, a timed-out map completes later and the buffer is
+/// mapped forever; releasing it then aborts the process inside wgpu with
+/// "Buffer ... is still mapped", which is a Rust panic and so not catchable.
+[[nodiscard]] bool MapForRead(const platform::GpuContext& ctx, WGPUBuffer buffer,
+                              std::uint64_t bytes) {
+    // Heap-allocated and deliberately outliving this frame: the driver holds a
+    // pointer to it until the callback runs, which may be after we return.
+    auto state = std::make_shared<MapResult>();
+
+    WGPUBufferMapCallbackInfo cb{};
+    cb.mode = WGPUCallbackMode_AllowProcessEvents;
+    cb.callback = MapThunk;
+    // A heap copy of the shared_ptr, owned by the callback from here on.
+    cb.userdata1 = new std::shared_ptr<MapResult>(state);
+    (void)wgpuBufferMapAsync(buffer, WGPUMapMode_Read, 0, bytes, cb);
+
+    if (!platform::WaitUntil(ctx, [&] { return state->done; })) {
+        // Cancel the in-flight map so the buffer is not left mapped forever.
+        // Safe to return immediately afterwards whether or not the abort has
+        // been delivered yet: the callback holds its own reference to `state`.
+        wgpuBufferUnmap(buffer);
+        return false;
+    }
+    return state->status == WGPUMapAsyncStatus_Success;
 }
 
 }  // namespace
@@ -325,24 +376,10 @@ std::optional<std::vector<std::byte>> RunUnaryKernel(
     wgpuQueueSubmit(ctx.queue, 1, &raw);
 
     // ── readback ──
-    MapResult map_result;
-    WGPUBufferMapCallbackInfo map_cb{};
-    map_cb.mode = WGPUCallbackMode_AllowProcessEvents;
-    map_cb.callback = MapThunk;
-    map_cb.userdata1 = &map_result;
-
-    (void)wgpuBufferMapAsync(stage_buf.get(), WGPUMapMode_Read, 0,
-                             byte_size, map_cb);
-
     // Polls natively, yields to the event loop in the browser — the seam
     // decides which, and this line reads the same either way.
-    if (!platform::WaitUntil(ctx, [&] { return map_result.done; })) {
-        Log("error", "buffer map timed out");
-        return std::nullopt;
-    }
-    if (map_result.status != WGPUMapAsyncStatus_Success) {
-        Log("error", "buffer map failed with status " +
-                         std::to_string(static_cast<int>(map_result.status)));
+    if (!MapForRead(ctx, stage_buf.get(), byte_size)) {
+        Log("error", "buffer map failed or timed out");
         return std::nullopt;
     }
 
@@ -416,17 +453,7 @@ struct TimestampPair {
 /// to fail a task (K6).
 bool ReadTimestamps(const platform::GpuContext& ctx, const Buffer& ts_read,
                     TimestampPair& out) {
-    MapResult map_result;
-    WGPUBufferMapCallbackInfo cb{};
-    cb.mode = WGPUCallbackMode_AllowProcessEvents;
-    cb.callback = MapThunk;
-    cb.userdata1 = &map_result;
-    (void)wgpuBufferMapAsync(ts_read.get(), WGPUMapMode_Read, 0,
-                             2 * sizeof(std::uint64_t), cb);
-    if (!platform::WaitUntil(ctx, [&] { return map_result.done; })) {
-        return false;
-    }
-    if (map_result.status != WGPUMapAsyncStatus_Success) {
+    if (!MapForRead(ctx, ts_read.get(), 2 * sizeof(std::uint64_t))) {
         return false;
     }
     const void* mapped = wgpuBufferGetConstMappedRange(ts_read.get(), 0,
@@ -729,22 +756,8 @@ std::optional<TaskOutcome> RunTask(const platform::GpuContext& ctx,
         WGPUCommandBuffer copy_raw = copy_cmds.get();
         wgpuQueueSubmit(ctx.queue, 1, &copy_raw);
 
-        MapResult map_result;
-        WGPUBufferMapCallbackInfo map_cb{};
-        map_cb.mode = WGPUCallbackMode_AllowProcessEvents;
-        map_cb.callback = MapThunk;
-        map_cb.userdata1 = &map_result;
-
-        (void)wgpuBufferMapAsync(stage_buf.get(), WGPUMapMode_Read, 0, req.output_bytes,
-                                 map_cb);
-
-        if (!platform::WaitUntil(ctx, [&] { return map_result.done; })) {
-            Log("error", "result map timed out");
-            return false;
-        }
-        if (map_result.status != WGPUMapAsyncStatus_Success) {
-            Log("error", "result map failed with status " +
-                             std::to_string(static_cast<int>(map_result.status)));
+        if (!MapForRead(ctx, stage_buf.get(), req.output_bytes)) {
+            Log("error", "result map failed or timed out");
             return false;
         }
 
