@@ -426,6 +426,17 @@ protocol::Status JobManager::RecordPartial(WorkerId worker, TaskId task_id,
     return {};
 }
 
+void JobManager::RecordAssetSource(wire::AssetSource source) noexcept {
+    // No `default:` — adding an AssetSource must break this build
+    // (ARCHITECTURE.md §5).
+    switch (source) {
+        case wire::AssetSource::None:        ++asset_sources_.none; return;
+        case wire::AssetSource::Cached:      ++asset_sources_.cached; return;
+        case wire::AssetSource::Peer:        ++asset_sources_.peer; return;
+        case wire::AssetSource::Coordinator: ++asset_sources_.coordinator; return;
+    }
+}
+
 const JobManager::PartialResult* JobManager::LatestPartial(TaskId task) const noexcept {
     const auto it = partials_.find(task);
     return it == partials_.end() ? nullptr : &it->second;

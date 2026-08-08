@@ -44,6 +44,10 @@ Snapshot Collect(const JobManager& jobs, const Fleet& fleet,
     // whether it came from 3 grants or 30,000.
     snap.asset_grants = jobs.asset_grants();
     snap.asset_grants_hit = jobs.asset_grants_hit();
+    const auto srcs = jobs.asset_sources();
+    snap.asset_from_peer = srcs.peer;
+    snap.asset_from_coordinator = srcs.coordinator;
+    snap.asset_from_cache = srcs.cached;
     snap.rejected_frames = rejected_frames;
 
     snap.fleet.reserve(fleet.size());
@@ -76,6 +80,9 @@ std::string ToJson(const Snapshot& snap) {
     out += ",\"wasted_units\":" + std::to_string(snap.wasted_units);
     out += ",\"asset_grants\":" + std::to_string(snap.asset_grants);
     out += ",\"asset_grants_hit\":" + std::to_string(snap.asset_grants_hit);
+    out += ",\"asset_from_peer\":" + std::to_string(snap.asset_from_peer);
+    out += ",\"asset_from_coordinator\":" + std::to_string(snap.asset_from_coordinator);
+    out += ",\"asset_from_cache\":" + std::to_string(snap.asset_from_cache);
     out += ",\"rejected_frames\":" + std::to_string(snap.rejected_frames);
 
     out += ",\"tasks_by_state\":[";

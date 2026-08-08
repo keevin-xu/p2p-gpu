@@ -69,6 +69,15 @@ struct Snapshot {
     std::uint64_t asset_grants = 0;
     std::uint64_t asset_grants_hit = 0;
 
+    /// Fetch-source breakdown (6.11/6.14). UNTRUSTED telemetry — a worker
+    /// chooses what to report (invariant 8). Credible only because the
+    /// coordinator knows how many bytes IT served: a fleet claiming peer
+    /// fetches while coordinator egress stays flat is claiming something the
+    /// coordinator can contradict.
+    std::uint64_t asset_from_peer = 0;
+    std::uint64_t asset_from_coordinator = 0;
+    std::uint64_t asset_from_cache = 0;
+
     // Hygiene, deliberately separate from task reputation (3.11) — conflating
     // them is how an honest-but-buggy client gets blacklisted.
     std::uint64_t rejected_frames = 0;

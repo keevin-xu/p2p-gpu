@@ -423,6 +423,25 @@ public:
     /// The denominator is "grants that COULD have hit". Counting assetless
     /// grants as misses would report a rate that falls whenever the fleet does
     /// non-render work, which says nothing about affinity.
+    /// Fetch-source tallies from `TaskStats.asset_source` (6.11/6.14).
+    ///
+    /// UNTRUSTED TELEMETRY (invariant 8). A worker could report `Peer` for
+    /// everything; nothing here decides anything on it, and E6 must say so
+    /// beside any number it quotes. What makes it credible is corroboration —
+    /// the coordinator knows how many bytes IT served, so a fleet claiming peer
+    /// fetches while coordinator egress stays flat is claiming something the
+    /// coordinator can contradict.
+    struct AssetSourceCounts {
+        std::uint64_t none = 0;
+        std::uint64_t cached = 0;
+        std::uint64_t peer = 0;
+        std::uint64_t coordinator = 0;
+    };
+    void RecordAssetSource(wire::AssetSource source) noexcept;
+    [[nodiscard]] AssetSourceCounts asset_sources() const noexcept {
+        return asset_sources_;
+    }
+
     [[nodiscard]] std::uint64_t asset_grants() const noexcept { return asset_grants_; }
     [[nodiscard]] std::uint64_t asset_grants_hit() const noexcept {
         return asset_grants_hit_;
@@ -478,6 +497,7 @@ private:
     /// already finished.
     std::unordered_map<TaskId, PartialResult> partials_;
 
+    AssetSourceCounts asset_sources_{};
     std::uint64_t asset_grants_ = 0;
     std::uint64_t asset_grants_hit_ = 0;
 

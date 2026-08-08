@@ -305,6 +305,15 @@ private:
     std::vector<std::byte> asset_materials_;
     std::string resident_asset_;
 
+    /// How THIS TASK's bulk input was obtained (6.11). Raw data for E6.
+    ///
+    /// `Cached` is a distinct outcome from `Peer`/`Coordinator`, not a third
+    /// kind of fetch: it means no fetch happened. 6.14's ratio is therefore
+    /// computed over the non-cached values — counting cached tasks as
+    /// "coordinator fetches" would make the peer share fall as the fleet reused
+    /// the asset, which is the opposite of what is happening.
+    wire::AssetSource asset_source_ = wire::AssetSource::None;
+
     void RequestAssetChunks();
     void HandleAssetChunk(const wire::AssetChunk& chunk);
     void HandleAssetMiss(const wire::AssetMiss& miss);

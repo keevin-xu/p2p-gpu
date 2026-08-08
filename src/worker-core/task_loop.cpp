@@ -428,6 +428,13 @@ void TaskLoop::HandleTaskGrant(const wire::TaskGrant& grant) {
         task.output_bytes = out->bytes();
     }
 
+    // A task with no bulk input reports `None` rather than inheriting whatever
+    // the last asset-bearing task set. Done per TASK, here, because that is the
+    // granularity the field describes.
+    if (task.asset.empty()) {
+        asset_source_ = wire::AssetSource::None;
+    }
+
     const KernelInfo* info = FindKernel(task.kernel_id);
     if (info == nullptr) {
         Log("warn", "granted an unknown kernel: " + task.kernel_id);
@@ -491,6 +498,12 @@ void TaskLoop::HandleTaskGrant(const wire::TaskGrant& grant) {
         }
         task.asset = address;
 
+        if (address == resident_asset_) {
+            // Already held — no fetch at all. A distinct outcome from either
+            // kind of fetch, which is what lets 6.14 compute a peer share that
+            // does not fall as the fleet reuses the asset.
+            asset_source_ = wire::AssetSource::Cached;
+        }
         if (address != resident_asset_) {
             waiting_on_asset_.push_back(std::move(task));
             if (!fetch_ || fetch_->address != address) {
@@ -839,6 +852,11 @@ void TaskLoop::SendResultFrame(protocol::TaskId task, const TaskOutcome& outcome
             sb.add_idle_ms(outcome.stats.idle_ms);
             sb.add_dispatches(outcome.stats.dispatches);
             sb.add_iterations(outcome.stats.iterations);
+            // 6.11 — where this task's bulk input came from. Telemetry, and the
+            // coordinator treats it as such: invariant 8 says a worker's
+            // self-report never decides anything. It is E6 evidence, not a
+            // scheduling input.
+            sb.add_asset_source(asset_source_);
             auto stats = sb.Finish();
 
             wire::ResultHeaderBuilder b(fbb);
@@ -1354,6 +1372,10 @@ void TaskLoop::FinishAssetFetch() {
     asset_nodes_ = to_bytes(bvh->nodes);
     asset_prims_ = to_bytes(bvh->prims);
     asset_materials_ = to_bytes(bvh->materials);
+    // WHICH transport delivered it (6.11). Recorded here, where the answer is
+    // known, rather than inferred later from whether a peer connection happens
+    // to still be open — it is closed immediately below.
+    asset_source_ = peer_ ? wire::AssetSource::Peer : wire::AssetSource::Coordinator;
     resident_asset_ = address;
     fetch_.reset();
     // The connection has done its job. Held open, it would be a peer we are not
@@ -1414,6 +1436,13 @@ bool TaskLoop::Execute(const PendingTask& task) {
         Log("warn", "could not fetch WGSL for " + task.kernel_id);
         SendRelease(task.id, wire::ReleaseReason::KernelUnavailable);
         return false;
+    }
+
+    // A task with no bulk input reports `None` rather than inheriting whatever
+    // the last asset-bearing task set. Done per TASK, here, because that is the
+    // granularity the field describes.
+    if (task.asset.empty()) {
+        asset_source_ = wire::AssetSource::None;
     }
 
     const KernelInfo* info = FindKernel(task.kernel_id);

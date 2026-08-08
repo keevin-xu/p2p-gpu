@@ -1197,6 +1197,12 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
         return NonFatal(wire::ErrorCode::LeaseNotHeld, "no lease on that task");
     }
 
+    // 6.11 — where the worker says its bulk input came from. UNTRUSTED
+    // telemetry (invariant 8): recorded for E6, never acted on.
+    if (const auto* stats = header.stats()) {
+        jobs_.RecordAssetSource(stats->asset_source());
+    }
+
     // OPTIONAL, DEV-ONLY (step 1.26): recompute the task on the CPU and compare.
     // A test harness, never a validation strategy — if the coordinator could
     // afford to compute every answer there would be no reason to distribute the
