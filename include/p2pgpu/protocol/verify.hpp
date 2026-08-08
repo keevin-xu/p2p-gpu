@@ -81,6 +81,19 @@ private:
 [[nodiscard]] Result<const wire::AssetMsg*> VerifyAssetMsg(
     std::span<const std::byte> bytes) noexcept;
 
+/// The signalling payload one worker relays to another (6.8).
+///
+/// Verified by the RECEIVING WORKER, never by the coordinator — which relays
+/// `Signal.payload` without reading it (D-0085). Same treatment as
+/// `VerifyAssetMsg`: a non-root table verified directly, so the structure is
+/// schema-checked rather than hand-parsed (ARCHITECTURE.md §9).
+///
+/// The strings inside remain OPAQUE. Verifying that a `kind` field exists and
+/// is in bounds is not the same as interpreting SDP, and only the latter is
+/// forbidden.
+[[nodiscard]] Result<const wire::PeerSignal*> VerifyPeerSignal(
+    std::span<const std::byte> bytes) noexcept;
+
 /// Read a trivially-copyable `T` out of untrusted bytes (R11).
 ///
 /// The sanctioned alternative to `memcpy(&t, span.data(), sizeof(t))`, which

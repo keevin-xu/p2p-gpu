@@ -130,6 +130,28 @@ Result<VerifiedFrame> VerifyFrame(std::span<const std::byte> frame) noexcept {
     return VerifiedFrame{env, regions->payload};
 }
 
+Result<const wire::PeerSignal*> VerifyPeerSignal(
+    std::span<const std::byte> bytes) noexcept {
+    // Relayed through the coordinator from another worker, so this is peer bytes
+    // that took a detour — no more trusted for having passed through.
+    if (bytes.empty()) {
+        return MakeError(ErrorCode::MalformedMessage, "empty peer signal");
+    }
+    if (bytes.size() > kMaxSignalBytes) {
+        return MakeError(ErrorCode::PayloadTooLarge, "peer signal exceeds kMaxSignalBytes");
+    }
+    ::flatbuffers::Verifier verifier(AsVerifierBytes(bytes), bytes.size(),
+                                     kMaxVerifyDepth, kMaxVerifyTables);
+    if (!verifier.VerifyBuffer<wire::PeerSignal>(nullptr)) {
+        return MakeError(ErrorCode::MalformedMessage, "peer signal verification failed");
+    }
+    const auto* sig = ::flatbuffers::GetRoot<wire::PeerSignal>(bytes.data());
+    if (sig == nullptr || sig->kind() == nullptr || sig->text() == nullptr) {
+        return MakeError(ErrorCode::MalformedMessage, "peer signal missing kind or text");
+    }
+    return sig;
+}
+
 Result<const wire::AssetMsg*> VerifyAssetMsg(std::span<const std::byte> bytes) noexcept {
     // Peer-supplied bytes reach this path with NO coordinator mediation, so the
     // same bounds apply and for stronger reasons.

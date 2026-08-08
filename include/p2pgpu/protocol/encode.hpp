@@ -12,7 +12,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "p2pgpu/p2pgpu_generated.h"
@@ -84,6 +86,57 @@ template <typename BuildFn>
     const auto* p = static_cast<const std::byte*>(
         static_cast<const void*>(fbb.GetBufferPointer()));
     return std::vector<std::byte>(p, p + fbb.GetSize());
+}
+
+}  // namespace p2pgpu::protocol
+
+namespace p2pgpu::protocol {
+
+/// The inner signalling message carried in `Signal.payload` (6.8).
+///
+/// A standalone root, like `AssetMsg`: the coordinator relays these bytes
+/// without reading them (D-0085), and the receiving worker verifies the
+/// structure with `VerifyPeerSignal`.
+[[nodiscard]] inline std::vector<std::byte> EncodePeerSignal(
+    const std::string& kind, const std::string& text, const std::string& mid) {
+    flatbuffers::FlatBufferBuilder fbb;
+    auto k = fbb.CreateString(kind);
+    auto t = fbb.CreateString(text);
+    auto m = fbb.CreateString(mid);
+    wire::PeerSignalBuilder b(fbb);
+    b.add_kind(k);
+    b.add_text(t);
+    b.add_mid(m);
+    fbb.Finish(b.Finish());
+    const auto* p = static_cast<const std::byte*>(
+        static_cast<const void*>(fbb.GetBufferPointer()));
+    return std::vector<std::byte>(p, p + fbb.GetSize());
+}
+
+/// 64-char lowercase hex -> `Hash32`'s four little-endian u64 lanes.
+///
+/// The inverse conversion appears in three places now (grant, asset request,
+/// peer request) and is spelled out rather than memcpy-ing a struct, because
+/// the byte order is the wire's business and "it agrees on arm64" says nothing
+/// (D-0027).
+[[nodiscard]] inline wire::Hash32 HashFromHex(const std::string& hex) {
+    std::array<std::uint64_t, 4> lanes{};
+    if (hex.size() == 64) {
+        for (std::size_t lane = 0; lane < 4; ++lane) {
+            std::uint64_t v = 0;
+            for (std::size_t byte = 0; byte < 8; ++byte) {
+                const auto nib = [](char c) -> std::uint64_t {
+                    if (c >= '0' && c <= '9') { return static_cast<std::uint64_t>(c - '0'); }
+                    if (c >= 'a' && c <= 'f') { return static_cast<std::uint64_t>(c - 'a' + 10); }
+                    return 0;
+                };
+                const std::size_t at = lane * 16 + byte * 2;
+                v |= ((nib(hex[at]) << 4) | nib(hex[at + 1])) << (byte * 8);
+            }
+            lanes[lane] = v;
+        }
+    }
+    return wire::Hash32(lanes[0], lanes[1], lanes[2], lanes[3]);
 }
 
 }  // namespace p2pgpu::protocol

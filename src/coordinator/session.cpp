@@ -756,9 +756,17 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
                 gb.add_envelope(env);
                 return gb.Finish();
             });
-        out.push_back(std::move(frame));
-
-        // ── PEER LIST, only when this worker actually lacks the asset ────
+        // ── PEER LIST FIRST, THEN THE GRANT ─────────────────────────────
+        //
+        // ORDER IS LOAD-BEARING. Both frames ride the same reply, and the
+        // worker processes them in order — so a grant seen before the list
+        // finds no candidates and falls straight back to the coordinator.
+        // Measured exactly that at 6.8 bring-up: zero signalling frames, every
+        // fetch served by the coordinator, and nothing in any log saying why.
+        //
+        // The list is CONTEXT for the grant, so it precedes it.
+        //
+        // Only when this worker actually lacks the asset ─────────────────
         //
         // Sent WITH the grant that creates the need: this is the moment the
         // coordinator knows both which asset is required and that this worker
@@ -798,6 +806,8 @@ Reaction Session::OnLeaseRequest(const wire::LeaseRequest& req, std::uint64_t no
                               task->id.lo(), peers.size());
             }
         }
+        out.push_back(std::move(frame));
+
         ++granted;
 
         // Remember what we predicted, on OUR clock. 2.13 compares this against

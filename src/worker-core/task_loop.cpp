@@ -29,6 +29,23 @@ constexpr std::uint32_t kAssetChunkRequestBatch = 64;
 /// Give up if no chunk arrives for this long. A stalled fetch must not pin a
 /// task forever — the coordinator can hand it to someone else.
 constexpr auto kAssetStallTimeout = std::chrono::seconds(20);
+
+/// How long the WHOLE peer phase gets before falling back (6.9).
+///
+/// Timeout-based, NOT failure-only: ICE can take many seconds to admit defeat,
+/// and a merely slow peer must not block a task that the coordinator could have
+/// served in that time. Short enough that a failed attempt costs less than the
+/// fetch it replaced.
+constexpr auto kPeerPhaseTimeout = std::chrono::seconds(8);
+
+/// Candidate peers tried before giving up on the data plane for this asset.
+///
+/// TWO, not eight. "No retry storms" (6.8): cycling every listed candidate with
+/// a timeout each turns one slow fetch into a minute of nothing, and the
+/// coordinator would have finished long before. The peer list is an
+/// optimisation, and an optimisation that delays the work it optimises is a
+/// regression.
+constexpr std::size_t kMaxPeerAttempts = 2;
 }  // namespace
 
 namespace {
@@ -192,6 +209,15 @@ void TaskLoop::Poll() {
     // A fetch that has stopped progressing must not pin its parked tasks
     // forever — the coordinator can give them to someone else, and R8 says a
     // worker going quiet is the normal case rather than an error.
+    // The peer phase has its own, much shorter deadline (6.9). Timeout-based
+    // rather than failure-only: ICE can take many seconds to admit defeat, and
+    // a merely slow peer must not block a task the coordinator could already
+    // have served.
+    if (fetch_ && peer_ && Clock::now() > peer_deadline_) {
+        peer_.reset();
+        TryNextPeerOrFallBack();
+    }
+
     if (fetch_ && Clock::now() - fetch_->last_progress > kAssetStallTimeout) {
         AbandonAssetFetch("no asset chunk received before the stall timeout");
     }
@@ -284,13 +310,17 @@ void TaskLoop::OnFrame(std::span<const std::byte> bytes) {
                 HandleAssetMiss(*m);
             }
             break;
+        case wire::Body::Signal:
+            if (const auto* m = env.body_as_Signal()) {
+                HandleSignal(*m);
+            }
+            return;
         case wire::Body::AssetRequest:
             // The coordinator does not ask US for assets. Ignored rather than
             // acted on; Phase 6 is where a peer legitimately can.
             break;
         case wire::Body::Goodbye:
         case wire::Body::BenchmarkResult:
-        case wire::Body::Signal:
         case wire::Body::NONE:
             Log("warn", "peer sent a worker-to-coordinator message; ignoring");
             return;
@@ -475,8 +505,13 @@ void TaskLoop::HandleTaskGrant(const wire::TaskGrant& grant) {
                 fetch_->expected_bytes = env->input_bytes();
                 fetch_->started = Clock::now();
                 fetch_->last_progress = fetch_->started;
+                peer_attempt_ = 0;
                 Log("info", "fetching asset " + address.substr(0, 12) + "...");
-                SendAssetRequest(address, 0, kAssetChunkRequestBatch);
+                // PEERS FIRST (D-0007). The whole point of the data plane is
+                // that the coordinator does not serve this; the mandatory
+                // fallback is what makes trying something unreliable first a
+                // safe thing to do.
+                TryNextPeerOrFallBack();
             }
             return;
         }
@@ -995,6 +1030,154 @@ void TaskLoop::HandleAssetChunk(const wire::AssetChunk& chunk) {
 
 // ── Peer data plane (6.6, D-0090) ────────────────────────────────────────
 
+void TaskLoop::SendSignal(protocol::WorkerId to, const transport::SignalOut& out) {
+    // The inner PeerSignal, verified by the RECEIVING worker. The coordinator
+    // relays `payload` without reading it (D-0085), so the structure is ours to
+    // agree on with the peer and nobody else's business.
+    const auto inner = protocol::EncodePeerSignal(out.kind, out.text, out.mid);
+    const wire::Uuid dest = to.to_wire();
+    auto frame = protocol::EncodeMessage(
+        wire::Body::Signal, [&](flatbuffers::FlatBufferBuilder& fbb) {
+            auto pv = fbb.CreateVector(
+                static_cast<const std::uint8_t*>(
+                    static_cast<const void*>(inner.data())),
+                inner.size());
+            wire::SignalBuilder b(fbb);
+            b.add_peer(&dest);
+            b.add_payload(pv);
+            return b.Finish();
+        });
+    (void)transport_.Send(frame);
+}
+
+void TaskLoop::HandleSignal(const wire::Signal& signal) {
+    // `peer` is the SENDER here — the coordinator rewrote it on relay (D-0085).
+    if (signal.peer() == nullptr || signal.payload() == nullptr) {
+        return;
+    }
+    const protocol::WorkerId from{*signal.peer()};
+
+    const auto* p = signal.payload();
+    const std::span<const std::byte> bytes{
+        static_cast<const std::byte*>(static_cast<const void*>(p->data())),
+        p->size()};
+    // Relayed peer bytes, no more trusted for having passed through the
+    // coordinator. Schema-verified rather than hand-parsed (ARCHITECTURE.md §9).
+    const auto verified = protocol::VerifyPeerSignal(bytes);
+    if (!verified) {
+        Log("warn", "peer signal failed verification; dropped");
+        return;
+    }
+    const wire::PeerSignal* sig = *verified;
+    const std::string kind = sig->kind()->str();
+    const std::string text = sig->text()->str();
+    const std::string mid = sig->mid() != nullptr ? sig->mid()->str() : std::string{};
+
+    // ── THE ANSWERING SIDE (6.8) ─────────────────────────────────────────
+    //
+    // A worker that HOLDS an asset must accept an incoming connection, or the
+    // data plane only ever has offerers and nothing is served. This was the
+    // missing half at bring-up: signalling flowed, three frames were relayed,
+    // and the offer was dropped because the receiver had no PeerLink — so every
+    // fetch fell back and the logs showed a timeout rather than a cause.
+    if (!peer_ && kind == "offer") {
+        // Only if there is something to serve. Accepting a connection with an
+        // empty cache spends ICE on a negotiation that can only end in
+        // AssetMiss, and 6.12 would count it as a peer that did nothing.
+        if (resident_bytes_.empty()) {
+            return;
+        }
+        peer_target_ = from;
+        peer_ = std::make_unique<transport::PeerLink>(ice_servers_);
+        const protocol::WorkerId target = from;
+        peer_->OnSignal([this, target](const transport::SignalOut& out) {
+            SendSignal(target, out);
+        });
+        peer_->OnMessage([this](std::span<const std::byte> b) { OnPeerBytes(b); });
+        peer_->OnOpen([this](bool open) {
+            Log("info", open ? "peer channel open (serving)"
+                             : "peer channel closed (serving)");
+        });
+        Log("info", "accepting a peer connection from worker " +
+                        std::to_string(from.hi()));
+        peer_->AcceptOffer(text);
+        return;
+    }
+
+    if (!peer_ || from != peer_target_) {
+        // Signalling from someone we are not negotiating with. Dropped rather
+        // than acted on: a peer able to inject candidates into someone else's
+        // connection can redirect it.
+        return;
+    }
+
+    if (kind == "answer") {
+        peer_->AcceptAnswer(text);
+    } else if (kind == "candidate") {
+        peer_->AddRemoteCandidate(text, mid);
+    }
+    // Anything else is ignored. The set is closed, and a peer inventing a
+    // fourth kind is telling us it disagrees about the protocol.
+}
+
+void TaskLoop::TryNextPeerOrFallBack() {
+    if (!fetch_) {
+        return;
+    }
+    if (peer_attempt_ >= peer_candidates_.size() ||
+        peer_attempt_ >= kMaxPeerAttempts) {
+        FallBackToCoordinator("no peer candidates left");
+        return;
+    }
+
+    peer_target_ = peer_candidates_[peer_attempt_++];
+    peer_deadline_ = Clock::now() + kPeerPhaseTimeout;
+
+    peer_ = std::make_unique<transport::PeerLink>(ice_servers_);
+    // Handlers BEFORE Offer(): negotiation starts the moment the channel is
+    // created, and a description produced before the handler exists is lost.
+    const protocol::WorkerId target = peer_target_;
+    peer_->OnSignal([this, target](const transport::SignalOut& out) {
+        SendSignal(target, out);
+    });
+    peer_->OnMessage([this](std::span<const std::byte> bytes) { OnPeerBytes(bytes); });
+    peer_->OnOpen([this](bool open) {
+        if (!open || !fetch_) {
+            return;
+        }
+        // The channel is up: ask for the asset. Same message the coordinator
+        // path sends, over a different transport (D-0090).
+        Log("info", "peer channel open; requesting the asset");
+        SendToPeer(protocol::EncodeAssetMsg(
+            wire::AssetBody::AssetRequest,
+            [&](flatbuffers::FlatBufferBuilder& fbb) {
+                const wire::Hash32 h = protocol::HashFromHex(fetch_->address);
+                wire::AssetRequestBuilder b(fbb);
+                b.add_hash(&h);
+                b.add_chunk_from(0);
+                b.add_chunk_to(kAssetChunkRequestBatch);
+                return b.Finish();
+            }));
+    });
+    Log("info", "trying peer " + std::to_string(peer_target_.hi()) +
+                    " for the asset (attempt " + std::to_string(peer_attempt_) + ")");
+    peer_->Offer();
+}
+
+void TaskLoop::FallBackToCoordinator(const char* why) {
+    // D-0007: the coordinator is the mandatory fallback, and it is what makes
+    // trying an unreliable peer first a safe thing to do. A fetch that reaches
+    // here still completes; it just costs the coordinator egress the data plane
+    // was meant to save.
+    Log("info", std::string("falling back to the coordinator: ") + why);
+    peer_.reset();
+    peer_target_ = protocol::WorkerId{};
+    if (fetch_) {
+        fetch_->last_progress = Clock::now();
+        SendAssetRequest(fetch_->address, 0, kAssetChunkRequestBatch);
+    }
+}
+
 void TaskLoop::SendToPeer(const std::vector<std::byte>& msg) {
     if (peer_ && peer_->IsOpen()) {
         (void)peer_->Send(msg);
@@ -1120,9 +1303,19 @@ void TaskLoop::ServePeerAssetRequest(const wire::AssetRequest& req) {
 }
 
 void TaskLoop::HandleAssetMiss(const wire::AssetMiss& /*miss*/) {
-    // The source does not have it. Releasing is right here and parking is not:
-    // waiting cannot help, and the coordinator may be able to hand the task to
-    // a worker that already holds the asset (2.16 affinity).
+    // WHO said no decides what happens next.
+    //
+    // A PEER not having it is ordinary — its cache advertisement was stale by
+    // the time we asked — so try the next candidate, then the coordinator. A
+    // peer's "no" must not condemn the task.
+    if (peer_) {
+        peer_.reset();
+        TryNextPeerOrFallBack();
+        return;
+    }
+    // The COORDINATOR not having it is different: it is the authority that
+    // named this asset in the grant. Waiting cannot help, so release and let it
+    // hand the task to a worker that already holds the blob (2.16 affinity).
     AbandonAssetFetch("the coordinator does not have this asset");
 }
 
@@ -1163,6 +1356,10 @@ void TaskLoop::FinishAssetFetch() {
     asset_materials_ = to_bytes(bvh->materials);
     resident_asset_ = address;
     fetch_.reset();
+    // The connection has done its job. Held open, it would be a peer we are not
+    // using and a connection someone else's cap has to account for (6.12).
+    peer_.reset();
+    peer_target_ = protocol::WorkerId{};
 
     Log("info", "asset ready " + address.substr(0, 12) + "... nodes=" +
                     std::to_string(bvh->nodes.size()) + " prims=" +
@@ -1183,6 +1380,8 @@ void TaskLoop::FinishAssetFetch() {
 void TaskLoop::AbandonAssetFetch(const char* why) {
     Log("error", std::string("asset fetch abandoned: ") + why);
     fetch_.reset();
+    peer_.reset();
+    peer_target_ = protocol::WorkerId{};
     for (const auto& parked : waiting_on_asset_) {
         SendRelease(parked.id, wire::ReleaseReason::AssetUnavailable);
     }

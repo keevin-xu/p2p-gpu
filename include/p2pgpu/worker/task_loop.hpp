@@ -267,6 +267,17 @@ private:
     /// Bounded on receipt: a worker that opened a connection per listed entry
     /// would be one malicious frame from the mesh 6.2 exists to avoid.
     std::vector<protocol::WorkerId> peer_candidates_;
+    /// Which candidate we are currently attempting. Advances on failure; when
+    /// it passes the end, or the budget is spent, we fall back.
+    std::size_t peer_attempt_ = 0;
+    /// The peer we are negotiating with, nil when not attempting one.
+    protocol::WorkerId peer_target_{};
+    /// Deadline for the WHOLE peer phase.
+    ///
+    /// Timeout-based, not failure-only (6.9): a merely SLOW peer must not block
+    /// a task, and waiting for a TCP-like failure signal that may never come is
+    /// how a fetch hangs for minutes. The coordinator is always there.
+    std::chrono::steady_clock::time_point peer_deadline_{};
 
     /// STUN/TURN URLs from `Welcome` (6.5). Bounded on receipt — an unbounded
     /// list would be an allocation the coordinator chooses, and it is not more
@@ -306,6 +317,21 @@ private:
     /// path uses: one implementation, two transports, so invariant 10 cannot be
     /// enforced on one and forgotten on the other.
     void OnPeerBytes(std::span<const std::byte> bytes);
+
+    // ── Peer fetch lifecycle (6.8 / 6.9) ─────────────────────────────────
+
+    /// Try the next candidate peer, or give up and use the coordinator.
+    ///
+    /// PEERS FIRST, coordinator as the fallback (D-0007) — that ordering is the
+    /// whole point of the data plane, and the fallback is what makes it safe to
+    /// try something unreliable first.
+    void TryNextPeerOrFallBack();
+    /// Abandon the peer attempt and fetch from the coordinator instead.
+    void FallBackToCoordinator(const char* why);
+    /// Route a relayed `Signal` into the peer connection.
+    void HandleSignal(const wire::Signal& signal);
+    /// Send one signalling message to the peer we are negotiating with.
+    void SendSignal(protocol::WorkerId to, const transport::SignalOut& out);
 
     /// Serve a peer's `AssetRequest` from what we hold.
     void ServePeerAssetRequest(const wire::AssetRequest& req);

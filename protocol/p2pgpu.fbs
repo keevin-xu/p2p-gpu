@@ -540,6 +540,23 @@ table AssetMiss {
 
 union AssetBody { AssetRequest, AssetChunk, AssetMiss }
 
+/// What one worker says to another to set up a peer connection (6.8).
+///
+/// Carried INSIDE `Signal.payload`, which the coordinator relays without
+/// reading (D-0085). So this is a second standalone root, verified by the
+/// RECEIVING WORKER with `VerifyBuffer<PeerSignal>` — the same shape as
+/// `AssetMsg`, and for the same reason: a schema-verified structure instead of
+/// hand-rolled parsing (ARCHITECTURE.md §9), without asking the coordinator to
+/// understand a negotiation it never joins.
+///
+/// `sdp` and `candidate` are OPAQUE STRINGS end to end. Neither the coordinator
+/// nor this schema interprets them; only WebRTC does.
+table PeerSignal {
+  kind:      string;   // "offer" | "answer" | "candidate"
+  text:      string;   // SDP for a description, the candidate line otherwise
+  mid:       string;   // media id, candidates only
+}
+
 table AssetMsg {
   body: AssetBody;
 }
