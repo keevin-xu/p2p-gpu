@@ -133,7 +133,21 @@ bool AcquireDevice(GpuContext& out, std::uint32_t timeout_ms) {
     adapter_cb.callback = AdapterThunk;
     adapter_cb.userdata1 = &adapter_result;
 
-    (void)wgpuInstanceRequestAdapter(out.instance, nullptr, adapter_cb);
+    // ── ASK FOR THE DISCRETE GPU ─────────────────────────────────────────
+    // Passing nullptr here means "no preference", and on a laptop with both an
+    // integrated and a discrete GPU that reliably yields the INTEGRATED one —
+    // which is the wrong device for a compute contributor and, worse, silently
+    // so: everything works, just several times slower, and the benchmark
+    // dutifully reports the small number as this machine's throughput.
+    //
+    // R7 makes this defensible. Nothing runs without an affirmative click, the
+    // throttle is the user's, and stop is instant — so a volunteer who opted in
+    // is opting in with the hardware they meant. A background page quietly
+    // spinning up a discrete GPU would be a different question.
+    WGPURequestAdapterOptions adapter_opts{};
+    adapter_opts.powerPreference = WGPUPowerPreference_HighPerformance;
+
+    (void)wgpuInstanceRequestAdapter(out.instance, &adapter_opts, adapter_cb);
     if (!WaitUntil(out, [&] { return adapter_result.done; }, timeout_ms) ||
         adapter_result.adapter == nullptr) {
         // requestAdapter returning null is the documented outcome on a
