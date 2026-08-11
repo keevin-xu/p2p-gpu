@@ -2,23 +2,23 @@
   "timestamp_ms": 0,
   "workers": 1,
   "queue_depth": 0,
-  "total_tasks": 34,
-  "units_total": 30000000,
-  "units_remaining": 29704960,
+  "total_tasks": 131,
+  "units_total": 12582912,
+  "units_remaining": 6859197,
   "wasted_units": 0,
-  "asset_grants": 34,
-  "asset_grants_hit": 32,
+  "asset_grants": 131,
+  "asset_grants_hit": 128,
   "asset_from_peer": 0,
-  "asset_from_coordinator": 4,
-  "asset_from_cache": 29,
-  "coordinator_asset_egress": 12672,
+  "asset_from_coordinator": 3,
+  "asset_from_cache": 127,
+  "coordinator_asset_egress": 39552,
   "rejected_frames": 0,
   "tasks_by_state": [
     0,
     1,
     0,
     0,
-    33,
+    130,
     0,
     0
   ],
@@ -34,13 +34,13 @@
   "fleet": [
     {
       "worker_id": 2,
-      "tasks_completed": 7,
-      "score_ops_per_sec": 61337800000.0,
-      "correction": 0.827275,
+      "tasks_completed": 109,
+      "score_ops_per_sec": 1863390000000.0,
+      "correction": 4.57917,
       "throttle": 1,
-      "observed_units_per_sec": 4166.22,
-      "ms_to_first_grant": 12131,
-      "ms_to_first_result": 13589
+      "observed_units_per_sec": 14063,
+      "ms_to_first_grant": 437,
+      "ms_to_first_result": 8645
     }
   ]
 }
