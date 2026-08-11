@@ -168,6 +168,18 @@
       </p>
 
       <p>
+        <!-- The CONTRIBUTING run posts no report of its own — it is a session,
+             not a test with a verdict. Its evidence is the log below, and on a
+             borrowed machine that log is otherwise trapped on a screen nobody
+             will transcribe. This ships it to the dev server like the four
+             probes do. Enabled always: the log is worth sending whether or not
+             a GPU was ever found, and a failed session is the one you most want
+             to read. -->
+        <button id="sendlog">Send session log</button>
+        <span class="hint">posts the log below to results/ — press before closing the tab</span>
+      </p>
+
+      <p>
         <!-- Deliberately breaks R4. Separated from the others and labelled so
              it cannot be clicked by accident: it can freeze the display and
              reset the GPU driver, which is the point, but not something to

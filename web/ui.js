@@ -44,6 +44,7 @@
   var tdrBtn = document.getElementById("tdr");
   var benchBtn = document.getElementById("bench");
   var reloadBtn = document.getElementById("reload");
+  var sendLogBtn = document.getElementById("sendlog");
 
   var statusEl = document.getElementById("status");
   var logEl = document.getElementById("log");
@@ -93,6 +94,39 @@
     fetch(url, { method: "POST", body: report })
       .then(function () { append("[dev] posted results/ (" + name + ", browser-tagged)"); })
       .catch(function () { append("[dev] POST failed — copy the text above"); });
+  }
+
+  // The same POST, for a body we already have rather than one the wasm module
+  // produces. The four probes each end with a verdict worth reporting; a
+  // CONTRIBUTING session has no verdict, only a narrative — which peer was
+  // tried, whether the asset arrived, whether the device came back. That
+  // narrative is the whole evidence for a cross-machine run and it lives here.
+  function postText(name, body) {
+    if (!body) { return; }
+    var token = new URLSearchParams(location.search).get("token");
+    var url = "/report?name=" + encodeURIComponent(name) +
+              (token ? "&token=" + encodeURIComponent(token) : "");
+    fetch(url, { method: "POST", body: body })
+      .then(function (r) {
+        // A 403 or 404 still RESOLVES the promise — only a network failure
+        // rejects it. Reporting success on a rejected token would be worse
+        // than not offering the button, because nobody would check.
+        append(r.ok ? "[dev] posted results/ (" + name + ")"
+                    : "[dev] POST refused (" + r.status + ") — copy the log by hand");
+      })
+      .catch(function () { append("[dev] POST failed — copy the log by hand"); });
+  }
+
+  if (sendLogBtn) {
+    sendLogBtn.addEventListener("click", function () {
+      // Prefixed with what the log alone does not say: which browser and which
+      // page. A log from a borrowed machine with no machine in it is half a
+      // data point.
+      var header = "user-agent: " + navigator.userAgent + "\n" +
+                   "page: " + location.href.replace(/token=[^&]*/, "token=REDACTED") +
+                   "\n" + "captured: " + new Date().toISOString() + "\n\n";
+      postText("session-log.txt", header + logEl.textContent);
+    });
   }
 
   function append(text) {
