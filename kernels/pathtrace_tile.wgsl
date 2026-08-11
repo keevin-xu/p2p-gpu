@@ -417,7 +417,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let jx = rand_f32(pixel_global, sample_index, 0xF00u);
         let jy = rand_f32(pixel_global, sample_index, 0xF01u);
         let u = (f32(px) + jx) / f32(params.image_w);
-        let v = (f32(py) + jy) / f32(params.image_h);
+        // ROW 0 IS THE TOP OF THE IMAGE; v=0 IS `cam_lower_left`, THE BOTTOM OF
+        // THE VIEW. The flip is what reconciles the two, and leaving it out
+        // renders the whole scene upside down (D-0099).
+        let v = 1.0 - (f32(py) + jy) / f32(params.image_h);
 
         let dir = params.cam_lower_left + params.cam_horizontal * u +
                   params.cam_vertical * v - params.cam_origin;

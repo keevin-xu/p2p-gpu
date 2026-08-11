@@ -1,0 +1,46 @@
+{
+  "timestamp_ms": 0,
+  "workers": 1,
+  "queue_depth": 0,
+  "total_tasks": 38,
+  "units_total": 1966080,
+  "units_remaining": 59010,
+  "wasted_units": 0,
+  "asset_grants": 38,
+  "asset_grants_hit": 36,
+  "asset_from_peer": 0,
+  "asset_from_coordinator": 2,
+  "asset_from_cache": 34,
+  "coordinator_asset_egress": 6336,
+  "rejected_frames": 0,
+  "tasks_by_state": [
+    0,
+    2,
+    0,
+    0,
+    36,
+    0,
+    0
+  ],
+  "state_names": [
+    "Queued",
+    "Leased",
+    "Validating",
+    "NeedsReplica",
+    "Accepted",
+    "Rejected",
+    "Cancelled"
+  ],
+  "fleet": [
+    {
+      "worker_id": 1,
+      "tasks_completed": 36,
+      "score_ops_per_sec": 2188800000000.0,
+      "correction": 3.80043,
+      "throttle": 1,
+      "observed_units_per_sec": 34990.2,
+      "ms_to_first_grant": 905,
+      "ms_to_first_result": 2360
+    }
+  ]
+}

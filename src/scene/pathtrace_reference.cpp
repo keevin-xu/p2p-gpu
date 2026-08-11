@@ -229,7 +229,10 @@ std::vector<float> PathTraceReference(const scene::Bvh& bvh,
             V3 sum;
             for (std::uint64_t s = 0; s < req.samples; ++s) {
                 const double u = (px + uni(rng)) / static_cast<double>(req.image_w);
-                const double v = (py + uni(rng)) / static_cast<double>(req.image_h);
+                // Same flip as the kernel, and for the same reason: row 0 is
+                // the top of the image, v=0 is the bottom of the view (D-0099).
+                const double v =
+                    1.0 - (py + uni(rng)) / static_cast<double>(req.image_h);
                 const V3 dir =
                     Norm(lower_left + horizontal * u + vertical * v - origin);
                 sum = sum + Radiance(bvh, req, origin, dir, rng, uni);

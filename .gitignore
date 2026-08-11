@@ -23,6 +23,9 @@ CMakeUserPresets.json
 # committed scene and a fixed seed, so the repo carries the recipe, not the
 # output (CONVENTIONS.md §11).
 /results/**/*.ppm
+# render-preview's default output lands in the CWD. Root-anchored on purpose:
+# a bare `*.ppm` would also swallow any reference image we deliberately commit.
+/*.ppm
 # Dotfile scratch from experiment drivers — intermediate, not evidence.
 /results/.*
 
