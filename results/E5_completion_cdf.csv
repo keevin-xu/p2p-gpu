@@ -1,3 +1,7 @@
+# E5_completion_cdf.csv — produced by tools/experiment.py
+# rev=d5f54cf date=2026-08-23 build=native-release
+# PROVENANCE: SIMULATED (mock workers only; simulated device speed)
+# per-percentile completion times, control vs speculation
 percentile,control_ms,speculation_ms
 0.06724949562878278,160.0,313.0
 0.13449899125756556,325.0,313.0

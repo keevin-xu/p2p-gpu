@@ -28,8 +28,10 @@ What it CANNOT capture, and you still have to bring back by hand:
 
 import argparse
 import csv
+import datetime
 import json
 import os
+import subprocess
 import signal
 import sys
 import time
@@ -105,6 +107,13 @@ def main():
         print("\nno samples — was the coordinator running on that port?")
         return 1
     with open(csv_path, "w", newline="") as fh:
+        # Provenance emitted by the driver so a regeneration keeps it.
+        rev = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True).stdout.strip() or "unknown"
+        fh.write(f"# produced by tools/crossmachine_capture.py\n")
+        fh.write(f"# rev={rev} date={datetime.date.today().isoformat()}\n")
+        fh.write("# PROVENANCE: REAL (live cross-machine session; see the adapters block in the -final.json)\n")
+        fh.write(f"# port={args.port} label={args.label}\n")
         w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
         w.writeheader()
         w.writerows(rows)

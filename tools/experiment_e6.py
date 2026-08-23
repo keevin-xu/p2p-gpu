@@ -37,6 +37,7 @@ to share and both conditions measure the same thing.
 
 import argparse
 import csv
+import datetime
 import json
 import os
 import subprocess
@@ -184,7 +185,20 @@ def main():
         return 1
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    rev = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                         capture_output=True, text=True).stdout.strip() or "unknown"
     with open(args.out, "w", newline="") as fh:
+        # Emitted by the driver, not added afterwards: a hand-written header is
+        # erased by the next run, which is how a CSV stops being traceable to
+        # the run that produced it.
+        fh.write(f"# {os.path.basename(args.out)} — produced by "
+                 f"tools/experiment_e6.py\n")
+        fh.write(f"# rev={rev} date={datetime.date.today().isoformat()} "
+                 f"build={args.build}\n")
+        fh.write("# PROVENANCE: REAL (real GPU workers, one host, loopback)\n")
+        fh.write(f"# scene={args.scene} size={args.size} spp={args.spp} "
+                 f"stagger={args.stagger}s seconds={args.seconds} "
+                 f"repeats={args.repeats}\n")
         w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
         w.writeheader()
         w.writerows(rows)

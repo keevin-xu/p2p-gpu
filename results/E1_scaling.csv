@@ -1,3 +1,7 @@
+# E1_scaling.csv — produced by tools/experiment.py
+# rev=d5f54cf date=2026-08-23 build=native-release
+# PROVENANCE: SIMULATED (mock workers only; simulated device speed)
+# seed=100+N chaos=default workers=1..100 kernel=brute_search_v1
 workers,tasks,units,wall_ms,units_per_sec,p50_ms,p95_ms,p99_ms,max_ms,expiries,cancels,speculative_grants,wasted_units,efficiency
 1,9,25000000,15312,1632706.3740856845,2004.0,2031.0,2031.0,2031.0,0,0,0,0,1.0
 2,22,50000000,20334,2458935.77259762,2001.0,2009.0,2013.0,2013.0,0,0,0,0,0.753024491000295

@@ -1,3 +1,7 @@
+# produced by tools/crossmachine_capture.py
+# rev=d5f54cf date=2026-08-23
+# PROVENANCE: UNATTRIBUTABLE — no adapter recorded (D-0101); not usable as evidence
+# 62 s, 1 worker; the machine that produced it cannot be identified
 t_sec,workers,queue_depth,tasks_done,asset_from_peer,asset_from_coordinator,asset_from_cache,coordinator_asset_egress,rejected_frames,workers_ready,slowest_ms_to_ready
 0.0,0,0,0,0,0,0,0,0,0,-1
 1.0,0,0,0,0,0,0,0,0,0,-1

@@ -1,3 +1,7 @@
+# 2.26_sizing_convergence.csv — produced by tools/experiment.py
+# rev=d5f54cf date=2026-08-23 build=native-release
+# PROVENANCE: SIMULATED (mock workers only; simulated device speed)
+# per-grant correction factor convergence (2.26)
 worker_id,task_index,predicted_ms,actual_ms,ratio,correction
 6,1,250.0,514.0,2.056,1.3168
 4,1,250.0,550.0,2.2,1.36

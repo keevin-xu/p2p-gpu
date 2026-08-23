@@ -1,3 +1,7 @@
+# E3_fault_tolerance.csv — produced by tools/experiment.py
+# rev=d5f54cf date=2026-08-23 build=native-release
+# PROVENANCE: SIMULATED (mock workers only; simulated device speed)
+# fleet killed mid-job at the listed fraction; leases requeue (R8)
 kill_fraction,fleet,killed,units_total,units_covered,units_lost,keyspace_gaps,expiries,tasks,wall_ms
 0.1,50,5,1250000000,1250000000,0,0,0,439,17686
 0.3,50,15,1250000000,1250000000,0,0,0,440,20338

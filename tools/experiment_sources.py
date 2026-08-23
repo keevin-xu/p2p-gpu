@@ -35,6 +35,7 @@ here rather than absent.
 
 import argparse
 import csv
+import datetime
 import json
 import os
 import subprocess
@@ -144,6 +145,13 @@ def main():
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w", newline="") as fh:
+        # Provenance emitted by the driver so a regeneration keeps it.
+        rev = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True).stdout.strip() or "unknown"
+        fh.write(f"# produced by tools/experiment_sources.py\n")
+        fh.write(f"# rev={rev} date={datetime.date.today().isoformat()}\n")
+        fh.write("# PROVENANCE: REAL (real GPU workers, one host, loopback)\n")
+        fh.write(f"# scene={args.scene} size={args.size} spp={args.spp} workers={args.workers} stagger={args.stagger}s\n")
         w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
         w.writeheader()
         w.writerows(rows)

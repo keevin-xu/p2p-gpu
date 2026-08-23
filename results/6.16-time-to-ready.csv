@@ -1,3 +1,7 @@
+# produced by tools/experiment_ready.py
+# rev=d5f54cf date=2026-08-23
+# PROVENANCE: REAL (real GPU workers, one host, loopback)
+# scene=scenes/dense.scene size=384x288 spp=32768 workers=2,4,8 stagger=2.0s repeats=3
 workers,p2p,n_ready,never_ready,median_ms,mean_ms,max_ms,median_grant_ms,from_peer,from_coordinator,rep
 2,off,2,0,3751.5,3751.5,4013,483.0,0,2,0
 4,off,4,0,4011.0,4184.2,5731,824.0,0,4,0

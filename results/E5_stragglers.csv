@@ -1,3 +1,7 @@
+# E5_stragglers.csv — produced by tools/experiment.py
+# rev=d5f54cf date=2026-08-23 build=native-release
+# PROVENANCE: SIMULATED (mock workers only; simulated device speed)
+# speculation on/off; slow workers injected via chaos profile
 condition,run,tasks,units,wall_ms,units_per_sec,p50_ms,p95_ms,p99_ms,max_ms,expiries,cancels,speculative_grants,wasted_units
 control,0,499,1800000000,42102,42753313.38178709,1970.0,2560.0,5792.0,5946.0,0,0,0,0
 control,1,510,1800000000,42032,42824514.65550057,1950.5,2496.0,5426.0,5950.0,0,0,0,0

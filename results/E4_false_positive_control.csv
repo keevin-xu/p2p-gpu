@@ -1,3 +1,7 @@
+# E4_false_positive_control.csv — produced by tools/experiment.py
+# rev=d5f54cf date=2026-08-23 build=native-release
+# PROVENANCE: SIMULATED (mock workers only; simulated device speed)
+# zero liars; any detection here is a false positive
 policy,liar_fraction,collude,lies_submitted,accepted_checked,accepted_wrong,tasks,grants,overhead_factor,detected,detection_rate,blacklisted,inconclusive,wall_s
 fixed2x,0.0,0,0,189,0,189,379,2.005,0,1.0,0,0,47.7
 adaptive,0.0,0,0,181,0,181,349,1.928,0,1.0,0,0,34.5

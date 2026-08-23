@@ -1,3 +1,7 @@
+# produced by tools/experiment_sources.py
+# rev=d5f54cf date=2026-08-23
+# PROVENANCE: REAL (real GPU workers, one host, loopback)
+# scene=scenes/dense.scene size=384x288 spp=262144 workers=8 stagger=3.0s
 t_sec,workers,peer_total,coordinator_total,cache_total,peer_delta,coordinator_delta,cache_delta,egress_bytes
 0.0,0,0,0,0,0,0,0,0
 1.0,1,0,0,0,0,0,0,256704

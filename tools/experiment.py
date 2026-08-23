@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime
 import json
 import os
 import signal
@@ -670,11 +671,33 @@ def convergence(args):
 
 # ── plumbing ─────────────────────────────────────────────────────────────
 
-def write_csv(path, rows):
+def write_csv(path, rows, provenance="SIMULATED", note=None):
+    """Write a CSV with a provenance header block.
+
+    The header is emitted HERE rather than added to the files afterwards, and
+    that is the whole point: a header bolted on by hand is erased by the next
+    regeneration, which produces exactly the artefact `results/README.md` warns
+    against — a number that cannot be traced back to the run that made it.
+
+    `provenance` defaults to SIMULATED because every experiment in this driver
+    is mock-worker only. Mock workers compute real answers but SIMULATE device
+    speed (D-0042, D-0049), so no number here is evidence about what a GPU can
+    do, and a reader who takes the scaling curve for measured throughput has
+    been misled by us rather than by their own carelessness.
+    """
     if not rows:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
+    rev = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                         capture_output=True, text=True).stdout.strip() or "unknown"
     with open(path, "w", newline="") as f:
+        f.write(f"# {path.name} — produced by tools/experiment.py\n")
+        f.write(f"# rev={rev} date={datetime.date.today().isoformat()} "
+                f"build=native-release\n")
+        f.write(f"# PROVENANCE: {provenance}"
+                f"{' (mock workers only; simulated device speed)' if provenance == 'SIMULATED' else ''}\n")
+        if note:
+            f.write(f"# {note}\n")
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader()
         w.writerows(rows)

@@ -1,3 +1,7 @@
+# E4_longrun.csv — produced by tools/experiment.py
+# rev=d5f54cf date=2026-08-23 build=native-release
+# PROVENANCE: SIMULATED (mock workers only; simulated device speed)
+# 20 workers, 10% liars, overhead reported per third of the run
 policy,accepted_wrong,lies_submitted,tasks,grants,tasks_per_worker,overhead_overall,overhead_first_third,overhead_mid_third,overhead_last_third,wall_s
 fixed2x,0,7,1555,3129,77.8,2.012,2.066,1.996,1.973,411.9
 adaptive,0,8,1773,1961,88.7,1.106,1.386,1.0,1.0,218.6
