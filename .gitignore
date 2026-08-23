@@ -90,3 +90,11 @@ fuzz/dist/
 # CI's net was frozen at the original seeds while the logs reported half a
 # billion executions. Same shape as the `*.md` mistake noted above: an ignore
 # rule quietly excluding the thing it was protecting.
+
+# Imported meshes. Deliberately ignored, and the reason is stated because this
+# file has a history of broad rules quietly excluding what they were meant to
+# protect: a downloaded model carries someone else's licence, and a dense one is
+# tens of MB of text. `tools/obj_to_scene.py` regenerates the .scene from it, and
+# `scenes/*.scene` IS tracked — so the derived artifact is committed and the
+# source model is not.
+assets/

@@ -224,6 +224,16 @@ void TaskLoop::Poll() {
     }
 
     if (fetch_ && peer_ && Clock::now() > peer_deadline_) {
+        // WHY it timed out, not just that it did. The first cross-machine run
+        // logged only "no peer candidates left", which reads as "the list was
+        // empty" when in fact a candidate was tried and never connected —
+        // two different failures with two different fixes. `IsOpen()`
+        // separates them: channel never opened is ICE/NAT, channel open but
+        // silent is the peer not answering.
+        Log("info", peer_->IsOpen()
+                        ? "peer timed out with the channel OPEN (peer did not send)"
+                        : "peer timed out with the channel NEVER OPEN "
+                          "(ICE/NAT — check --ice-server)");
         peer_.reset();
         TryNextPeerOrFallBack();
     }

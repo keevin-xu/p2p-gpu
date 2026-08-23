@@ -27,6 +27,29 @@ std::string Num(double v) {
     return n > 0 ? std::string(buf.data(), static_cast<std::size_t>(n)) : "null";
 }
 
+/// JSON string literal from an ATTACKER-CONTROLLED label (D-0101).
+///
+/// Adapter strings come off the wire. Emitting one raw lets a worker close the
+/// string and inject arbitrary JSON into every dashboard and every saved
+/// metrics snapshot — the same class as the length checks in R11, applied to
+/// output instead of input. Quotes and backslashes are escaped, control
+/// characters are dropped, and anything above ASCII is dropped rather than
+/// half-encoded: a valid document with a mangled GPU name beats an invalid one.
+std::string Quote(const std::string& v) {
+    std::string out = "\"";
+    for (const char c : v) {
+        const auto u = static_cast<unsigned char>(c);
+        if (c == '"' || c == '\\') {
+            out.push_back('\\');
+            out.push_back(c);
+        } else if (u >= 0x20 && u < 0x7F) {
+            out.push_back(c);
+        }
+    }
+    out.push_back('"');
+    return out;
+}
+
 }  // namespace
 
 Snapshot Collect(const JobManager& jobs, const Fleet& fleet,
@@ -58,6 +81,9 @@ Snapshot Collect(const JobManager& jobs, const Fleet& fleet,
         wm.score_ops_per_sec = rec.score_ops_per_sec;
         wm.correction = rec.correction;
         wm.throttle = rec.throttle;
+        wm.adapter_vendor = rec.adapter_vendor;
+        wm.adapter_device = rec.adapter_device;
+        wm.adapter_backend = rec.adapter_backend;
         if (rec.first_grant_ms != 0) {
             wm.ms_to_first_grant =
                 static_cast<double>(rec.first_grant_ms - rec.joined_ms);
@@ -128,6 +154,9 @@ std::string ToJson(const Snapshot& snap) {
         out += ",\"correction\":" + Num(w.correction);
         out += ",\"throttle\":" + Num(w.throttle);
         out += ",\"observed_units_per_sec\":" + Num(w.observed_units_per_sec);
+        out += ",\"adapter_vendor\":" + Quote(w.adapter_vendor);
+        out += ",\"adapter_device\":" + Quote(w.adapter_device);
+        out += ",\"adapter_backend\":" + Quote(w.adapter_backend);
         out += ",\"ms_to_first_grant\":" + Num(w.ms_to_first_grant);
         out += ",\"ms_to_first_result\":" + Num(w.ms_to_first_result);
         out += "}";

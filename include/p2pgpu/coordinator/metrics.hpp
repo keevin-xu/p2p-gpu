@@ -45,6 +45,11 @@ struct WorkerMetrics {
     /// ACCEPTED result. `-1` means it has not happened yet, which is a
     /// meaningful state and not a zero: a worker that has never finished
     /// anything must not be averaged in as instantly ready.
+    /// Which GPU this worker reported (D-0101). Display only.
+    std::string adapter_vendor;
+    std::string adapter_device;
+    std::string adapter_backend;
+
     double ms_to_first_grant = -1.0;
     double ms_to_first_result = -1.0;
 };

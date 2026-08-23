@@ -15,6 +15,7 @@
 // a hung worker also does. What counts is when WE last received a frame.
 
 #include <cstdint>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -45,6 +46,19 @@ struct WorkerRecord {
     /// joined and never produced anything is NOT ready, and recording a
     /// readiness time for it would let the slowest joiners vanish from the
     /// statistic — which is the direction that flatters the result.
+    /// Adapter identity, purely for the RECORD (D-0101). Never keyed on for
+    /// scheduling or validation — these strings mean different things per
+    /// implementation and may be empty (RISKS.md §1).
+    ///
+    /// Stored because it was already arriving in `Hello` and being thrown
+    /// away, which made a real measurement unusable: the `r4-load` capture of
+    /// 2026-08-11 cannot be attributed to a machine, so a possibly-valid
+    /// Windows result had to be scored as not-met. A run that cannot say which
+    /// GPU produced it is not evidence.
+    std::string adapter_vendor;
+    std::string adapter_device;
+    std::string adapter_backend;
+
     std::uint64_t joined_ms = 0;
     std::uint64_t first_grant_ms = 0;
     std::uint64_t first_result_ms = 0;

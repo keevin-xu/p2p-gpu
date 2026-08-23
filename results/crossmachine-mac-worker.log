@@ -1,6 +1,10 @@
 [info] transport open
 [info] handshake complete; kernels=3 ice_servers=0
-[info] benchmark: 1863.018230 Gops/s
-[info] fetching asset d6a3316a22c8...
+[info] benchmark: 1866.234362 Gops/s
+[info] peer list: 1 candidate source(s) for the asset
+[info] fetching asset e5b3c9802cef...
+[info] trying peer 1 for the asset (attempt 1)
 [info] falling back to the coordinator: no peer candidates left
-[info] asset ready d6a3316a22c8... nodes=1995 prims=3006 depth=13
+[info] asset ready e5b3c9802cef... nodes=1763 prims=2470 depth=18
+[info] transport closed
+[info] worker stopped by user

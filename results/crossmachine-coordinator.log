@@ -1,60 +1,169 @@
-[2026-08-11T04:16:48.078-05:00] [info] kernel id=brute_search_v1 entry=main wg=[256,1,1] out=32B det=0 r5_ratio=3.1e+10
-[2026-08-11T04:16:48.078-05:00] [info] kernel id=calibrate_v1 entry=main wg=[256,1,1] out=4B det=1 r5_ratio=1.05e+06
-[2026-08-11T04:16:48.078-05:00] [info] kernel id=pathtrace_tile_v1 entry=main wg=[8,8,1] out=65536B det=2 r5_ratio=1.02e+07
-[2026-08-11T04:16:48.083-05:00] [warning] DEV: seeded RENDER 512x384 tiles=48 spp=262144 prims=3006 depth=13 job_lo=1
-[2026-08-11T04:16:48.083-05:00] [info] replication policy=none spot_checks=off
-[2026-08-11T04:16:48.083-05:00] [warning] DEV: render asset published address=d6a3316a22c88e21b680a8838d698e6b3d1e57cc0c5caf54abe2b61a6f545f00 (GET /asset/d6a3316a22c88e21b680a8838d698e6b3d1e57cc0c5caf54abe2b61a6f545f00)
-[2026-08-11T04:16:48.084-05:00] [info] coordinator listening port=8080 kernels=3
-[2026-08-11T04:17:11.964-05:00] [info] conn_open conn_id=1
-[2026-08-11T04:17:11.965-05:00] [info] handshake conn_id=1 worker_id=1 kernels=3
-[2026-08-11T04:17:12.390-05:00] [info] benchmark conn_id=1 ops/s=1.86e+12 samples=3
-[2026-08-11T04:17:12.514-05:00] [info] submission conn_id=1 worker=1 task=2 have=1 need=1
-[2026-08-11T04:17:12.514-05:00] [info] result conn_id=1 task=2 bytes=65536 accepted
-[2026-08-11T04:17:13.540-05:00] [info] submission conn_id=1 worker=1 task=3 have=1 need=1
-[2026-08-11T04:17:13.540-05:00] [info] result conn_id=1 task=3 bytes=65536 accepted
-[2026-08-11T04:17:14.776-05:00] [info] submission conn_id=1 worker=1 task=4 have=1 need=1
-[2026-08-11T04:17:14.776-05:00] [info] result conn_id=1 task=4 bytes=65536 accepted
-[2026-08-11T04:17:16.658-05:00] [info] submission conn_id=1 worker=1 task=5 have=1 need=1
-[2026-08-11T04:17:16.658-05:00] [info] result conn_id=1 task=5 bytes=65536 accepted
-[2026-08-11T04:17:18.254-05:00] [info] submission conn_id=1 worker=1 task=6 have=1 need=1
-[2026-08-11T04:17:18.254-05:00] [info] result conn_id=1 task=6 bytes=65536 accepted
-[2026-08-11T04:17:19.849-05:00] [info] submission conn_id=1 worker=1 task=7 have=1 need=1
-[2026-08-11T04:17:19.849-05:00] [info] result conn_id=1 task=7 bytes=65536 accepted
-[2026-08-11T04:17:21.505-05:00] [info] submission conn_id=1 worker=1 task=8 have=1 need=1
-[2026-08-11T04:17:21.505-05:00] [info] result conn_id=1 task=8 bytes=65536 accepted
-[2026-08-11T04:17:23.158-05:00] [info] submission conn_id=1 worker=1 task=9 have=1 need=1
-[2026-08-11T04:17:23.158-05:00] [info] result conn_id=1 task=9 bytes=65536 accepted
-[2026-08-11T04:17:24.430-05:00] [info] submission conn_id=1 worker=1 task=10 have=1 need=1
-[2026-08-11T04:17:24.430-05:00] [info] result conn_id=1 task=10 bytes=65536 accepted
-[2026-08-11T04:17:25.703-05:00] [info] submission conn_id=1 worker=1 task=11 have=1 need=1
-[2026-08-11T04:17:25.703-05:00] [info] result conn_id=1 task=11 bytes=65536 accepted
-[2026-08-11T04:17:26.970-05:00] [info] submission conn_id=1 worker=1 task=12 have=1 need=1
-[2026-08-11T04:17:26.970-05:00] [info] result conn_id=1 task=12 bytes=65536 accepted
-[2026-08-11T04:17:28.800-05:00] [info] submission conn_id=1 worker=1 task=13 have=1 need=1
-[2026-08-11T04:17:28.800-05:00] [info] result conn_id=1 task=13 bytes=65536 accepted
-[2026-08-11T04:17:30.397-05:00] [info] submission conn_id=1 worker=1 task=14 have=1 need=1
-[2026-08-11T04:17:30.397-05:00] [info] result conn_id=1 task=14 bytes=65536 accepted
-[2026-08-11T04:17:31.995-05:00] [info] submission conn_id=1 worker=1 task=15 have=1 need=1
-[2026-08-11T04:17:31.995-05:00] [info] result conn_id=1 task=15 bytes=65536 accepted
-[2026-08-11T04:17:33.593-05:00] [info] submission conn_id=1 worker=1 task=16 have=1 need=1
-[2026-08-11T04:17:33.593-05:00] [info] result conn_id=1 task=16 bytes=65536 accepted
-[2026-08-11T04:17:35.189-05:00] [info] submission conn_id=1 worker=1 task=17 have=1 need=1
-[2026-08-11T04:17:35.189-05:00] [info] result conn_id=1 task=17 bytes=65536 accepted
-[2026-08-11T04:17:39.393-05:00] [info] submission conn_id=1 worker=1 task=18 have=1 need=1
-[2026-08-11T04:17:39.393-05:00] [info] result conn_id=1 task=18 bytes=65536 accepted
-[2026-08-11T04:17:43.112-05:00] [info] submission conn_id=1 worker=1 task=19 have=1 need=1
-[2026-08-11T04:17:43.112-05:00] [info] result conn_id=1 task=19 bytes=65536 accepted
-[2026-08-11T04:17:45.741-05:00] [info] submission conn_id=1 worker=1 task=20 have=1 need=1
-[2026-08-11T04:17:45.741-05:00] [info] result conn_id=1 task=20 bytes=65536 accepted
-[2026-08-11T04:17:48.104-05:00] [info] submission conn_id=1 worker=1 task=21 have=1 need=1
-[2026-08-11T04:17:48.104-05:00] [info] result conn_id=1 task=21 bytes=65536 accepted
-[2026-08-11T04:17:50.895-05:00] [info] submission conn_id=1 worker=1 task=22 have=1 need=1
-[2026-08-11T04:17:50.895-05:00] [info] result conn_id=1 task=22 bytes=65536 accepted
-[2026-08-11T04:17:53.662-05:00] [info] submission conn_id=1 worker=1 task=23 have=1 need=1
-[2026-08-11T04:17:53.662-05:00] [info] result conn_id=1 task=23 bytes=65536 accepted
-[2026-08-11T04:17:55.643-05:00] [info] submission conn_id=1 worker=1 task=24 have=1 need=1
-[2026-08-11T04:17:55.643-05:00] [info] result conn_id=1 task=24 bytes=65536 accepted
-[2026-08-11T04:17:58.247-05:00] [info] submission conn_id=1 worker=1 task=25 have=1 need=1
-[2026-08-11T04:17:58.248-05:00] [info] result conn_id=1 task=25 bytes=65536 accepted
-[2026-08-11T04:18:15.797-05:00] [info] disconnect conn_id=1 released_leases
-[2026-08-11T04:18:15.797-05:00] [info] conn_close conn_id=1 code=1006
+[2026-08-11T04:43:52.330-05:00] [info] kernel id=brute_search_v1 entry=main wg=[256,1,1] out=32B det=0 r5_ratio=3.1e+10
+[2026-08-11T04:43:52.330-05:00] [info] kernel id=calibrate_v1 entry=main wg=[256,1,1] out=4B det=1 r5_ratio=1.05e+06
+[2026-08-11T04:43:52.330-05:00] [info] kernel id=pathtrace_tile_v1 entry=main wg=[8,8,1] out=65536B det=2 r5_ratio=1.02e+07
+[2026-08-11T04:43:52.335-05:00] [warning] DEV: seeded RENDER 512x384 tiles=48 spp=262144 prims=2470 depth=18 job_lo=1
+[2026-08-11T04:43:52.335-05:00] [info] replication policy=none spot_checks=off
+[2026-08-11T04:43:52.335-05:00] [warning] DEV: render asset published address=e5b3c9802cefca0d2fc3186c363358f1fd0670b2a0713057928850c664c7b2eb (GET /asset/e5b3c9802cefca0d2fc3186c363358f1fd0670b2a0713057928850c664c7b2eb)
+[2026-08-11T04:43:52.336-05:00] [info] coordinator listening port=8080 kernels=3
+[2026-08-11T04:44:19.430-05:00] [info] conn_open conn_id=1
+[2026-08-11T04:44:19.519-05:00] [info] handshake conn_id=1 worker_id=1 kernels=3
+[2026-08-11T04:44:20.780-05:00] [info] benchmark conn_id=1 ops/s=7.77e+11 samples=3
+[2026-08-11T04:44:21.152-05:00] [info] submission conn_id=1 worker=1 task=2 have=1 need=1
+[2026-08-11T04:44:21.152-05:00] [info] result conn_id=1 task=2 bytes=65536 accepted
+[2026-08-11T04:44:21.258-05:00] [info] submission conn_id=1 worker=1 task=3 have=1 need=1
+[2026-08-11T04:44:21.258-05:00] [info] result conn_id=1 task=3 bytes=65536 accepted
+[2026-08-11T04:44:21.738-05:00] [info] submission conn_id=1 worker=1 task=4 have=1 need=1
+[2026-08-11T04:44:21.738-05:00] [info] result conn_id=1 task=4 bytes=65536 accepted
+[2026-08-11T04:44:22.326-05:00] [info] submission conn_id=1 worker=1 task=5 have=1 need=1
+[2026-08-11T04:44:22.326-05:00] [info] result conn_id=1 task=5 bytes=65536 accepted
+[2026-08-11T04:44:23.148-05:00] [info] submission conn_id=1 worker=1 task=6 have=1 need=1
+[2026-08-11T04:44:23.148-05:00] [info] result conn_id=1 task=6 bytes=65536 accepted
+[2026-08-11T04:44:23.854-05:00] [info] submission conn_id=1 worker=1 task=7 have=1 need=1
+[2026-08-11T04:44:23.854-05:00] [info] result conn_id=1 task=7 bytes=65536 accepted
+[2026-08-11T04:44:24.728-05:00] [info] submission conn_id=1 worker=1 task=8 have=1 need=1
+[2026-08-11T04:44:24.728-05:00] [info] result conn_id=1 task=8 bytes=65536 accepted
+[2026-08-11T04:44:25.519-05:00] [info] submission conn_id=1 worker=1 task=9 have=1 need=1
+[2026-08-11T04:44:25.519-05:00] [info] result conn_id=1 task=9 bytes=65536 accepted
+[2026-08-11T04:44:26.558-05:00] [info] submission conn_id=1 worker=1 task=10 have=1 need=1
+[2026-08-11T04:44:26.558-05:00] [info] result conn_id=1 task=10 bytes=65536 accepted
+[2026-08-11T04:44:27.532-05:00] [info] submission conn_id=1 worker=1 task=11 have=1 need=1
+[2026-08-11T04:44:27.532-05:00] [info] result conn_id=1 task=11 bytes=65536 accepted
+[2026-08-11T04:44:28.670-05:00] [info] submission conn_id=1 worker=1 task=12 have=1 need=1
+[2026-08-11T04:44:28.670-05:00] [info] result conn_id=1 task=12 bytes=65536 accepted
+[2026-08-11T04:44:29.811-05:00] [info] submission conn_id=1 worker=1 task=13 have=1 need=1
+[2026-08-11T04:44:29.811-05:00] [info] result conn_id=1 task=13 bytes=65536 accepted
+[2026-08-11T04:44:31.173-05:00] [info] submission conn_id=1 worker=1 task=14 have=1 need=1
+[2026-08-11T04:44:31.173-05:00] [info] result conn_id=1 task=14 bytes=65536 accepted
+[2026-08-11T04:44:32.466-05:00] [info] submission conn_id=1 worker=1 task=15 have=1 need=1
+[2026-08-11T04:44:32.466-05:00] [info] result conn_id=1 task=15 bytes=65536 accepted
+[2026-08-11T04:44:33.968-05:00] [info] submission conn_id=1 worker=1 task=16 have=1 need=1
+[2026-08-11T04:44:33.968-05:00] [info] result conn_id=1 task=16 bytes=65536 accepted
+[2026-08-11T04:44:35.006-05:00] [info] conn_open conn_id=2
+[2026-08-11T04:44:35.006-05:00] [info] handshake conn_id=2 worker_id=2 kernels=3
+[2026-08-11T04:44:35.318-05:00] [info] submission conn_id=1 worker=1 task=17 have=1 need=1
+[2026-08-11T04:44:35.318-05:00] [info] result conn_id=1 task=17 bytes=65536 accepted
+[2026-08-11T04:44:35.447-05:00] [info] benchmark conn_id=2 ops/s=1.87e+12 samples=3
+[2026-08-11T04:44:44.228-05:00] [info] submission conn_id=2 worker=2 task=20 have=1 need=1
+[2026-08-11T04:44:44.228-05:00] [info] result conn_id=2 task=20 bytes=65536 accepted
+[2026-08-11T04:44:45.187-05:00] [info] submission conn_id=2 worker=2 task=21 have=1 need=1
+[2026-08-11T04:44:45.187-05:00] [info] result conn_id=2 task=21 bytes=65536 accepted
+[2026-08-11T04:44:46.474-05:00] [info] submission conn_id=2 worker=2 task=22 have=1 need=1
+[2026-08-11T04:44:46.474-05:00] [info] result conn_id=2 task=22 bytes=65536 accepted
+[2026-08-11T04:44:47.224-05:00] [info] submission conn_id=2 worker=2 task=23 have=1 need=1
+[2026-08-11T04:44:47.224-05:00] [info] result conn_id=2 task=23 bytes=65536 accepted
+[2026-08-11T04:44:47.408-05:00] [info] submission conn_id=2 worker=2 task=24 have=1 need=1
+[2026-08-11T04:44:47.408-05:00] [info] result conn_id=2 task=24 bytes=65536 accepted
+[2026-08-11T04:44:47.654-05:00] [info] submission conn_id=2 worker=2 task=25 have=1 need=1
+[2026-08-11T04:44:47.655-05:00] [info] result conn_id=2 task=25 bytes=65536 accepted
+[2026-08-11T04:44:48.573-05:00] [info] submission conn_id=2 worker=2 task=26 have=1 need=1
+[2026-08-11T04:44:48.573-05:00] [info] result conn_id=2 task=26 bytes=65536 accepted
+[2026-08-11T04:44:50.581-05:00] [info] submission conn_id=2 worker=2 task=27 have=1 need=1
+[2026-08-11T04:44:50.581-05:00] [info] result conn_id=2 task=27 bytes=65536 accepted
+[2026-08-11T04:44:55.504-05:00] [info] submission conn_id=2 worker=2 task=28 have=1 need=1
+[2026-08-11T04:44:55.504-05:00] [info] result conn_id=2 task=28 bytes=65536 accepted
+[2026-08-11T04:44:57.243-05:00] [info] submission conn_id=2 worker=2 task=29 have=1 need=1
+[2026-08-11T04:44:57.243-05:00] [info] result conn_id=2 task=29 bytes=65536 accepted
+[2026-08-11T04:44:59.593-05:00] [info] submission conn_id=2 worker=2 task=30 have=1 need=1
+[2026-08-11T04:44:59.593-05:00] [info] result conn_id=2 task=30 bytes=65536 accepted
+[2026-08-11T04:45:02.454-05:00] [info] submission conn_id=2 worker=2 task=31 have=1 need=1
+[2026-08-11T04:45:02.454-05:00] [info] result conn_id=2 task=31 bytes=65536 accepted
+[2026-08-11T04:45:03.485-05:00] [info] submission conn_id=2 worker=2 task=32 have=1 need=1
+[2026-08-11T04:45:03.485-05:00] [info] result conn_id=2 task=32 bytes=65536 accepted
+[2026-08-11T04:45:04.174-05:00] [info] submission conn_id=2 worker=2 task=33 have=1 need=1
+[2026-08-11T04:45:04.174-05:00] [info] result conn_id=2 task=33 bytes=65536 accepted
+[2026-08-11T04:45:05.338-05:00] [info] lease_expiry count=2 requeued penalty=none
+[2026-08-11T04:45:06.464-05:00] [info] submission conn_id=2 worker=2 task=34 have=1 need=1
+[2026-08-11T04:45:06.464-05:00] [info] result conn_id=2 task=34 bytes=65536 accepted
+[2026-08-11T04:45:07.760-05:00] [info] submission conn_id=2 worker=2 task=19 have=1 need=1
+[2026-08-11T04:45:07.760-05:00] [info] result conn_id=2 task=19 bytes=65536 accepted
+[2026-08-11T04:45:09.080-05:00] [info] submission conn_id=2 worker=2 task=18 have=1 need=1
+[2026-08-11T04:45:09.080-05:00] [info] result conn_id=2 task=18 bytes=65536 accepted
+[2026-08-11T04:45:15.450-05:00] [info] submission conn_id=2 worker=2 task=35 have=1 need=1
+[2026-08-11T04:45:15.450-05:00] [info] result conn_id=2 task=35 bytes=65536 accepted
+[2026-08-11T04:45:20.340-05:00] [info] worker_lost worker=1 released=0 penalty=none
+[2026-08-11T04:45:25.214-05:00] [info] submission conn_id=2 worker=2 task=36 have=1 need=1
+[2026-08-11T04:45:25.214-05:00] [info] result conn_id=2 task=36 bytes=65536 accepted
+[2026-08-11T04:45:30.165-05:00] [info] submission conn_id=2 worker=2 task=37 have=1 need=1
+[2026-08-11T04:45:30.165-05:00] [info] result conn_id=2 task=37 bytes=65536 accepted
+[2026-08-11T04:45:32.961-05:00] [info] submission conn_id=2 worker=2 task=38 have=1 need=1
+[2026-08-11T04:45:32.961-05:00] [info] result conn_id=2 task=38 bytes=65536 accepted
+[2026-08-11T04:45:34.949-05:00] [info] submission conn_id=2 worker=2 task=39 have=1 need=1
+[2026-08-11T04:45:34.949-05:00] [info] result conn_id=2 task=39 bytes=65536 accepted
+[2026-08-11T04:45:35.779-05:00] [info] submission conn_id=2 worker=2 task=40 have=1 need=1
+[2026-08-11T04:45:35.779-05:00] [info] result conn_id=2 task=40 bytes=65536 accepted
+[2026-08-11T04:45:36.429-05:00] [info] submission conn_id=2 worker=2 task=41 have=1 need=1
+[2026-08-11T04:45:36.429-05:00] [info] result conn_id=2 task=41 bytes=65536 accepted
+[2026-08-11T04:45:37.447-05:00] [info] submission conn_id=2 worker=2 task=42 have=1 need=1
+[2026-08-11T04:45:37.447-05:00] [info] result conn_id=2 task=42 bytes=65536 accepted
+[2026-08-11T04:45:39.323-05:00] [info] submission conn_id=2 worker=2 task=43 have=1 need=1
+[2026-08-11T04:45:39.323-05:00] [info] result conn_id=2 task=43 bytes=65536 accepted
+[2026-08-11T04:45:42.463-05:00] [info] submission conn_id=2 worker=2 task=44 have=1 need=1
+[2026-08-11T04:45:42.463-05:00] [info] result conn_id=2 task=44 bytes=65536 accepted
+[2026-08-11T04:45:44.977-05:00] [info] submission conn_id=2 worker=2 task=45 have=1 need=1
+[2026-08-11T04:45:44.977-05:00] [info] result conn_id=2 task=45 bytes=65536 accepted
+[2026-08-11T04:45:47.344-05:00] [info] submission conn_id=2 worker=2 task=46 have=1 need=1
+[2026-08-11T04:45:47.344-05:00] [info] result conn_id=2 task=46 bytes=65536 accepted
+[2026-08-11T04:45:49.265-05:00] [info] submission conn_id=2 worker=2 task=47 have=1 need=1
+[2026-08-11T04:45:49.265-05:00] [info] result conn_id=2 task=47 bytes=65536 accepted
+[2026-08-11T04:45:50.372-05:00] [info] submission conn_id=2 worker=2 task=48 have=1 need=1
+[2026-08-11T04:45:50.372-05:00] [info] result conn_id=2 task=48 bytes=65536 accepted
+[2026-08-11T04:45:51.239-05:00] [info] submission conn_id=2 worker=2 task=49 have=1 need=1
+[2026-08-11T04:45:51.239-05:00] [info] result conn_id=2 task=49 bytes=65536 accepted
+[2026-08-11T04:45:51.297-05:00] [info] submission conn_id=2 worker=2 task=50 have=1 need=1
+[2026-08-11T04:45:51.297-05:00] [info] result conn_id=2 task=50 bytes=65536 accepted
+[2026-08-11T04:45:51.372-05:00] [info] submission conn_id=2 worker=2 task=51 have=1 need=1
+[2026-08-11T04:45:51.372-05:00] [info] result conn_id=2 task=51 bytes=65536 accepted
+[2026-08-11T04:45:59.104-05:00] [info] submission conn_id=2 worker=2 task=52 have=1 need=1
+[2026-08-11T04:45:59.104-05:00] [info] result conn_id=2 task=52 bytes=65536 accepted
+[2026-08-11T04:46:00.835-05:00] [info] submission conn_id=2 worker=2 task=53 have=1 need=1
+[2026-08-11T04:46:00.835-05:00] [info] result conn_id=2 task=53 bytes=65536 accepted
+[2026-08-11T04:46:02.781-05:00] [info] submission conn_id=2 worker=2 task=54 have=1 need=1
+[2026-08-11T04:46:02.781-05:00] [info] result conn_id=2 task=54 bytes=65536 accepted
+[2026-08-11T04:46:08.291-05:00] [info] submission conn_id=2 worker=2 task=55 have=1 need=1
+[2026-08-11T04:46:08.291-05:00] [info] result conn_id=2 task=55 bytes=65536 accepted
+[2026-08-11T04:46:09.055-05:00] [info] submission conn_id=2 worker=2 task=56 have=1 need=1
+[2026-08-11T04:46:09.055-05:00] [info] result conn_id=2 task=56 bytes=65536 accepted
+[2026-08-11T04:46:10.870-05:00] [info] submission conn_id=2 worker=2 task=57 have=1 need=1
+[2026-08-11T04:46:10.870-05:00] [info] result conn_id=2 task=57 bytes=65536 accepted
+[2026-08-11T04:46:13.384-05:00] [info] submission conn_id=2 worker=2 task=58 have=1 need=1
+[2026-08-11T04:46:13.384-05:00] [info] result conn_id=2 task=58 bytes=65536 accepted
+[2026-08-11T04:46:14.703-05:00] [info] submission conn_id=2 worker=2 task=59 have=1 need=1
+[2026-08-11T04:46:14.703-05:00] [info] result conn_id=2 task=59 bytes=65536 accepted
+[2026-08-11T04:46:15.698-05:00] [info] submission conn_id=2 worker=2 task=60 have=1 need=1
+[2026-08-11T04:46:15.698-05:00] [info] result conn_id=2 task=60 bytes=65536 accepted
+[2026-08-11T04:46:19.264-05:00] [info] submission conn_id=2 worker=2 task=61 have=1 need=1
+[2026-08-11T04:46:19.264-05:00] [info] result conn_id=2 task=61 bytes=65536 accepted
+[2026-08-11T04:46:20.175-05:00] [info] submission conn_id=2 worker=2 task=62 have=1 need=1
+[2026-08-11T04:46:20.175-05:00] [info] result conn_id=2 task=62 bytes=65536 accepted
+[2026-08-11T04:46:21.604-05:00] [info] submission conn_id=2 worker=2 task=63 have=1 need=1
+[2026-08-11T04:46:21.604-05:00] [info] result conn_id=2 task=63 bytes=65536 accepted
+[2026-08-11T04:46:25.376-05:00] [info] submission conn_id=2 worker=2 task=64 have=1 need=1
+[2026-08-11T04:46:25.376-05:00] [info] result conn_id=2 task=64 bytes=65536 accepted
+[2026-08-11T04:46:31.101-05:00] [info] submission conn_id=2 worker=2 task=65 have=1 need=1
+[2026-08-11T04:46:31.101-05:00] [info] result conn_id=2 task=65 bytes=65536 accepted
+[2026-08-11T04:46:31.743-05:00] [info] submission conn_id=2 worker=2 task=66 have=1 need=1
+[2026-08-11T04:46:31.743-05:00] [info] result conn_id=2 task=66 bytes=65536 accepted
+[2026-08-11T04:46:31.904-05:00] [info] submission conn_id=2 worker=2 task=67 have=1 need=1
+[2026-08-11T04:46:31.904-05:00] [info] result conn_id=2 task=67 bytes=65536 accepted
+[2026-08-11T04:46:34.094-05:00] [info] submission conn_id=2 worker=2 task=68 have=1 need=1
+[2026-08-11T04:46:34.094-05:00] [info] result conn_id=2 task=68 bytes=65536 accepted
+[2026-08-11T04:46:37.569-05:00] [info] submission conn_id=2 worker=2 task=69 have=1 need=1
+[2026-08-11T04:46:37.569-05:00] [info] result conn_id=2 task=69 bytes=65536 accepted
+[2026-08-11T04:46:38.313-05:00] [info] submission conn_id=2 worker=2 task=70 have=1 need=1
+[2026-08-11T04:46:38.313-05:00] [info] result conn_id=2 task=70 bytes=65536 accepted
+[2026-08-11T04:46:38.527-05:00] [info] submission conn_id=2 worker=2 task=71 have=1 need=1
+[2026-08-11T04:46:38.527-05:00] [info] result conn_id=2 task=71 bytes=65536 accepted
+[2026-08-11T04:46:38.603-05:00] [info] submission conn_id=2 worker=2 task=72 have=1 need=1
+[2026-08-11T04:46:38.603-05:00] [info] result conn_id=2 task=72 bytes=65536 accepted
+[2026-08-11T04:46:40.667-05:00] [info] submission conn_id=2 worker=2 task=73 have=1 need=1
+[2026-08-11T04:46:40.667-05:00] [info] result conn_id=2 task=73 bytes=65536 accepted
+[2026-08-11T04:46:44.832-05:00] [info] submission conn_id=2 worker=2 task=74 have=1 need=1
+[2026-08-11T04:46:44.832-05:00] [info] result conn_id=2 task=74 bytes=65536 accepted
+[2026-08-11T04:46:46.731-05:00] [info] submission conn_id=2 worker=2 task=75 have=1 need=1
+[2026-08-11T04:46:46.731-05:00] [info] result conn_id=2 task=75 bytes=65536 accepted
+[2026-08-11T04:46:47.473-05:00] [info] submission conn_id=2 worker=2 task=76 have=1 need=1
+[2026-08-11T04:46:47.473-05:00] [info] result conn_id=2 task=76 bytes=65536 accepted
+[2026-08-11T04:46:50.563-05:00] [info] submission conn_id=2 worker=2 task=77 have=1 need=1
+[2026-08-11T04:46:50.563-05:00] [info] result conn_id=2 task=77 bytes=65536 accepted
+[2026-08-11T04:46:52.238-05:00] [info] submission conn_id=2 worker=2 task=78 have=1 need=1
+[2026-08-11T04:46:52.238-05:00] [info] result conn_id=2 task=78 bytes=65536 accepted

@@ -120,6 +120,20 @@ def main():
           f"coordinator={f['asset_from_coordinator']} cache={f['asset_from_cache']}")
     print(f"  coordinator egress {f['coordinator_asset_egress']:,} B")
     print(f"  slowest time-to-ready {f['slowest_ms_to_ready']} ms")
+
+    # WHICH GPUs produced this. Printed and stored because a run that cannot
+    # say what hardware it ran on is not evidence: the 2026-08-11 `r4-load`
+    # capture had to be scored as not-met purely because nothing recorded the
+    # machine (D-0101).
+    print("  adapters:")
+    for w in (last.get("fleet") or []):
+        print(f"    worker {w['worker_id']}: "
+              f"{w.get('adapter_vendor') or '?'} / "
+              f"{w.get('adapter_device') or '?'} / "
+              f"{w.get('adapter_backend') or '?'}")
+    if not any((w.get("adapter_device") or w.get("adapter_vendor"))
+               for w in (last.get("fleet") or [])):
+        print("    NONE REPORTED — this run is not attributable to hardware.")
     if f["asset_from_peer"] == 0:
         print("\n  NOTE: zero peer fetches. Either only one machine ever held the "
               "asset, or the data plane did not work across the link — which is "

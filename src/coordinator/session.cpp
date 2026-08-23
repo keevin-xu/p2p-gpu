@@ -346,6 +346,30 @@ Reaction Session::OnHello(const wire::Hello& hello) {
     // `LeaseRequest` carries the copy affinity actually reads.
     if (WorkerRecord* joined = fleet_.Mutable(worker_id_); joined != nullptr) {
         AdoptCachedAssets(*joined, hello.cached_assets());
+
+        // Record which GPU this is (D-0101). Attacker-controlled strings, so
+        // they are stored and displayed and NOTHING else — never compared,
+        // never scheduled on. Bounded on the way in: an unbounded label from
+        // the network would be echoed into every metrics response.
+        if (const auto* caps = hello.capabilities();
+            caps != nullptr && caps->adapter() != nullptr) {
+            const auto* a = caps->adapter();
+            constexpr std::size_t kMaxLabel = 64;
+            const auto take = [](const flatbuffers::String* v,
+                                 std::size_t cap) -> std::string {
+                if (v == nullptr) { return {}; }
+                std::string out = v->str();
+                if (out.size() > cap) { out.resize(cap); }
+                // Control characters would corrupt a log line or a JSON body.
+                for (char& c : out) {
+                    if (static_cast<unsigned char>(c) < 0x20) { c = '?'; }
+                }
+                return out;
+            };
+            joined->adapter_vendor  = take(a->vendor(), kMaxLabel);
+            joined->adapter_device  = take(a->device(), kMaxLabel);
+            joined->adapter_backend = take(a->backend(), kMaxLabel);
+        }
     }
 
     spdlog::info("handshake conn_id={} worker_id={} kernels={}", conn_id_,
