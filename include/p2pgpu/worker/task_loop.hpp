@@ -357,6 +357,16 @@ private:
     /// source (D-0097). Abandons only when the coordinator itself served them.
     void RejectBytesAndRetry(const char* why);
 
+    // ── 6.15 — ICE outcome of the LAST asset fetch (D-0102) ──────────────
+    /// Bitmask of candidate types gathered: 1 host, 2 server-reflexive,
+    /// 4 relay. GATHERED, not selected — a lower bound (D-0088).
+    std::uint8_t ice_gathered_ = 0;
+    /// Peer candidates tried before the asset arrived, from any source.
+    std::uint8_t peer_attempts_made_ = 0;
+    /// Did any peer data channel open. **This is the field 6.15's headline is
+    /// differenced from**, across a run with TURN and a run without.
+    bool peer_connected_ = false;
+
     /// How many times a source served bytes that failed verification (6.17).
     /// Reported so a fetch that succeeded after being lied to is
     /// distinguishable from one that was never attacked.

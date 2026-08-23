@@ -437,6 +437,21 @@ void JobManager::RecordAssetSource(wire::AssetSource source) noexcept {
     }
 }
 
+void JobManager::RecordIceOutcome(std::uint8_t gathered, std::uint8_t attempts,
+                                  bool connected) noexcept {
+    // Only fetches that actually TRIED a peer are in the denominator. A task
+    // served from cache never exercised ICE, and counting it would dilute the
+    // ratio with runs that had nothing to say.
+    if (attempts == 0) {
+        return;
+    }
+    ++ice_counts_.fetches_with_peer_attempt;
+    if (connected)          { ++ice_counts_.peer_connected; }
+    if ((gathered & 1U) != 0) { ++ice_counts_.host_gathered; }
+    if ((gathered & 2U) != 0) { ++ice_counts_.srflx_gathered; }
+    if ((gathered & 4U) != 0) { ++ice_counts_.relay_gathered; }
+}
+
 const JobManager::PartialResult* JobManager::LatestPartial(TaskId task) const noexcept {
     const auto it = partials_.find(task);
     return it == partials_.end() ? nullptr : &it->second;

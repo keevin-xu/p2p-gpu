@@ -1236,6 +1236,9 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
     // telemetry (invariant 8): recorded for E6, never acted on.
     if (const auto* stats = header.stats()) {
         jobs_.RecordAssetSource(stats->asset_source());
+        // 6.15 (D-0102). Untrusted like every other field here.
+        jobs_.RecordIceOutcome(stats->ice_gathered(), stats->peer_attempts(),
+                               stats->peer_connected());
     }
 
     // ── A SUBMITTED RESULT PROVES THE WORKER HOLDS THE ASSET (6.13) ──────

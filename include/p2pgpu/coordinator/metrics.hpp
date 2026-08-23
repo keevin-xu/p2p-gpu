@@ -95,6 +95,13 @@ struct Snapshot {
     /// workers claim.
     std::uint64_t coordinator_asset_egress = 0;
 
+    /// 6.15 — ICE outcomes (D-0102). Worker-claimed diagnostics.
+    std::uint64_t ice_fetches = 0;
+    std::uint64_t ice_connected = 0;
+    std::uint64_t ice_host = 0;
+    std::uint64_t ice_srflx = 0;
+    std::uint64_t ice_relay = 0;
+
     // Hygiene, deliberately separate from task reputation (3.11) — conflating
     // them is how an honest-but-buggy client gets blacklisted.
     std::uint64_t rejected_frames = 0;

@@ -442,6 +442,26 @@ public:
         return asset_sources_;
     }
 
+    /// 6.15 — ICE outcomes across peer fetches (D-0102). Worker-CLAIMED
+    /// telemetry, same standing as `AssetSourceCounts`: a diagnostic that
+    /// nothing schedules or validates on.
+    ///
+    /// `relay_gathered` counts fetches where TURN was REACHABLE, never where
+    /// it was used. **Zero here with no TURN configured means the experiment
+    /// was not run, not that no connection needed relay** — the two are
+    /// indistinguishable from this counter alone, which is why the headline is
+    /// differenced across two runs rather than read off it.
+    struct IceCounts {
+        std::uint64_t fetches_with_peer_attempt = 0;
+        std::uint64_t peer_connected = 0;
+        std::uint64_t host_gathered = 0;
+        std::uint64_t srflx_gathered = 0;
+        std::uint64_t relay_gathered = 0;
+    };
+    void RecordIceOutcome(std::uint8_t gathered, std::uint8_t attempts,
+                          bool connected) noexcept;
+    [[nodiscard]] IceCounts ice_counts() const noexcept { return ice_counts_; }
+
     [[nodiscard]] std::uint64_t asset_grants() const noexcept { return asset_grants_; }
     [[nodiscard]] std::uint64_t asset_grants_hit() const noexcept {
         return asset_grants_hit_;
@@ -498,6 +518,7 @@ private:
     std::unordered_map<TaskId, PartialResult> partials_;
 
     AssetSourceCounts asset_sources_{};
+    IceCounts ice_counts_{};
     std::uint64_t asset_grants_ = 0;
     std::uint64_t asset_grants_hit_ = 0;
 

@@ -71,6 +71,12 @@ Snapshot Collect(const JobManager& jobs, const Fleet& fleet,
     snap.asset_from_peer = srcs.peer;
     snap.asset_from_coordinator = srcs.coordinator;
     snap.asset_from_cache = srcs.cached;
+    const auto ice = jobs.ice_counts();
+    snap.ice_fetches   = ice.fetches_with_peer_attempt;
+    snap.ice_connected = ice.peer_connected;
+    snap.ice_host      = ice.host_gathered;
+    snap.ice_srflx     = ice.srflx_gathered;
+    snap.ice_relay     = ice.relay_gathered;
     snap.rejected_frames = rejected_frames;
 
     snap.fleet.reserve(fleet.size());
@@ -118,6 +124,11 @@ std::string ToJson(const Snapshot& snap) {
     out += ",\"asset_from_coordinator\":" + std::to_string(snap.asset_from_coordinator);
     out += ",\"asset_from_cache\":" + std::to_string(snap.asset_from_cache);
     out += ",\"coordinator_asset_egress\":" + std::to_string(snap.coordinator_asset_egress);
+    out += ",\"ice_fetches\":" + std::to_string(snap.ice_fetches);
+    out += ",\"ice_connected\":" + std::to_string(snap.ice_connected);
+    out += ",\"ice_host\":" + std::to_string(snap.ice_host);
+    out += ",\"ice_srflx\":" + std::to_string(snap.ice_srflx);
+    out += ",\"ice_relay\":" + std::to_string(snap.ice_relay);
     out += ",\"rejected_frames\":" + std::to_string(snap.rejected_frames);
 
     out += ",\"tasks_by_state\":[";

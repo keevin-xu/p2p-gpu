@@ -225,6 +225,30 @@ table TaskStats {
   dispatches:   uint;
   iterations:   ulong;
   asset_source: AssetSource;
+
+  // ── 6.15, APPENDED (D-0102) ────────────────────────────────────────────
+  // Appended, never inserted: vtable slots are positional, so adding these
+  // above `asset_source` would silently reassign every existing reader's
+  // fields.
+  //
+  // WORKER-CLAIMED, like everything else in this table (invariant 8). A
+  // diagnostic only — nothing schedules, validates, or pays on it, and the
+  // load-bearing P2P number stays coordinator egress, which no worker can
+  // influence.
+  //
+  // Bitmask of ICE candidate types GATHERED while fetching this task's asset:
+  // 1 = host, 2 = server-reflexive (STUN worked), 4 = relay (TURN reachable).
+  // **Gathering a relay candidate does NOT mean the connection used one** —
+  // ICE prefers host and srflx pairs. It is a lower bound and is reported as
+  // supporting detail, never as the relay ratio.
+  ice_gathered:   ubyte;
+  // Peer candidates tried before this asset arrived, from any source.
+  peer_attempts:  ubyte;
+  // Did ANY peer data channel open? This is the field 6.15's headline is
+  // computed from: run the session with and without TURN and difference the
+  // success rates, because a connection that never established has no
+  // selected candidate pair to inspect.
+  peer_connected: bool;
 }
 
 /// What the coordinator tells a worker about a kernel it may be asked to run.

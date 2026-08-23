@@ -223,6 +223,18 @@ void TaskLoop::Poll() {
         peer_target_ = protocol::WorkerId{};
     }
 
+    // 6.15 — accumulate the candidate types across the whole fetch (D-0102).
+    // Sampled here rather than at each `peer_.reset()`: there are five reset
+    // sites and a new one would silently stop being counted. OR-ing is right
+    // because the question is what this worker COULD gather, and a second
+    // attempt does not un-gather what the first one found.
+    if (peer_) {
+        const auto g = peer_->GatheredTypes();
+        ice_gathered_ = static_cast<std::uint8_t>(
+            ice_gathered_ | (g.host ? 1U : 0U) | (g.server_reflexive ? 2U : 0U) |
+            (g.relay ? 4U : 0U));
+    }
+
     if (fetch_ && peer_ && Clock::now() > peer_deadline_) {
         // WHY it timed out, not just that it did. The first cross-machine run
         // logged only "no peer candidates left", which reads as "the list was
@@ -539,6 +551,11 @@ void TaskLoop::HandleTaskGrant(const wire::TaskGrant& grant) {
                 fetch_->started = Clock::now();
                 fetch_->last_progress = fetch_->started;
                 peer_attempt_ = 0;
+                // 6.15 — per-FETCH, so a cached task does not inherit the ICE
+                // story of an earlier one (D-0102).
+                ice_gathered_ = 0;
+                peer_attempts_made_ = 0;
+                peer_connected_ = false;
                 Log("info", "fetching asset " + address.substr(0, 12) + "...");
                 // PEERS FIRST (D-0007). The whole point of the data plane is
                 // that the coordinator does not serve this; the mandatory
@@ -877,6 +894,23 @@ void TaskLoop::SendResultFrame(protocol::TaskId task, const TaskOutcome& outcome
             // self-report never decides anything. It is E6 evidence, not a
             // scheduling input.
             sb.add_asset_source(asset_source_);
+            // 6.15 (D-0102). Diagnostics, and labelled as such: `ice_gathered`
+            // is what ICE COULD offer, not what the connection used, and
+            // `peer_connected` is the field the relay ratio is differenced
+            // from across a run with TURN and a run without.
+            // ONLY for the task that actually fetched. A worker fetches once
+            // and then runs many tasks from cache, and those tasks would
+            // otherwise inherit the fetch's ICE state — measured: 9 reported
+            // attempts for 2 real fetches, a denominator inflated 4.5x by
+            // tasks that never touched ICE. `Cached` and `None` mean no
+            // candidates were tried for THIS task, so the honest report is
+            // zero.
+            const bool this_task_fetched =
+                asset_source_ == wire::AssetSource::Peer ||
+                asset_source_ == wire::AssetSource::Coordinator;
+            sb.add_ice_gathered(this_task_fetched ? ice_gathered_ : 0);
+            sb.add_peer_attempts(this_task_fetched ? peer_attempts_made_ : 0);
+            sb.add_peer_connected(this_task_fetched && peer_connected_);
             auto stats = sb.Finish();
 
             wire::ResultHeaderBuilder b(fbb);
@@ -1232,6 +1266,9 @@ void TaskLoop::TryNextPeerOrFallBack() {
     }
 
     peer_target_ = peer_candidates_[peer_attempt_++];
+    if (peer_attempts_made_ < 255) {
+        ++peer_attempts_made_;   // 6.15 (D-0102)
+    }
     peer_deadline_ = Clock::now() + kPeerPhaseTimeout;
 
     peer_ = std::make_unique<transport::PeerLink>(ice_servers_);
@@ -1243,6 +1280,9 @@ void TaskLoop::TryNextPeerOrFallBack() {
     });
     peer_->OnMessage([this](std::span<const std::byte> bytes) { OnPeerBytes(bytes); });
     peer_->OnOpen([this](bool open) {
+        if (open) {
+            peer_connected_ = true;   // 6.15 (D-0102)
+        }
         if (!open || !fetch_) {
             return;
         }
