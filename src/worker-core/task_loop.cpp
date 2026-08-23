@@ -242,10 +242,18 @@ void TaskLoop::Poll() {
         // two different failures with two different fixes. `IsOpen()`
         // separates them: channel never opened is ICE/NAT, channel open but
         // silent is the peer not answering.
+        // SYMPTOM, not a cause. The first version of this line said
+        // "(ICE/NAT — check --ice-server)", which is a guess: it fired three
+        // times on LOOPBACK during the N=6 E6 run, where NAT cannot exist and
+        // the real cause was a holder whose single serving slot was already
+        // taken (R-I). A diagnostic that names one cause sends the next reader
+        // to the wrong place.
         Log("info", peer_->IsOpen()
-                        ? "peer timed out with the channel OPEN (peer did not send)"
+                        ? "peer timed out with the channel OPEN "
+                          "(connected, but the peer sent nothing)"
                         : "peer timed out with the channel NEVER OPEN "
-                          "(ICE/NAT — check --ice-server)");
+                          "(peer busy or refusing, or no route: on loopback it "
+                          "is not the route)");
         peer_.reset();
         TryNextPeerOrFallBack();
     }

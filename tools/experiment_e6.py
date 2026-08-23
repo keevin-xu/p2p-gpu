@@ -54,8 +54,10 @@ def metrics(port):
         return None
 
 
-def run_one(build, scene, size, spp, workers, p2p, port, seconds, stagger):
+def run_one(build, scene, size, spp, workers, p2p, port, seconds, stagger,
+            logdir="/tmp/e6logs"):
     """One condition. Returns a dict of measurements, or None if it did not run."""
+    logs = []
     coordinator = os.path.join(build, "coordinator")
     worker = os.path.join(build, "worker-native")
 
@@ -85,9 +87,17 @@ def run_one(build, scene, size, spp, workers, p2p, port, seconds, stagger):
     for i in range(workers):
         if i > 0:
             time.sleep(stagger)
+        # Worker logs are KEPT (D-0096's lesson, applied here late). The N=6
+        # arm reproducibly falls back once, and with stdout on DEVNULL there
+        # was no way to see whether the peer was never advertised or the fetch
+        # failed — two different causes, and the driver could not tell them
+        # apart.
+        os.makedirs(logdir, exist_ok=True)
+        lf = open(os.path.join(logdir, f"w{port}_{i}.log"), "w")
+        logs.append(lf)
         procs.append(subprocess.Popen(
             [worker, "--coordinator", f"ws://localhost:{port}/ws"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+            stdout=lf, stderr=subprocess.STDOUT))
 
     try:
         time.sleep(seconds)
@@ -100,6 +110,8 @@ def run_one(build, scene, size, spp, workers, p2p, port, seconds, stagger):
         for p in procs:
             if p.poll() is None:
                 p.kill()
+        for f in logs:
+            f.close()
         time.sleep(0.3)
 
     if m is None:
@@ -137,6 +149,12 @@ def main():
                     help="seconds between worker joins; 0 starts them together, "
                          "which is the worst case for a swarm and measures "
                          "nothing (see run_one)")
+    ap.add_argument("--repeats", type=int, default=3,
+                    help="runs per cell. The original 6.13 ran each cell ONCE "
+                         "and reported 'ratio = N exactly'; the N=6 cell turned "
+                         "out to be a contended race that usually lands the "
+                         "other way. A single draw cannot tell a law from a "
+                         "lucky sample.")
     ap.add_argument("--port", type=int, default=8500)
     args = ap.parse_args()
 
@@ -144,16 +162,18 @@ def main():
     rows = []
     port = args.port
 
-    for p2p in (False, True):
+    for rep in range(args.repeats):
+      for p2p in (False, True):
         for n in counts:
             port += 1
             label = "on " if p2p else "off"
-            print(f"  p2p={label} workers={n} ...", end="", flush=True)
+            print(f"  rep={rep} p2p={label} workers={n} ...", end="", flush=True)
             row = run_one(args.build, args.scene, args.size, args.spp, n, p2p,
                           port, args.seconds, args.stagger)
             if row is None:
                 print(" FAILED (no metrics)")
                 continue
+            row["rep"] = rep
             rows.append(row)
             print(f" egress={row['egress_bytes']:>9,}B  "
                   f"peer={row['from_peer']} coord={row['from_coordinator']} "
@@ -171,13 +191,21 @@ def main():
     print(f"\nwrote {args.out}")
 
     # The comparison, printed so the result is visible without opening the file.
-    print("\nworkers   egress OFF      egress ON     ratio")
-    off = {r["workers"]: r for r in rows if r["p2p"] == "off"}
-    on = {r["workers"]: r for r in rows if r["p2p"] == "on"}
+    # A RANGE per cell, not a point. Reporting the median alone would repeat
+    # the original mistake in a quieter way: the interesting property of the
+    # N=6 cell is that it VARIES, and an average hides that as effectively as a
+    # single draw did.
+    print("\nworkers   egress OFF          egress ON (min-max)        ratio (min-max)")
     for n in counts:
-        if n in off and n in on:
-            a, b = off[n]["egress_bytes"], on[n]["egress_bytes"]
-            print(f"{n:>7}  {a:>12,}  {b:>12,}  {a / b if b else float('inf'):>7.2f}x")
+        offs = [r["egress_bytes"] for r in rows if r["p2p"] == "off" and r["workers"] == n]
+        ons = [r["egress_bytes"] for r in rows if r["p2p"] == "on" and r["workers"] == n]
+        if not offs or not ons:
+            continue
+        a = sorted(offs)[len(offs) // 2]
+        lo, hi = min(ons), max(ons)
+        rlo, rhi = (a / hi if hi else 0), (a / lo if lo else 0)
+        span = "" if lo == hi else f"   <- varies over {len(ons)} runs"
+        print(f"{n:>7}  {a:>12,}   {lo:>10,}-{hi:<10,}  {rlo:>5.2f}x-{rhi:.2f}x{span}")
     return 0
 
 

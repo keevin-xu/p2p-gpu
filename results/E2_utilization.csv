@@ -1,0 +1,14 @@
+# E2 — GPU utilization with and without on-node accumulation.
+# rev=0b522bf date=2026-08-23 build=native-release device='Apple M4 Pro' backend=metal
+# scene=scenes/default.scene size=256x192 tiles=12 chunks/tile=16 dispatches=192
+# timing=timestamp-query (D-0083); wall-clock timing measured submission, not execution (D-0082)
+# PROVENANCE: REAL (one physical GPU). Unified memory — see the caveat in
+# results/5.21-5.22-e2-utilization.md: accumulation-OFF also holds >90% here,
+# so this machine shows accumulation DELIVERS utilization, not that it is NECESSARY.
+spp,accumulation,wall_ms,gpu_ms,gpu_pct,transfer_ms,transfer_pct,dispatches
+512,on,576,263,98.4,4,1.6,192
+512,off,354,238,88.4,31,11.6,192
+2048,on,1075,944,99.4,5,0.6,192
+2048,off,1104,944,96.8,31,3.2,192
+8192,on,4111,3769,99.7,9,0.3,192
+8192,off,4151,3770,98.7,48,1.3,192

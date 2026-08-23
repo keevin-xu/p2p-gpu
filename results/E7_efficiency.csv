@@ -1,0 +1,12 @@
+# E7 — WebGPU efficiency. Achieved GFLOP/s per device (docs/EVALUATION.md).
+# rev=0b522bf date=2026-08-23 build=native-release kernel=calibrate_v1 iterations=2048 dispatches=10
+# PROVENANCE: REAL (physical GPUs only; no mock workers involved)
+#
+# theoretical_peak_gflops AND pct_of_peak ARE DELIBERATELY EMPTY.
+# Filling them needs each vendor's published FP32 peak — a retrieved
+# specification, not a measurement. Writing a number we did not measure
+# into a results CSV is how an assumption becomes a quoted fact.
+# Blocked with the vendor coverage at step 7.3.
+device,vendor,backend,target,achieved_gflops,per_dispatch_us,per_submit_us,theoretical_peak_gflops,pct_of_peak
+Apple M4 Pro,apple,metal,native,1874.8,23.42,109.79,,
+NVIDIA GTX 1650 Super,nvidia,d3d12,browser,2260.2,8.8,4840,,
