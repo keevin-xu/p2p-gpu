@@ -5,6 +5,9 @@
 // through protocol::VerifyFrame, which is the ONLY sanctioned bytes->typed path
 // (R11). This file is transport plumbing and nothing else.
 
+#include <atomic>
+#include <csignal>
+
 #include "p2pgpu/coordinator/net.hpp"
 
 #include "p2pgpu/coordinator/sizer.hpp"
@@ -274,6 +277,49 @@ void Server::Run() {
         [](us_timer_t* t) { (*reinterpret_cast<Server**>(us_timer_ext(t)))->Sweep(); },
         static_cast<int>(config_.sweep_interval_ms),
         static_cast<int>(config_.sweep_interval_ms));
+
+    // ── SIGTERM: SHUT DOWN, DO NOT BE KILLED ─────────────────────────────
+    //
+    // A container platform stops a process by sending SIGTERM and then SIGKILL
+    // some seconds later. With no handler the default action for SIGTERM is
+    // termination — but uWebSockets' loop never unwinds, so nothing flushes
+    // and the platform escalates. Measured before this existed: `docker stop`
+    // returned exit code **137**, SIGKILL, on every stop.
+    //
+    // The handler only sets a flag. Doing the teardown in the signal handler
+    // itself would run library code on a signal stack, and almost nothing here
+    // is async-signal-safe. The post handler below does the work on the loop
+    // thread, which is where every other socket operation already happens.
+    {
+        static std::atomic<bool> stop_requested{false};
+        std::signal(SIGTERM, [](int) { stop_requested.store(true); });
+        std::signal(SIGINT, [](int) { stop_requested.store(true); });
+        uWS::Loop::get()->addPostHandler(&stop_requested,
+                                         [this, &listen_socket, sweep_timer](uWS::Loop*) {
+            if (!stop_requested.load() || listen_socket == nullptr) {
+                return;
+            }
+            spdlog::info("signal received; closing the listener and draining");
+            // THE SWEEP TIMER KEEPS THE LOOP ALIVE. Closing only the listener
+            // was measured to be insufficient: the handler logged, no new
+            // connections were accepted, and `docker stop` still waited the
+            // full 15 s and escalated to SIGKILL (exit 137). A recurring timer
+            // is an active loop handle — the loop has no reason to return
+            // while one is armed.
+            // Closing the listener ends the loop once existing connections
+            // finish. Leases are NOT force-released: a worker mid-task keeps
+            // its lease, and the next coordinator honours it from SQLite —
+            // which is what the durable store is for (R8).
+            us_listen_socket_close(0, listen_socket);
+            listen_socket = nullptr;
+            // Same flush the sweep does, so the last interval of transitions
+            // is not lost on the way out.
+            if (store_ != nullptr && jobs_.has_dirty()) {
+                (void)store_->Flush(jobs_.DirtyJobs(), jobs_.DirtyTasks());
+            }
+            us_timer_close(sweep_timer);
+        });
+    }
 
     if (config_.exit_when_complete) {
         bool fired = false;

@@ -1,0 +1,49 @@
+# Fly.io config — step 7.7.
+#
+# Chosen over Railway for one reason that matters here: a named volume with a
+# documented mount, so SQLite durable state survives a redeploy. The coordinator
+# is stateless without it (D-0006 makes it a single instance either way).
+
+app = "p2pgpu"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  RUST_BACKTRACE = "0"
+
+# ONE instance, deliberately. D-0006: leases, the task queue and reputation all
+# live in one process, so a second machine would hand out the same task twice.
+# Fly autoscales by default — these lines are what stop it.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false     # a stopped coordinator drops every lease
+  auto_start_machines = true
+  min_machines_running = 1
+  max_machines_running = 1       # see D-0006 above
+
+  # WebSockets are the control plane. Fly proxies them over the same service,
+  # but the idle timeout must exceed the heartbeat or healthy workers get cut.
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 200
+    hard_limit = 400
+
+# Cheap and honest: /health returns "ok" and touches no scheduling state, so a
+# health check cannot itself perturb what it is checking.
+[[http_service.checks]]
+  interval = "15s"
+  timeout = "2s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/health"
+
+[mounts]
+  source = "p2pgpu_data"
+  destination = "/data"

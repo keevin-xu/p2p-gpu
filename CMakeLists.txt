@@ -16,6 +16,18 @@ option(P2PGPU_BUILD_FUZZ  "Build libFuzzer harnesses (needs real libFuzzer — N
 # only dependency (flatbuffers::Verifier) is header-only.
 option(P2PGPU_FUZZ_ONLY   "Build only p2pgpu-protocol and the fuzz harnesses" OFF)
 
+# Deploying the coordinator required downloading a GPU DRIVER to compile a
+# server (7.7). The coordinator links neither wgpu-native nor libdatachannel —
+# it schedules and relays signalling without reading it (D-0085) — so the
+# dependency was purely a side effect of one `if(NOT P2PGPU_WASM)` covering
+# both the worker and the server.
+#
+# It also made the container arch-locked for no reason: wgpu-native is pinned
+# per platform, so an arm64 build failed on a missing archive it would never
+# have opened.
+option(P2PGPU_COORDINATOR_ONLY
+       "Build only the coordinator and its deps; skip wgpu-native and the workers" OFF)
+
 if(EMSCRIPTEN)
     set(P2PGPU_WASM ON)
     message(STATUS "p2pgpu: configuring for WebAssembly")
@@ -58,7 +70,7 @@ include(cmake/Hardening.cmake)
 # all 86 shared structs field-for-field identical, measured in D-0016. That is
 # what lets worker-core call webgpu.h directly and stay portable (R2), instead
 # of needing the platform seam widened to cover the whole compute API.
-if(NOT P2PGPU_WASM)
+if(NOT P2PGPU_WASM AND NOT P2PGPU_COORDINATOR_ONLY)
     include(FetchContent)
     if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
         set(P2PGPU_WGPU_ARCHIVE "wgpu-macos-aarch64-release.zip")
@@ -277,6 +289,9 @@ p2pgpu_harden(p2pgpu-transport)
 # ONLY in src/worker-core/platform/. A #ifdef __EMSCRIPTEN__ anywhere else
 # in this target is a defect.
 # ─────────────────────────────────────────────────────────────────────────
+# Skipped entirely for a coordinator-only build: it links wgpu-native, which
+# that configuration deliberately never fetches.
+if(NOT P2PGPU_COORDINATOR_ONLY)
 add_library(p2pgpu-worker-core STATIC
     src/worker-core/task_loop.cpp         # 1.20 lease->execute->report; 1.21 loss
     src/worker-core/kernel_host.cpp
@@ -347,6 +362,7 @@ endif()
 # 1.12) — so the WGSL text is passed IN. Keeping acquisition out of worker-core
 # is what stops a `#ifdef __EMSCRIPTEN__` appearing in portable code (R2).
 p2pgpu_harden(p2pgpu-worker-core)
+endif()   # P2PGPU_COORDINATOR_ONLY — no worker-core, no wgpu-native
 
 # ─────────────────────────────────────────────────────────────────────────
 # Executables
@@ -412,6 +428,11 @@ if(NOT P2PGPU_WASM)
         unofficial::uwebsockets::uwebsockets)
     p2pgpu_harden(coordinator)
 
+    # Everything below links worker-core, so a coordinator-only build stops
+    # here. This is the whole point of the option: the server does not need a
+    # GPU library to compile.
+    if(NOT P2PGPU_COORDINATOR_ONLY)
+
     # Thin main() over worker-core. If this grows past ~100 lines,
     # logic is leaking out of worker-core (R1).
     # Dev tool (5.15): render a scene single-machine and write a PPM, so the
@@ -458,6 +479,8 @@ if(NOT P2PGPU_WASM)
         # requeued, and the harness measures nothing.
         BLAKE3::blake3)
     p2pgpu_harden(mock-worker)
+
+    endif()   # P2PGPU_COORDINATOR_ONLY
 
 else()
 

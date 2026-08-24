@@ -1,0 +1,14 @@
+# Keep the build context small and deterministic. `build/` alone is ~2 GB of
+# host artifacts that would be copied in and then ignored by the container
+# build — and a host-built binary landing in the image is exactly how a
+# sanitizer build reaches production by accident.
+build/
+results/
+docs/
+fuzz/
+web/
+.git/
+.github/
+*.md
+*.ppm
+assets/
