@@ -25,6 +25,8 @@
 #include <chrono>
 #include <deque>
 #include <functional>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -312,11 +314,39 @@ private:
     /// The one peer connection, if any (6.4). One at a time: a worker fetching
     /// one asset needs one source, and the connection cap is a scheduling
     /// question (6.12) that does not belong in the fetch path.
+    /// OUR OWN outbound fetch. One at a time is correct — a worker fetches one
+    /// asset — and this is NOT the slot that limited the swarm.
     std::unique_ptr<transport::PeerLink> peer_;
+
+    // ── SERVING OTHER PEERS, CONCURRENTLY (R-I fix) ──────────────────────
+    //
+    // Serving used to share `peer_` with the outbound fetch, so a holder could
+    // serve exactly ONE peer at a time and only while not fetching. E6
+    // measured the consequence: peer-served workers pinned at **4** for fleets
+    // of 6, 8 and 10, so coordinator copies grew as `N - 4` and the egress
+    // saving decayed toward 1.0 — the data plane stopped helping at precisely
+    // the scale it exists for.
+    //
+    // Keyed by peer id so a second offer from the same worker replaces its
+    // link rather than accumulating one per retry.
+    struct ServingLink {
+        std::unique_ptr<transport::PeerLink> link;
+        bool done = false;   ///< closed; reaped in Poll(), never in the callback
+    };
+    std::map<protocol::WorkerId, ServingLink> serving_;
+
+    /// Cap on concurrent peers served. Bounded because each link costs an ICE
+    /// negotiation and a send buffer, and an unbounded count is how one worker
+    /// gets asked to seed an entire fleet at once — the mesh 6.2 exists to
+    /// avoid, arrived at from the other direction.
+    static constexpr std::size_t kMaxServing = 8;
+
+    /// Which serving peer is currently being handled, so a reply goes back on
+    /// the link the request arrived on. Empty when the message came from our
+    /// own outbound fetch.
+    protocol::WorkerId serving_current_{};
     /// A serving connection has closed and its slot should be freed. Handled in
     /// `Poll()` rather than in the callback that sets it — tearing the link down
-    /// from inside its own callback is a use-after-free (D-0060).
-    bool peer_serving_done_ = false;
 
     std::vector<std::byte> asset_nodes_;
     std::vector<std::byte> asset_prims_;
@@ -388,6 +418,8 @@ private:
     void ServePeerAssetRequest(const wire::AssetRequest& req);
 
     /// Send an `AssetMsg` to the connected peer, if any.
+    /// Send on whichever link is in play: the serving link currently being
+    /// handled, or our own outbound fetch when none is.
     void SendToPeer(const std::vector<std::byte>& msg);
     /// Verify, validate, and publish a fully-received asset. Releases every
     /// parked task on failure — the bytes are wrong and re-requesting them

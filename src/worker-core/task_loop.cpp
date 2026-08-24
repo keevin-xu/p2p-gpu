@@ -214,13 +214,13 @@ void TaskLoop::Poll() {
     // rather than failure-only: ICE can take many seconds to admit defeat, and
     // a merely slow peer must not block a task the coordinator could already
     // have served.
-    // A finished SERVING connection is torn down here rather than in its own
-    // callback (see above). `fetch_` being absent is what distinguishes a
-    // serving link from one we are fetching over.
-    if (peer_serving_done_ && !fetch_) {
-        peer_serving_done_ = false;
-        peer_.reset();
-        peer_target_ = protocol::WorkerId{};
+    // Finished SERVING connections are reaped here rather than in their own
+    // callbacks (D-0060: destroying a link inside its callback is a
+    // use-after-free). No `!fetch_` condition any more — serving no longer
+    // shares a slot with our own fetch, so a holder can seed peers while
+    // fetching, which is half of what made the swarm cap out at 4.
+    for (auto it = serving_.begin(); it != serving_.end();) {
+        it = it->second.done ? serving_.erase(it) : std::next(it);
     }
 
     // 6.15 — accumulate the candidate types across the whole fetch (D-0102).
@@ -1209,42 +1209,63 @@ void TaskLoop::HandleSignal(const wire::Signal& signal) {
     // missing half at bring-up: signalling flowed, three frames were relayed,
     // and the offer was dropped because the receiver had no PeerLink — so every
     // fetch fell back and the logs showed a timeout rather than a cause.
-    if (!peer_ && kind == "offer") {
+    if (kind == "offer") {
         // Only if there is something to serve. Accepting a connection with an
         // empty cache spends ICE on a negotiation that can only end in
         // AssetMiss, and 6.12 would count it as a peer that did nothing.
         if (resident_bytes_.empty()) {
             return;
         }
-        peer_target_ = from;
-        peer_ = std::make_unique<transport::PeerLink>(ice_servers_);
+        // CONCURRENT (R-I fix). This used to be `if (!peer_ && ...)`, sharing
+        // one link with our own outbound fetch, so a holder served one peer at
+        // a time and none at all while fetching. Measured effect: peer-served
+        // workers pinned at 4 for fleets of 6, 8 and 10.
+        auto it = serving_.find(from);
+        if (it == serving_.end() && serving_.size() >= kMaxServing) {
+            Log("info", "refusing a peer connection: already serving " +
+                            std::to_string(serving_.size()));
+            return;
+        }
+        auto link = std::make_unique<transport::PeerLink>(ice_servers_);
         const protocol::WorkerId target = from;
-        peer_->OnSignal([this, target](const transport::SignalOut& out) {
+        link->OnSignal([this, target](const transport::SignalOut& out) {
             SendSignal(target, out);
         });
-        peer_->OnMessage([this](std::span<const std::byte> b) { OnPeerBytes(b); });
-        peer_->OnOpen([this](bool open) {
+        // The reply must go back on THIS link, not on whatever `peer_` happens
+        // to be — with one slot that distinction did not exist, and it is the
+        // whole reason serving can now overlap.
+        link->OnMessage([this, target](std::span<const std::byte> b) {
+            serving_current_ = target;
+            OnPeerBytes(b);
+            serving_current_ = protocol::WorkerId{};
+        });
+        link->OnOpen([this, target](bool open) {
             Log("info", open ? "peer channel open (serving)"
                              : "peer channel closed (serving)");
             if (!open) {
-                // FREE THE SLOT. A worker holds one connection at a time, and
-                // without this a worker that served ONE peer kept `peer_` set
-                // forever and refused every later offer — so each holder could
-                // seed exactly one other worker for the life of the process,
-                // capping peer fetches at roughly half the fleet. That is the
-                // shape E6 measured: coordinator fetches of 1, 1, 2, 4 for
-                // fleets of 1, 2, 4, 6.
-                //
-                // DEFERRED to Poll(), not done here: this runs inside the
-                // link's own callback, and destroying the object mid-callback
-                // is the D-0060 use-after-free in a new place.
-                peer_serving_done_ = true;
+                // DEFERRED to Poll(): this runs inside the link's own callback
+                // and destroying the object here is D-0060's use-after-free in
+                // a new place.
+                if (auto s = serving_.find(target); s != serving_.end()) {
+                    s->second.done = true;
+                }
             }
         });
         Log("info", "accepting a peer connection from worker " +
-                        std::to_string(from.hi()));
-        peer_->AcceptOffer(text);
+                        std::to_string(from.hi()) + " (serving " +
+                        std::to_string(serving_.size() + 1) + ")");
+        auto* raw = link.get();
+        serving_[from] = ServingLink{std::move(link), false};
+        raw->AcceptOffer(text);
         return;
+    }
+
+    // Signalling for a peer we are SERVING routes to its own link.
+    if (auto s = serving_.find(from); s != serving_.end() && s->second.link) {
+        if (kind == "candidate") {
+            s->second.link->AddRemoteCandidate(text, mid);
+        }
+        return;   // a server never receives an answer; it sent one
     }
 
     if (!peer_ || from != peer_target_) {
@@ -1328,6 +1349,16 @@ void TaskLoop::FallBackToCoordinator(const char* why) {
 }
 
 void TaskLoop::SendToPeer(const std::vector<std::byte>& msg) {
+    // A reply belongs on the link its request arrived on. When several peers
+    // are served at once, sending on `peer_` would answer the wrong worker —
+    // or nobody, if we are not fetching.
+    if (serving_current_ != protocol::WorkerId{}) {
+        if (auto it = serving_.find(serving_current_);
+            it != serving_.end() && it->second.link && it->second.link->IsOpen()) {
+            (void)it->second.link->Send(msg);
+        }
+        return;
+    }
     if (peer_ && peer_->IsOpen()) {
         (void)peer_->Send(msg);
     }
