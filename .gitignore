@@ -98,3 +98,4 @@ fuzz/dist/
 # `scenes/*.scene` IS tracked — so the derived artifact is committed and the
 # source model is not.
 assets/
+deploy/*.md

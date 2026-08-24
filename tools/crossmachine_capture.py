@@ -33,6 +33,7 @@ import json
 import os
 import subprocess
 import signal
+import ssl
 import sys
 import time
 import urllib.error
@@ -46,11 +47,37 @@ def stop(_sig, _frame):
     RUNNING = False
 
 
-def metrics(port):
+# HTTPS from a python.org build on macOS fails with CERTIFICATE_VERIFY_FAILED:
+# that Python ships no CA bundle and does not read the system keychain, so
+# `curl` succeeds against the same URL and this does not. certifi when present,
+# the default context otherwise — a Linux box or a Homebrew Python needs no help.
+def _ssl_context():
     try:
-        with urllib.request.urlopen(f"http://localhost:{port}/metrics", timeout=5) as r:
-            return json.load(r)
-    except (urllib.error.URLError, TimeoutError, ConnectionError, json.JSONDecodeError):
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return None
+
+
+_FIRST_ERROR_REPORTED = False
+
+
+def metrics(base):
+    """Fetch /metrics, or None — and SAY WHY the first time it fails.
+
+    This used to swallow every exception and the caller printed "is it
+    reachable?". It was reachable: `curl` returned 200 and the failure was a
+    missing CA bundle. An error path that hides its own cause turns a
+    one-line fix into a diagnosis.
+    """
+    global _FIRST_ERROR_REPORTED
+    try:
+        return json.load(urllib.request.urlopen(f"{base}/metrics", timeout=10,
+                                                context=_ssl_context()))
+    except Exception as exc:   # noqa: BLE001 — report anything, then continue
+        if not _FIRST_ERROR_REPORTED:
+            _FIRST_ERROR_REPORTED = True
+            print(f"\n  fetch failed: {type(exc).__name__}: {exc}")
         return None
 
 
@@ -58,10 +85,17 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8080)
+    # A deployed coordinator is not on localhost, and its numbers are the ones
+    # worth keeping. Same recorder either way, so a remote session lands in
+    # results/ in the same shape as a local one.
+    ap.add_argument("--url", default=None,
+                    help="base URL of a REMOTE coordinator, e.g. "
+                         "https://p2pgpu.fly.dev (overrides --port)")
     ap.add_argument("--label", default="crossmachine")
     ap.add_argument("--out", default="results")
     args = ap.parse_args()
 
+    base = args.url.rstrip("/") if args.url else f"http://localhost:{args.port}"
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     os.makedirs(args.out, exist_ok=True)
@@ -71,10 +105,10 @@ def main():
     rows = []
     last = None
     t0 = time.time()
-    print(f"recording :{args.port} -> {csv_path}   (Ctrl-C to stop)")
+    print(f"recording {base} -> {csv_path}   (Ctrl-C to stop)")
 
     while RUNNING:
-        m = metrics(args.port)
+        m = metrics(base)
         if m is not None:
             last = m
             done = m["tasks_by_state"][4] if m.get("tasks_by_state") else 0
@@ -104,7 +138,7 @@ def main():
         time.sleep(1.0)
 
     if not rows:
-        print("\nno samples — was the coordinator running on that port?")
+        print(f"\nno samples — is {base} reachable?")
         return 1
     with open(csv_path, "w", newline="") as fh:
         # Provenance emitted by the driver so a regeneration keeps it.
@@ -113,7 +147,7 @@ def main():
         fh.write(f"# produced by tools/crossmachine_capture.py\n")
         fh.write(f"# rev={rev} date={datetime.date.today().isoformat()}\n")
         fh.write("# PROVENANCE: REAL (live cross-machine session; see the adapters block in the -final.json)\n")
-        fh.write(f"# port={args.port} label={args.label}\n")
+        fh.write(f"# source={base} label={args.label}\n")
         w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
         w.writeheader()
         w.writerows(rows)

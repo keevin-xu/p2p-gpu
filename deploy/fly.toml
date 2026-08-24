@@ -1,49 +1,45 @@
-# Fly.io config — step 7.7.
+# fly.toml app configuration file generated for p2pgpu on 2026-08-24T12:09:24-04:00
 #
-# Chosen over Railway for one reason that matters here: a named volume with a
-# documented mount, so SQLite durable state survives a redeploy. The coordinator
-# is stateless without it (D-0006 makes it a single instance either way).
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-app = "p2pgpu"
-primary_region = "iad"
+app = 'p2pgpu'
+primary_region = 'iad'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  RUST_BACKTRACE = "0"
+  RUST_BACKTRACE = '0'
 
-# ONE instance, deliberately. D-0006: leases, the task queue and reputation all
-# live in one process, so a second machine would hand out the same task twice.
-# Fly autoscales by default — these lines are what stop it.
-[[vm]]
-  size = "shared-cpu-1x"
-  memory = "512mb"
+[[mounts]]
+  source = 'p2pgpu_data'
+  destination = '/data'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = false     # a stopped coordinator drops every lease
+  auto_stop_machines = 'off'
   auto_start_machines = true
   min_machines_running = 1
-  max_machines_running = 1       # see D-0006 above
+  # RESTORED 2026-08-24 after `flyctl launch --copy-config` silently dropped it.
+  # D-0006: leases, the task queue and reputation live in ONE process. A second
+  # machine grants the same task twice, and the fleet would look healthy while
+  # duplicating work. This line is not tuning — it is a correctness constraint.
+  max_machines_running = 1
 
-  # WebSockets are the control plane. Fly proxies them over the same service,
-  # but the idle timeout must exceed the heartbeat or healthy workers get cut.
   [http_service.concurrency]
-    type = "connections"
-    soft_limit = 200
+    type = 'connections'
     hard_limit = 400
+    soft_limit = 200
 
-# Cheap and honest: /health returns "ok" and touches no scheduling state, so a
-# health check cannot itself perturb what it is checking.
-[[http_service.checks]]
-  interval = "15s"
-  timeout = "2s"
-  grace_period = "10s"
-  method = "GET"
-  path = "/health"
+  [[http_service.checks]]
+    interval = '15s'
+    timeout = '2s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/health'
 
-[mounts]
-  source = "p2pgpu_data"
-  destination = "/data"
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'
