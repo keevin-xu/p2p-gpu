@@ -1,0 +1,30 @@
+# Cross-origin isolation for the worker page — step 7.8.
+#
+# Consumed by Cloudflare Pages and Netlify verbatim. **GitHub Pages ignores this
+# file and cannot set response headers at all**, which is why it is not an
+# option here: the page would deploy, load, and then report no WebGPU device
+# with nothing in the console pointing at the host.
+#
+# WHY THESE HEADERS AT ALL
+# COOP+COEP together make the page cross-origin isolated, which is what unlocks
+# SharedArrayBuffer, which is what pthreads needs (D-0033). Without them the
+# wasm worker fails at startup, not at first use — so a page that "loads fine"
+# proves nothing.
+#
+# THE PART THAT BREAKS LATE (RISKS.md §1)
+# `require-corp` applies to EVERY cross-origin subresource. The page fetches
+# WGSL and assets from the coordinator on another origin, so those responses
+# must each carry `Cross-Origin-Resource-Policy: cross-origin` — ACAO is not
+# enough and fails with a console error that names CORS instead of COEP.
+# Verified server-side on /kernel, /asset, /metrics, /metrics/stream, /render.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
+
+# The wasm binary must be served with the right type or streaming compilation
+# silently falls back to the slow path.
+/*.wasm
+  Content-Type: application/wasm
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp

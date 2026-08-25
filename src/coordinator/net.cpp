@@ -391,7 +391,14 @@ void Server::Run() {
                  res->writeHeader("Content-Type", "text/event-stream")
                      ->writeHeader("Cache-Control", "no-cache")
                      ->writeHeader("Connection", "keep-alive")
-                     ->writeHeader("Access-Control-Allow-Origin", "*");
+                     ->writeHeader("Access-Control-Allow-Origin", "*")
+                     // 7.8. CORP is what `Cross-Origin-Embedder-Policy:
+                     // require-corp` demands of every cross-origin subresource.
+                     // ACAO alone is NOT enough: a page that is cross-origin
+                     // isolated will refuse this response outright, and the
+                     // dashboard would sit on "connecting" with a console error
+                     // that names CORS rather than COEP.
+                     ->writeHeader("Cross-Origin-Resource-Policy", "cross-origin");
 
                  // Registered together with onAborted, so there is never a
                  // moment where this pointer is in the list but unwatched — the
@@ -422,6 +429,7 @@ void Server::Run() {
                      this->assets_.bytes_served() + this->asset_bytes_served_;
                  res->writeHeader("Content-Type", "application/json")
                      ->writeHeader("Access-Control-Allow-Origin", "*")
+                     ->writeHeader("Cross-Origin-Resource-Policy", "cross-origin")
                      ->end(ToJson(snap));
              })
 
