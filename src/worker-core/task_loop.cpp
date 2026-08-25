@@ -919,6 +919,25 @@ void TaskLoop::SendResultFrame(protocol::TaskId task, const TaskOutcome& outcome
             sb.add_ice_gathered(this_task_fetched ? ice_gathered_ : 0);
             sb.add_peer_attempts(this_task_fetched ? peer_attempts_made_ : 0);
             sb.add_peer_connected(this_task_fetched && peer_connected_);
+
+            // CREDIT THE FETCH ONCE. `asset_source_` describes the last fetch,
+            // not the task, so every task that ran afterwards re-reported it —
+            // and several tasks can be PARKED on a single fetch, all resuming
+            // together when it lands.
+            //
+            // Measured on the deployed coordinator: one fetch in the worker
+            // log, `asset_from_coordinator = 2`, and 6.14's own consistency
+            // check catching it — 6336 B of egress over 2 claimed fetches is
+            // 3168 B each, exactly half the asset. E6 never showed it because
+            // each worker there parked exactly one task, so the count and the
+            // fetches coincided by luck of configuration.
+            //
+            // Downgrading to Cached after the first report is accurate rather
+            // than merely convenient: by the time a parked task runs, the asset
+            // IS resident, which is what Cached means.
+            if (this_task_fetched) {
+                asset_source_ = wire::AssetSource::Cached;
+            }
             auto stats = sb.Finish();
 
             wire::ResultHeaderBuilder b(fbb);

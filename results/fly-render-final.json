@@ -1,0 +1,54 @@
+{
+  "timestamp_ms": 0,
+  "workers": 1,
+  "queue_depth": 0,
+  "total_tasks": 30,
+  "units_total": 491520,
+  "units_remaining": 0,
+  "wasted_units": 0,
+  "asset_grants": 30,
+  "asset_grants_hit": 28,
+  "asset_from_peer": 0,
+  "asset_from_coordinator": 2,
+  "asset_from_cache": 28,
+  "coordinator_asset_egress": 6336,
+  "ice_fetches": 0,
+  "ice_connected": 0,
+  "ice_host": 0,
+  "ice_srflx": 0,
+  "ice_relay": 0,
+  "rejected_frames": 0,
+  "tasks_by_state": [
+    0,
+    0,
+    0,
+    0,
+    30,
+    0,
+    0
+  ],
+  "state_names": [
+    "Queued",
+    "Leased",
+    "Validating",
+    "NeedsReplica",
+    "Accepted",
+    "Rejected",
+    "Cancelled"
+  ],
+  "fleet": [
+    {
+      "worker_id": 1,
+      "tasks_completed": 30,
+      "score_ops_per_sec": 1864660000000.0,
+      "correction": 3.41156,
+      "throttle": 1,
+      "observed_units_per_sec": 33402.7,
+      "adapter_vendor": "",
+      "adapter_device": "Apple M4 Pro",
+      "adapter_backend": "metal",
+      "ms_to_first_grant": 428,
+      "ms_to_first_result": 550
+    }
+  ]
+}

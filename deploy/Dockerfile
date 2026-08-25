@@ -102,8 +102,26 @@ EXPOSE 8080
 # No shell form: exec form makes the coordinator PID 1, so a platform SIGTERM
 # reaches it and leases are released cleanly instead of expiring (R8).
 ENTRYPOINT ["/app/coordinator"]
+# A seeded render, so the deployment has work the moment a worker connects.
+#
+# THIS IS THE FIRST REAL-NETWORK TEST OF THE ASSET TRANSPORT. Every Phase 5 and
+# 6 number was measured on loopback, where a coordinator fetch costs nothing;
+# `docs/PENDING.md` lists the cross-machine render as the Phase 5 claim that is
+# still local-only, and cross-machine session 1 never got there (no ICE servers,
+# so the peer path never opened).
+#
+# `default.scene` rather than `dense.scene` deliberately: 4.8 KB of scene ->
+# a ~6 KB BVH. Small enough that a first run tests whether the transport works
+# at all over real latency and MTU, without a 256 KB transfer confounding a
+# failure with a timeout. The dense scene is the follow-up, not the first shot.
+#
+# 16384 spp keeps tiles short so grants, results and re-grants cycle visibly
+# rather than the whole render being two long tasks.
 CMD ["--port", "8080", \
      "--kernel-dir", "/app/kernels", \
      "--manifest", "/app/kernels/manifest.toml", \
      "--store", "/data/p2pgpu.db", \
+     "--seed-render", "/app/scenes/default.scene", \
+     "--render-size", "384x288", \
+     "--render-spp", "16384", \
      "--log-level", "info"]

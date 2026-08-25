@@ -1,0 +1,6 @@
+[info] transport open
+[info] handshake complete; kernels=3 ice_servers=0
+[info] benchmark: 1864.659466 Gops/s
+[info] fetching asset 105228a6bef7...
+[info] falling back to the coordinator: no peer candidates left
+[info] asset ready 105228a6bef7... nodes=43 prims=70 depth=6
