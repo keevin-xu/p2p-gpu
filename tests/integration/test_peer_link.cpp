@@ -55,11 +55,13 @@ TEST_CASE("two peers negotiate and exchange bytes over a data channel",
     std::atomic<bool> b_open{false};
     std::vector<std::byte> received;
     std::atomic<bool> got_message{false};
+    std::atomic<int> signalled{0};
 
     // The stub relay. Each side's signalling goes straight to the other, which
     // is what the coordinator's 6.1 relay does minus the socket — and it is why
     // this test can exist without one.
     a.OnSignal([&](const SignalOut& s) {
+        ++signalled;
         if (s.kind == "offer") {
             b.AcceptOffer(s.text);
         } else if (s.kind == "candidate") {
@@ -67,6 +69,7 @@ TEST_CASE("two peers negotiate and exchange bytes over a data channel",
         }
     });
     b.OnSignal([&](const SignalOut& s) {
+        ++signalled;
         if (s.kind == "answer") {
             a.AcceptAnswer(s.text);
         } else if (s.kind == "candidate") {
@@ -85,7 +88,38 @@ TEST_CASE("two peers negotiate and exchange bytes over a data channel",
     // created, and a description produced before the handler exists is lost.
     a.Offer();
 
-    REQUIRE(WaitFor([&] { return a_open.load() && b_open.load(); }));
+    // ── IF THIS FAILS, SAY WHAT THE ICE LAYER ACTUALLY DID ───────────────
+    //
+    // It failed once on a CI runner while passing locally under the identical
+    // sanitizer build, and a bare `REQUIRE(open)` cannot distinguish "our
+    // negotiation is broken" from "this environment cannot route a packet
+    // between two sockets in one process". Those need opposite responses, and
+    // guessing which one it was is how a real defect gets waved through as
+    // flakiness — or an environment quirk gets debugged as a bug.
+    //
+    // `signalled` counts relayed frames: zero means negotiation never started,
+    // non-zero with no open channel means it started and connectivity checks
+    // failed.
+    if (!WaitFor([&] { return a_open.load() && b_open.load(); })) {
+        const auto ga = a.GatheredTypes();
+        const auto gb = b.GatheredTypes();
+        UNSCOPED_INFO("channel never opened."
+                      << "  a_open=" << a_open.load()
+                      << " b_open=" << b_open.load()
+                      << " | a gathered host=" << ga.host
+                      << " srflx=" << ga.server_reflexive
+                      << " relay=" << ga.relay
+                      << " | b gathered host=" << gb.host
+                      << " srflx=" << gb.server_reflexive
+                      << " relay=" << gb.relay
+                      << " | signalling frames relayed=" << signalled.load()
+                      << "\n  host=0 on both  -> no usable interface; the runner "
+                         "cannot do ICE and this test is measuring the sandbox."
+                         "\n  host=1 but no open -> candidates gathered and "
+                         "connectivity checks failed: a real routing restriction, "
+                         "or our negotiation.");
+        FAIL("peer channel did not open — see the ICE state above");
+    }
     CHECK(a.IsOpen());
     CHECK(b.IsOpen());
 
