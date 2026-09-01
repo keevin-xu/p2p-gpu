@@ -127,7 +127,9 @@ A worker that serves corrupt bytes to a peer is detected by content hash, and th
 
 **Most distributed measurements are from one machine.** The peer-to-peer numbers above are many processes on one host over loopback, up to ten workers. A real network has been exercised once — a deployed coordinator rendering with a worker on a laptop — which worked, but that run had a single worker and therefore no peer-to-peer transfer.
 
-**Peer-to-peer between two separate machines has never succeeded.** The one attempt failed because no STUN/TURN servers were configured, so only private addresses were offered. This is a configuration gap, not a demonstrated capability.
+**Peer-to-peer between two separate machines has never succeeded.** Workers on different machines connect to the coordinator, fetch assets and render correctly — but they have never transferred an asset directly to each other. The measured peer-to-peer results are all from multiple processes on one host.
+
+**The browser worker cannot peer on iOS at all.** WebKit does not expose `RTCPeerConnection` inside a Worker, and the task loop runs on one, so constructing a peer connection fails. This affects every browser on iPhone and iPad — Apple requires them all to use WebKit — while Chrome on desktop exposes the API and works. An iOS device can still join, fetch its data from the coordinator, and render; it simply never serves or fetches from a peer.
 
 **NAT traversal is unmeasured.** No relay server has ever been configured, so the fraction of connections that would need one is unknown. Published figures suggest 10–20%; this project has no number of its own.
 

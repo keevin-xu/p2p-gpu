@@ -90,6 +90,7 @@ Snapshot Collect(const JobManager& jobs, const Fleet& fleet,
         wm.adapter_vendor = rec.adapter_vendor;
         wm.adapter_device = rec.adapter_device;
         wm.adapter_backend = rec.adapter_backend;
+        wm.ice_gathered = rec.ice_gathered;
         if (rec.first_grant_ms != 0) {
             wm.ms_to_first_grant =
                 static_cast<double>(rec.first_grant_ms - rec.joined_ms);
@@ -168,6 +169,10 @@ std::string ToJson(const Snapshot& snap) {
         out += ",\"adapter_vendor\":" + Quote(w.adapter_vendor);
         out += ",\"adapter_device\":" + Quote(w.adapter_device);
         out += ",\"adapter_backend\":" + Quote(w.adapter_backend);
+        out += ",\"ice_gathered\":" + std::to_string(w.ice_gathered);
+        out += ",\"ice_host\":" + std::string((w.ice_gathered & 1U) ? "true" : "false");
+        out += ",\"ice_srflx\":" + std::string((w.ice_gathered & 2U) ? "true" : "false");
+        out += ",\"ice_relay\":" + std::string((w.ice_gathered & 4U) ? "true" : "false");
         out += ",\"ms_to_first_grant\":" + Num(w.ms_to_first_grant);
         out += ",\"ms_to_first_result\":" + Num(w.ms_to_first_result);
         out += "}";

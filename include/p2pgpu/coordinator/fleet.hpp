@@ -59,6 +59,14 @@ struct WorkerRecord {
     std::string adapter_device;
     std::string adapter_backend;
 
+    /// Last reported ICE candidate types, as a bitmask: 1 host, 2
+    /// server-reflexive, 4 relay. Worker-claimed and display-only.
+    ///
+    /// Per WORKER rather than aggregated, because the question it answers is
+    /// "did THIS end have a relay path" — and a relay pair needs both ends. An
+    /// aggregate count cannot distinguish one worker with relay from two.
+    std::uint8_t ice_gathered = 0;
+
     std::uint64_t joined_ms = 0;
     std::uint64_t first_grant_ms = 0;
     std::uint64_t first_result_ms = 0;

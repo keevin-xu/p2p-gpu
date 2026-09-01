@@ -134,6 +134,41 @@
     logEl.textContent = lines.join("\n");
   }
 
+  // ── SURFACE CRASHES IN THE PAGE, NOT ONLY THE CONSOLE ────────────────
+  //
+  // Emscripten's worker handler prints `file:line: message` and drops the
+  // STACK, which is the only part that identifies the call site. On a phone
+  // there is no practical way to open a console, so a wasm abort showed up as
+  // one line of text with no way to act on it — three rounds of guessing
+  // followed, on a bug that a stack would have named immediately.
+  //
+  // Everything here is presentation: it reads errors and writes them to the
+  // log panel. No logic, no recovery attempt.
+  function reportError(label, err, extra) {
+    append("[error] " + label + (extra ? " " + extra : ""));
+    if (err && err.stack) {
+      // Trim: mobile browsers produce very long frames and the first few are
+      // the ones that matter.
+      String(err.stack).split("\n").slice(0, 12).forEach(function (line) {
+        append("    " + line.trim());
+      });
+    } else if (err) {
+      append("    " + String(err.message || err));
+    }
+    append("[error] press 'Send session log' to ship this back");
+  }
+
+  // An uncaught C++ exception arrives here as a bare number (the wasm pointer)
+  // or an object with no stack. Emscripten can decode it when exceptions are
+  // compiled in; without that all we can say is that one escaped.
+  window.addEventListener("error", function (e) {
+    reportError("uncaught", e.error || e,
+                e.filename ? e.filename + ":" + e.lineno : "");
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    reportError("unhandled promise rejection", e.reason);
+  });
+
   // Presentation only: the diagnostics are separate GPU work, and running one
   // while the grid loop is live would have two things fighting over the device
   // and over #status. Disabling them is not a decision about the system, it is

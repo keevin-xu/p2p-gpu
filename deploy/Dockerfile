@@ -112,6 +112,9 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 # was right for the first real-network test — small enough that a failure could
 # not be confused with a timeout — but too small to measure a transport with.)
 #
+# 512x384 = 48 tiles, so three devices of very different speeds each get a
+# meaningful share and the split is visible in the per-device counts.
+#
 # 8192 spp, NOT 262144. The first attempt at the relay measurement used the
 # larger value and produced nothing: the phone connected and registered a GPU,
 # but never finished a tile, so it never became an advertised holder and the
@@ -146,6 +149,6 @@ CMD ["--port", "8080", \
      "--kernel-dir", "/app/kernels", \
      "--manifest", "/app/kernels/manifest.toml", \
      "--seed-render", "/app/scenes/dense.scene", \
-     "--render-size", "384x288", \
+     "--render-size", "512x384", \
      "--render-spp", "8192", \
      "--log-level", "info"]

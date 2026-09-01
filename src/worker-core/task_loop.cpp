@@ -228,11 +228,25 @@ void TaskLoop::Poll() {
     // sites and a new one would silently stop being counted. OR-ing is right
     // because the question is what this worker COULD gather, and a second
     // attempt does not un-gather what the first one found.
-    if (peer_) {
-        const auto g = peer_->GatheredTypes();
+    const auto absorb = [this](const transport::PeerLink& link) {
+        const auto g = link.GatheredTypes();
         ice_gathered_ = static_cast<std::uint8_t>(
             ice_gathered_ | (g.host ? 1U : 0U) | (g.server_reflexive ? 2U : 0U) |
             (g.relay ? 4U : 0U));
+    };
+    if (peer_) {
+        absorb(*peer_);
+    }
+    // ALSO the links we are SERVING on. A worker that only ever answers offers
+    // — which is what the first machine in a two-machine session does — never
+    // creates `peer_`, so its ICE capability was invisible. That is exactly the
+    // gap that left the relay measurement ambiguous: the initiating side
+    // reported `relay=1` and nothing recorded whether the answering side had a
+    // relay path at all, and a relay pair needs both.
+    for (const auto& [id, sl] : serving_) {
+        if (sl.link) {
+            absorb(*sl.link);
+        }
     }
 
     if (fetch_ && peer_ && Clock::now() > peer_deadline_) {
@@ -559,9 +573,11 @@ void TaskLoop::HandleTaskGrant(const wire::TaskGrant& grant) {
                 fetch_->started = Clock::now();
                 fetch_->last_progress = fetch_->started;
                 peer_attempt_ = 0;
-                // 6.15 — per-FETCH, so a cached task does not inherit the ICE
-                // story of an earlier one (D-0102).
-                ice_gathered_ = 0;
+                // Per-FETCH, so a cached task does not inherit an earlier
+                // attempt's story (D-0102). `ice_gathered_` is deliberately NOT
+                // cleared: it describes this worker's ICE capability, not one
+                // fetch, and clearing it would erase what the serving links
+                // already discovered.
                 peer_attempts_made_ = 0;
                 peer_connected_ = false;
                 Log("info", "fetching asset " + address.substr(0, 12) + "...");
@@ -916,7 +932,14 @@ void TaskLoop::SendResultFrame(protocol::TaskId task, const TaskOutcome& outcome
             const bool this_task_fetched =
                 asset_source_ == wire::AssetSource::Peer ||
                 asset_source_ == wire::AssetSource::Coordinator;
-            sb.add_ice_gathered(this_task_fetched ? ice_gathered_ : 0);
+            // `ice_gathered` is reported ALWAYS — it describes what this
+            // worker's ICE layer can offer, which is true of the worker rather
+            // than of the task. Gating it on a fetch is what made the answering
+            // side invisible.
+            sb.add_ice_gathered(ice_gathered_);
+            // `peer_attempts` and `peer_connected` stay tied to the task that
+            // actually fetched: they are the ratio's numerator and denominator,
+            // and a cached task attempted nothing.
             sb.add_peer_attempts(this_task_fetched ? peer_attempts_made_ : 0);
             sb.add_peer_connected(this_task_fetched && peer_connected_);
 
@@ -989,12 +1012,29 @@ void TaskLoop::SendAssetRequest(const std::string& address, std::uint32_t from,
     if (address.size() != 64) {
         return;
     }
+    // NO std::stoul HERE. It throws on a non-hex character, `address` comes
+    // off the network, and the browser worker is built WITHOUT exception
+    // catching — so a 64-character string that is not hex would not be
+    // rejected, it would ABORT the worker. The length check above is not
+    // enough on its own; it only guarantees the string is the right size to be
+    // wrong in an interesting way.
+    const auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') { return c - '0'; }
+        if (c >= 'a' && c <= 'f') { return c - 'a' + 10; }
+        if (c >= 'A' && c <= 'F') { return c - 'A' + 10; }
+        return -1;
+    };
     std::array<std::uint64_t, 4> lanes{};
     for (std::size_t lane = 0; lane < 4; ++lane) {
         std::uint64_t v = 0;
         for (std::size_t byte = 0; byte < 8; ++byte) {
-            const std::string pair = address.substr(lane * 16 + byte * 2, 2);
-            v |= static_cast<std::uint64_t>(std::stoul(pair, nullptr, 16)) << (byte * 8);
+            const int hi = nibble(address[lane * 16 + byte * 2]);
+            const int lo = nibble(address[lane * 16 + byte * 2 + 1]);
+            if (hi < 0 || lo < 0) {
+                Log("warn", "asset address is not hex; request dropped");
+                return;
+            }
+            v |= static_cast<std::uint64_t>((hi << 4) | lo) << (byte * 8);
         }
         lanes[lane] = v;
     }

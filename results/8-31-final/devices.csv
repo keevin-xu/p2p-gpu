@@ -1,0 +1,5 @@
+# one row per DEVICE that took part, merged across the run
+worker_id,adapter_vendor,adapter_device,adapter_backend,tasks_completed,score_ops_per_sec,observed_units_per_sec,ms_to_first_result,ice_host,ice_srflx,ice_relay,first_seen_s
+1,apple,apple,webgpu,4,317300000000.0,4155.83,4894,False,False,False,479.0
+2,apple,apple,webgpu,14,764977000000.0,20336,1624,False,False,False,482.2
+3,,Apple M4 Pro,metal,40,1862290000000.0,4107.09,16765,True,True,True,486.6

@@ -1239,6 +1239,13 @@ Reaction Session::OnResultHeader(const wire::ResultHeader& header,
         // 6.15 (D-0102). Untrusted like every other field here.
         jobs_.RecordIceOutcome(stats->ice_gathered(), stats->peer_attempts(),
                                stats->peer_connected());
+        // Keep the per-worker view too. OR-ed rather than replaced: candidate
+        // types accumulate as ICE gathers, and a later report with fewer bits
+        // means gathering had not finished, not that a path went away.
+        if (WorkerRecord* w = fleet_.Mutable(worker_id_); w != nullptr) {
+            w->ice_gathered = static_cast<std::uint8_t>(w->ice_gathered |
+                                                        stats->ice_gathered());
+        }
     }
 
     // ── A SUBMITTED RESULT PROVES THE WORKER HOLDS THE ASSET (6.13) ──────

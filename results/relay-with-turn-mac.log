@@ -1,0 +1,70 @@
+[info] transport open
+[info] handshake complete; kernels=3 ice_servers=4
+[info] benchmark: 1751.064527 Gops/s
+[info] peer list: 1 candidate source(s) for the asset
+[info] fetching asset d6a3316a22c8...
+[info] trying peer 1 for the asset (attempt 1)
+[info] peer list: 1 candidate source(s) for the asset
+[info] peer timed out with the channel NEVER OPEN (peer busy or refusing, or no route: on loopback it is not the route)
+[info] falling back to the coordinator: no peer candidates left
+[info] asset ready d6a3316a22c8... nodes=1995 prims=3006 depth=13
+[info] transport open
+[info] handshake complete; kernels=3 ice_servers=4
+[info] benchmark: 1864.387155 Gops/s
+[info] peer list: 1 candidate source(s) for the asset
+[info] fetching asset d6a3316a22c8...
+[info] trying peer 1 for the asset (attempt 1)
+[info] peer list: 1 candidate source(s) for the asset
+[info] peer timed out with the channel NEVER OPEN (peer busy or refusing, or no route: on loopback it is not the route)
+[info] falling back to the coordinator: no peer candidates left
+[info] asset ready d6a3316a22c8... nodes=1995 prims=3006 depth=13
+[info] transport open
+[info] handshake complete; kernels=3 ice_servers=4
+[info] benchmark: 1864.088752 Gops/s
+[info] peer list: 1 candidate source(s) for the asset
+[info] fetching asset d6a3316a22c8...
+[info] trying peer 1 for the asset (attempt 1)
+[info] peer list: 1 candidate source(s) for the asset
+[info] peer timed out with the channel NEVER OPEN (peer busy or refusing, or no route: on loopback it is not the route)
+[info] falling back to the coordinator: no peer candidates left
+[info] asset ready d6a3316a22c8... nodes=1995 prims=3006 depth=13
+[info] transport open
+[info] handshake complete; kernels=3 ice_servers=4
+[info] benchmark: 1862.090186 Gops/s
+[info] peer list: 1 candidate source(s) for the asset
+[info] fetching asset d6a3316a22c8...
+[info] trying peer 1 for the asset (attempt 1)
+[info] peer list: 1 candidate source(s) for the asset
+[info] peer timed out with the channel NEVER OPEN (peer busy or refusing, or no route: on loopback it is not the route)
+[info] falling back to the coordinator: no peer candidates left
+[info] asset ready d6a3316a22c8... nodes=1995 prims=3006 depth=13
+[info] transport open
+[info] handshake complete; kernels=3 ice_servers=4
+[info] benchmark: 1864.889728 Gops/s
+[info] peer list: 1 candidate source(s) for the asset
+[info] fetching asset d6a3316a22c8...
+[info] trying peer 2 for the asset (attempt 1)
+[info] peer list: 1 candidate source(s) for the asset
+[info] peer timed out with the channel NEVER OPEN (peer busy or refusing, or no route: on loopback it is not the route)
+[info] falling back to the coordinator: no peer candidates left
+[info] asset ready d6a3316a22c8... nodes=1995 prims=3006 depth=13
+[info] transport open
+[info] handshake complete; kernels=3 ice_servers=4
+[info] benchmark: 1839.505399 Gops/s
+[info] peer list: 1 candidate source(s) for the asset
+[info] fetching asset d6a3316a22c8...
+[info] trying peer 1 for the asset (attempt 1)
+[info] peer list: 1 candidate source(s) for the asset
+[info] peer timed out with the channel NEVER OPEN (peer busy or refusing, or no route: on loopback it is not the route)
+[info] falling back to the coordinator: no peer candidates left
+[info] asset ready d6a3316a22c8... nodes=1995 prims=3006 depth=13
+[info] transport open
+[info] handshake complete; kernels=3 ice_servers=4
+[info] benchmark: 1834.864758 Gops/s
+[info] peer list: 1 candidate source(s) for the asset
+[info] fetching asset d6a3316a22c8...
+[info] trying peer 1 for the asset (attempt 1)
+[info] peer list: 1 candidate source(s) for the asset
+[info] peer timed out with the channel NEVER OPEN (peer busy or refusing, or no route: on loopback it is not the route)
+[info] falling back to the coordinator: no peer candidates left
+[info] asset ready d6a3316a22c8... nodes=1995 prims=3006 depth=13

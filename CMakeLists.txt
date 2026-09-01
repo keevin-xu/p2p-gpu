@@ -25,6 +25,16 @@ option(P2PGPU_FUZZ_ONLY   "Build only p2pgpu-protocol and the fuzz harnesses" OF
 # It also made the container arch-locked for no reason: wgpu-native is pinned
 # per platform, so an arm64 build failed on a missing archive it would never
 # have opened.
+# A release wasm build reports an abort as `Aborted(undefined)` — the module
+# calls abort() and the reason is compiled out. That is nearly undebuggable in
+# the field: the browser worker died on a phone and the only evidence was a
+# RuntimeError with no message.
+#
+# OFF by default because assertions cost size and speed in a compute worker.
+# Turn it on to find out WHY, then turn it off again.
+option(P2PGPU_WASM_ASSERTIONS
+       "Browser worker: keep abort messages, stack checks and exception text" OFF)
+
 option(P2PGPU_COORDINATOR_ONLY
        "Build only the coordinator and its deps; skip wgpu-native and the workers" OFF)
 
@@ -529,6 +539,11 @@ else()
     # seam widens to cover the difference (pre-authorized in D-0014).
     # The port must be on BOTH compile and link lines to get headers + JS glue.
     target_compile_options(p2pgpu-worker-core PUBLIC --use-port=emdawnwebgpu)
+    # Exceptions must be enabled on the COMPILE line too, or the landing pads
+    # are never emitted and the link flag alone changes nothing.
+    if(P2PGPU_WASM_ASSERTIONS)
+        target_compile_options(p2pgpu-worker-core PUBLIC -fexceptions)
+    endif()
     target_link_options(worker-browser PRIVATE
         --bind
         --use-port=emdawnwebgpu
@@ -562,7 +577,24 @@ else()
         # class of mismatch D-0032 warned about: the two libdatachannel APIs
         # agree, but their RUNTIME INTEGRATION with the host does not, and only
         # the browser build can tell you.
-        -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8
+        # HEAPU32 TOO, and for the same reason HEAPU8 is here.
+        #
+        # `_rtcCreatePeerConnection` reads the ICE server arrays with
+        # `Module["HEAPU32"]`. Unexported, that is `undefined`, and the failure
+        # surfaces as
+        #     Aborted(Assertion failed: attempt to write non-integer
+        #             (undefined) into integer heap)
+        # from a pthread — with no mention of a heap view, WebRTC, or ICE.
+        #
+        # It only fires when a PeerLink is CONSTRUCTED, which a browser worker
+        # does not do until it is offered a peer. So the browser target passed
+        # every earlier test: it connects, benchmarks, fetches and renders. The
+        # data plane is the one thing it could not do, and the crash looked like
+        # a phone problem rather than a link-flag problem.
+        #
+        # A release build reports this as `Aborted(undefined)`. Rebuild with
+        # -DP2PGPU_WASM_ASSERTIONS=ON to get the message above.
+        -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8,HEAPU32
         # ASYNCIFY yields between dispatches (R4) without blocking. NOTE its
         # tension with step 1.24's -sPROXY_TO_PTHREAD: with the task loop on its
         # own thread, blocking is fine and ASYNCIFY's size/speed cost buys
@@ -572,6 +604,16 @@ else()
         -sEXIT_RUNTIME=0
         -sMODULARIZE=1
         -sEXPORT_NAME=createP2pgpuWorker
+        # Diagnostic build (see the option above). ASSERTIONS=2 keeps the abort
+        # reason; STACK_OVERFLOW_CHECK=2 catches the most common silent cause
+        # of one; DEMANGLE_SUPPORT makes the stack readable.
+        "$<$<BOOL:${P2PGPU_WASM_ASSERTIONS}>:-sASSERTIONS=2>"
+        "$<$<BOOL:${P2PGPU_WASM_ASSERTIONS}>:-sSTACK_OVERFLOW_CHECK=2>"
+        # Catch exceptions so a throw REPORTS ITSELF instead of aborting with
+        # "exception catching is not enabled". Without this the message names
+        # the build setting rather than the error, which says nothing about
+        # what was thrown or from where.
+        "$<$<BOOL:${P2PGPU_WASM_ASSERTIONS}>:-fexceptions>"
 
         # ── Step 1.24: the task loop runs on a Web Worker ────────────────
         #
@@ -624,6 +666,15 @@ else()
     foreach(lib p2pgpu-worker-core p2pgpu-transport p2pgpu-scene p2pgpu-protocol)
         target_compile_options(${lib} PUBLIC -pthread)
     endforeach()
+
+    # See cmake/patch_emdawn_adapterinfo.cmake: the port's adapter-info glue
+    # writes Safari-absent subgroup fields without a fallback, which aborts the
+    # worker on the one call it makes at startup.
+    add_custom_command(TARGET worker-browser POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+                -DJS_FILE=$<TARGET_FILE_DIR:worker-browser>/p2pgpu-worker.js
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_emdawn_adapterinfo.cmake
+        COMMENT "guarding emdawnwebgpu adapter-info writes")
 
 endif()
 

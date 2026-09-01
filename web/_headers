@@ -28,3 +28,16 @@
   Content-Type: application/wasm
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
+  Cache-Control: no-cache, must-revalidate
+
+# ── DO NOT CACHE THE WORKER ─────────────────────────────────────────────────
+# A cached module means the browser runs OLD code after a deploy, and there is
+# nothing on screen to say so. A fix was deployed, verified byte-identical on
+# the server, and the page kept aborting at the same line number for another
+# round — because Safari was still executing the previous build.
+#
+# `no-cache` still revalidates rather than re-downloading 9 MB every load: the
+# browser asks, and gets a 304 when nothing changed. What it cannot do is serve
+# a stale module without checking.
+/*.js
+  Cache-Control: no-cache, must-revalidate

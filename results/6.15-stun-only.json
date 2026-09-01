@@ -1,5 +1,5 @@
 {
-  "workers": 0,
+  "workers": 1,
   "ice_fetches": 1,
   "ice_connected": 0,
   "ice_host": 1,
@@ -10,5 +10,12 @@
   "coordinator_asset_egress": 513408,
   "ice_servers": "(from the deployment)",
   "source": "https://p2pgpu.fly.dev",
-  "adapters": []
+  "adapters": [
+    {
+      "worker_id": 2,
+      "vendor": "",
+      "device": "Apple M4 Pro",
+      "backend": "metal"
+    }
+  ]
 }

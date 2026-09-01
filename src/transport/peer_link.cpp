@@ -9,6 +9,7 @@
 
 #include <rtc/rtc.hpp>
 
+#include <cstdio>
 #include <string>
 #include <utility>
 #include <variant>
@@ -23,7 +24,32 @@ PeerLink::PeerLink(std::vector<std::string> ice_servers) {
     for (const std::string& url : ice_servers) {
         config.iceServers.emplace_back(url);
     }
-    pc_ = std::make_unique<rtc::PeerConnection>(config);
+    // CONSTRUCTION CAN FAIL, AND IT MUST NOT KILL THE WORKER.
+    //
+    // datachannel-wasm throws `std::runtime_error("WebRTC not supported")` when
+    // `RTCPeerConnection` is absent from the global scope. **Safari does not
+    // expose it inside a Worker** — WebKit keeps WebRTC main-thread-only —
+    // and the task loop runs on a pthread, which is a Worker. Chrome does
+    // expose it, so this never appeared in any Chrome testing.
+    //
+    // The browser worker is built without exception catching, so an escaping
+    // throw ABORTS the whole module: a worker that was rendering happily dies
+    // the moment a peer offers it a connection. The data plane is optional by
+    // design — D-0007 makes the coordinator a mandatory fallback — so failing
+    // to build a link is a degraded mode, never a fatal one.
+    //
+    // `pc_` stays null and every method below already tolerates that; callers
+    // see a link that never opens and fall back, which is the same path a
+    // refused or unreachable peer takes.
+    try {
+        pc_ = std::make_unique<rtc::PeerConnection>(config);
+    } catch (const std::exception& e) {
+        // stderr, matching how `Transport` reports without a logger wired in.
+        // Deliberately not silent: a data plane that is unavailable for the
+        // life of the process should say so once.
+        std::fprintf(stderr, "[warn] peer connection unavailable: %s\n", e.what());
+        return;
+    }
 
     // Local description: the offer or the answer, depending on which side we
     // are. Both arrive through the same callback because negotiation is
@@ -91,6 +117,9 @@ void PeerLink::WireChannel(std::shared_ptr<rtc::DataChannel> channel) {
 }
 
 void PeerLink::Offer(const std::string& label) {
+    // pc_ is null when construction failed (see the constructor). Every entry
+    // point tolerates that rather than crashing: the link simply never opens,
+    // which is a state the caller already handles.
     if (!pc_) {
         return;
     }
@@ -100,6 +129,9 @@ void PeerLink::Offer(const std::string& label) {
 }
 
 void PeerLink::AcceptOffer(const std::string& sdp) {
+    // pc_ is null when construction failed (see the constructor). Every entry
+    // point tolerates that rather than crashing: the link simply never opens,
+    // which is a state the caller already handles.
     if (!pc_) {
         return;
     }
@@ -109,6 +141,9 @@ void PeerLink::AcceptOffer(const std::string& sdp) {
 }
 
 void PeerLink::AcceptAnswer(const std::string& sdp) {
+    // pc_ is null when construction failed (see the constructor). Every entry
+    // point tolerates that rather than crashing: the link simply never opens,
+    // which is a state the caller already handles.
     if (!pc_) {
         return;
     }
@@ -117,6 +152,9 @@ void PeerLink::AcceptAnswer(const std::string& sdp) {
 
 void PeerLink::AddRemoteCandidate(const std::string& candidate,
                                   const std::string& mid) {
+    // pc_ is null when construction failed (see the constructor). Every entry
+    // point tolerates that rather than crashing: the link simply never opens,
+    // which is a state the caller already handles.
     if (!pc_) {
         return;
     }

@@ -167,6 +167,31 @@ def main():
 
     log_path = os.path.join(args.out, f"6.15-{args.label}-coordinator.log")
     last = None
+    # EVERY worker seen during the run, merged across polls.
+    #
+    # `last` is the final poll, and a worker that disconnected before Ctrl-C is
+    # simply absent from it — which erased the per-worker ICE state twice, the
+    # second time after it had been added specifically to answer the open
+    # question. A fleet snapshot taken at the end records who was still there,
+    # not who took part.
+    #
+    # Flags are OR-ed because ICE gathers progressively: a later poll with fewer
+    # bits means gathering had not finished, not that a path disappeared.
+    seen = {}
+
+    def absorb(snapshot):
+        for w in snapshot.get("fleet", []):
+            wid = w["worker_id"]
+            prev = seen.get(wid)
+            if prev is None:
+                seen[wid] = dict(w)
+                continue
+            for flag in ("ice_host", "ice_srflx", "ice_relay"):
+                prev[flag] = bool(prev.get(flag)) or bool(w.get(flag))
+            for hi in ("tasks_completed", "ice_gathered"):
+                prev[hi] = max(prev.get(hi) or 0, w.get(hi) or 0)
+            for k in ("adapter_vendor", "adapter_device", "adapter_backend"):
+                prev[k] = w.get(k) or prev.get(k)
 
     if args.url:
         # RECORD-ONLY. The deployment supplies its own --ice-server flags, so
@@ -180,11 +205,17 @@ def main():
             m = metrics(base)
             if m is not None:
                 last = m
+                absorb(m)
+                # Per-worker relay state LIVE, so the run can be judged while it
+                # is happening rather than from a file afterwards.
+                who = " ".join(f"w{w['worker_id']}:"
+                               f"{'H' if w.get('ice_host') else '-'}"
+                               f"{'S' if w.get('ice_srflx') else '-'}"
+                               f"{'R' if w.get('ice_relay') else '-'}"
+                               for w in seen.values())
                 print(f"\r  workers={m['workers']} tasks={m['tasks_by_state'][4]} "
-                      f"ice: attempts={m['ice_fetches']} "
-                      f"connected={m['ice_connected']} "
-                      f"srflx={m['ice_srflx']} relay={m['ice_relay']}   ",
-                      end="", flush=True)
+                      f"attempts={m['ice_fetches']} connected={m['ice_connected']} "
+                      f"| {who}      ", end="", flush=True)
             time.sleep(1.0)
     else:
         with open(log_path, "w") as lf:
@@ -197,11 +228,7 @@ def main():
                     m = metrics(base)
                     if m is not None:
                         last = m
-                        print(f"\r  workers={m['workers']} tasks={m['tasks_by_state'][4]} "
-                              f"ice: attempts={m['ice_fetches']} "
-                              f"connected={m['ice_connected']} "
-                              f"srflx={m['ice_srflx']} relay={m['ice_relay']}   ",
-                              end="", flush=True)
+                        absorb(m)
                     time.sleep(1.0)
             finally:
                 if proc.poll() is None:
@@ -213,10 +240,21 @@ def main():
     if last is None:
         print("\nno metrics collected")
         return 1
-    snap = {k: last[k] for k in ("workers", "ice_fetches", "ice_connected",
-                                 "ice_host", "ice_srflx", "ice_relay",
-                                 "asset_from_peer", "asset_from_coordinator",
-                                 "coordinator_asset_egress")}
+    # THE WHOLE SNAPSHOT, not a curated subset.
+    #
+    # This used to keep nine hand-picked keys plus a trimmed `adapters` list.
+    # Then `ice_relay` was added PER WORKER to answer whether the answering side
+    # had a relay path — the exact question the measurement was stuck on — and
+    # the recorder silently dropped it, because nobody remembered to add it
+    # here too. A whole arm was run and thrown away for that.
+    #
+    # Curating fields means every new metric needs a second, separate edit in a
+    # file nobody thinks to open. Keeping everything costs a few KB and cannot
+    # forget.
+    snap = dict(last)
+    # The merged view REPLACES the final poll's fleet, which lists only whoever
+    # happened to still be connected.
+    snap["fleet"] = list(seen.values())
     # REDACTED BEFORE IT TOUCHES DISK. `results/` is a TRACKED directory, and a
     # TURN URL carries `user:password@`. Writing the raw flags here would commit
     # live relay credentials to git — recoverable from history even after a
@@ -231,12 +269,7 @@ def main():
     snap["ice_servers"] = ([_redact(u) for u in args.ice_server]
                            if args.ice_server else "(from the deployment)")
     snap["source"] = args.url or f"localhost:{args.port}"
-    # Which machines produced this, so the arm is attributable (D-0101).
-    snap["adapters"] = [
-        {"worker_id": w["worker_id"], "vendor": w.get("adapter_vendor", ""),
-         "device": w.get("adapter_device", ""),
-         "backend": w.get("adapter_backend", "")}
-        for w in last.get("fleet", [])]
+    # `fleet` is already in `snap` verbatim, per-worker ICE state included.
     path = os.path.join(args.out, f"6.15-{args.label}.json")
     with open(path, "w") as fh:
         json.dump(snap, fh, indent=2)

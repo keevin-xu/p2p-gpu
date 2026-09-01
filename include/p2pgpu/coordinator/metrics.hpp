@@ -49,6 +49,8 @@ struct WorkerMetrics {
     std::string adapter_vendor;
     std::string adapter_device;
     std::string adapter_backend;
+    /// 1 host, 2 server-reflexive, 4 relay.
+    std::uint32_t ice_gathered = 0;
 
     double ms_to_first_grant = -1.0;
     double ms_to_first_result = -1.0;

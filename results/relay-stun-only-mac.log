@@ -1,3 +1,10 @@
 [info] transport open
 [info] handshake complete; kernels=3 ice_servers=1
-[info] benchmark: 1771.609846 Gops/s
+[info] benchmark: 1755.345785 Gops/s
+[info] peer list: 1 candidate source(s) for the asset
+[info] fetching asset d6a3316a22c8...
+[info] trying peer 1 for the asset (attempt 1)
+[info] peer list: 1 candidate source(s) for the asset
+[info] peer timed out with the channel NEVER OPEN (peer busy or refusing, or no route: on loopback it is not the route)
+[info] falling back to the coordinator: no peer candidates left
+[info] asset ready d6a3316a22c8... nodes=1995 prims=3006 depth=13
