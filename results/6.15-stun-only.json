@@ -1,0 +1,14 @@
+{
+  "workers": 0,
+  "ice_fetches": 1,
+  "ice_connected": 0,
+  "ice_host": 1,
+  "ice_srflx": 1,
+  "ice_relay": 0,
+  "asset_from_peer": 0,
+  "asset_from_coordinator": 2,
+  "coordinator_asset_egress": 513408,
+  "ice_servers": "(from the deployment)",
+  "source": "https://p2pgpu.fly.dev",
+  "adapters": []
+}

@@ -1,0 +1,3 @@
+[info] transport open
+[info] handshake complete; kernels=3 ice_servers=1
+[info] benchmark: 1771.609846 Gops/s

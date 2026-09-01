@@ -112,8 +112,32 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 # was right for the first real-network test — small enough that a failure could
 # not be confused with a timeout — but too small to measure a transport with.)
 #
-# 262144 spp keeps the render alive long enough for two machines to join,
-# fetch, and peer with each other.
+# 8192 spp, NOT 262144. The first attempt at the relay measurement used the
+# larger value and produced nothing: the phone connected and registered a GPU,
+# but never finished a tile, so it never became an advertised holder and the
+# Mac found an empty candidate list. A phone GPU at 262144 spp spends minutes
+# on one tile.
+#
+# What this measurement needs is workers COMPLETING tiles quickly so both hold
+# the asset and can peer. Total render time is irrelevant here — the peering
+# happens in the first few tasks or not at all.
+#
+# THE MARGIN THIS SPENDS, STATED RATHER THAN HIDDEN. The kernel's arithmetic
+# intensity floor is 7143 samples; its normal minimum is 32768, which sits 4.6x
+# above that floor. A total of 8192 makes each tile a single task at **1.15x
+# the floor** — still compute-bound, but with almost none of the usual headroom.
+#
+# That is acceptable HERE and nowhere else: this deployment exists to measure
+# NAT traversal, and the number it produces is a connection ratio, not a
+# throughput or utilization figure. Do not copy this value into a deployment that
+# reports performance.
+#
+# NO --store, DELIBERATELY. Durable job state on the volume meant every
+# redeploy INHERITED the previous run: the second arm of the relay measurement
+# continued the first, reporting identical cumulative counters, and a worker
+# that already held the asset never fetched again — so there was nothing left
+# to measure. Persistence is right for surviving a restart mid-job and wrong
+# for a five-minute experiment that must start from zero.
 #
 # ICE SERVERS ARE NOT LISTED HERE. They come from $P2PGPU_ICE_SERVERS via the
 # entrypoint, because a Cloudflare TURN credential expires and one baked into a
@@ -121,8 +145,7 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["--port", "8080", \
      "--kernel-dir", "/app/kernels", \
      "--manifest", "/app/kernels/manifest.toml", \
-     "--store", "/data/p2pgpu.db", \
      "--seed-render", "/app/scenes/dense.scene", \
      "--render-size", "384x288", \
-     "--render-spp", "262144", \
+     "--render-spp", "8192", \
      "--log-level", "info"]
