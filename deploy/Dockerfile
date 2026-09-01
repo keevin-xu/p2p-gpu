@@ -89,6 +89,7 @@ WORKDIR /app
 COPY --from=builder /src/build/coordinator /app/coordinator
 # WGSL and the manifest are read at runtime and served to workers over HTTP.
 COPY --from=builder /src/kernels/ /app/kernels/
+COPY deploy/entrypoint.sh /app/entrypoint.sh
 COPY scenes/ /app/scenes/
 
 # SQLite lives on a mounted volume; the image itself stays stateless so a
@@ -99,29 +100,29 @@ VOLUME ["/data"]
 USER p2pgpu
 EXPOSE 8080
 
-# No shell form: exec form makes the coordinator PID 1, so a platform SIGTERM
-# reaches it and leases are released cleanly instead of expiring (R8).
-ENTRYPOINT ["/app/coordinator"]
+# The wrapper appends --ice-server flags from $P2PGPU_ICE_SERVERS and then
+# `exec`s the coordinator, so it is still PID 1 and still receives SIGTERM
+# directly. Set the variable with `flyctl secrets set`; leave it unset and the
+# coordinator runs exactly as before.
+ENTRYPOINT ["/app/entrypoint.sh"]
 # A seeded render, so the deployment has work the moment a worker connects.
 #
-# THIS IS THE FIRST REAL-NETWORK TEST OF THE ASSET TRANSPORT. Every Phase 5 and
-# 6 number was measured on loopback, where a coordinator fetch costs nothing;
-# `docs/PENDING.md` lists the cross-machine render as the Phase 5 claim that is
-# still local-only, and cross-machine session 1 never got there (no ICE servers,
-# so the peer path never opened).
+# `dense.scene` for the relay measurement: a 256 KB BVH, big enough that a
+# peer-to-peer transfer is doing visible work. (`default.scene` is ~6 KB, which
+# was right for the first real-network test — small enough that a failure could
+# not be confused with a timeout — but too small to measure a transport with.)
 #
-# `default.scene` rather than `dense.scene` deliberately: 4.8 KB of scene ->
-# a ~6 KB BVH. Small enough that a first run tests whether the transport works
-# at all over real latency and MTU, without a 256 KB transfer confounding a
-# failure with a timeout. The dense scene is the follow-up, not the first shot.
+# 262144 spp keeps the render alive long enough for two machines to join,
+# fetch, and peer with each other.
 #
-# 16384 spp keeps tiles short so grants, results and re-grants cycle visibly
-# rather than the whole render being two long tasks.
+# ICE SERVERS ARE NOT LISTED HERE. They come from $P2PGPU_ICE_SERVERS via the
+# entrypoint, because a Cloudflare TURN credential expires and one baked into a
+# layer would outlive its own validity while still looking configured.
 CMD ["--port", "8080", \
      "--kernel-dir", "/app/kernels", \
      "--manifest", "/app/kernels/manifest.toml", \
      "--store", "/data/p2pgpu.db", \
-     "--seed-render", "/app/scenes/default.scene", \
+     "--seed-render", "/app/scenes/dense.scene", \
      "--render-size", "384x288", \
-     "--render-spp", "16384", \
+     "--render-spp", "262144", \
      "--log-level", "info"]

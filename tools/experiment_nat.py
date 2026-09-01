@@ -49,6 +49,7 @@ import argparse
 import json
 import os
 import signal
+import ssl
 import subprocess
 import sys
 import time
@@ -63,9 +64,20 @@ def stop(_s, _f):
     RUNNING = False
 
 
-def metrics(port):
+def _ctx():
+    # A python.org build on macOS carries no CA bundle and ignores the system
+    # keychain, so HTTPS fails here while curl succeeds on the same URL.
     try:
-        with urllib.request.urlopen(f"http://localhost:{port}/metrics", timeout=5) as r:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return None
+
+
+def metrics(base):
+    try:
+        with urllib.request.urlopen(f"{base}/metrics", timeout=10,
+                                    context=_ctx()) as r:
             return json.load(r)
     except (urllib.error.URLError, TimeoutError, ConnectionError, json.JSONDecodeError):
         return None
@@ -129,6 +141,12 @@ def main():
     ap.add_argument("--ice-server", action="append", default=[],
                     help="repeatable; STUN and/or TURN URLs")
     ap.add_argument("--port", type=int, default=8080)
+    # A DEPLOYED coordinator is the realistic setting for this measurement: it
+    # is reachable from a phone on cellular, which a laptop on the same wifi is
+    # not. With --url the script records rather than launches, and the ICE
+    # servers come from that deployment's own configuration.
+    ap.add_argument("--url", default=None,
+                    help="record a REMOTE coordinator instead of launching one")
     ap.add_argument("--out", default="results")
     args = ap.parse_args()
 
@@ -148,28 +166,49 @@ def main():
               "this is what made cross-machine session 1 unusable.")
 
     log_path = os.path.join(args.out, f"6.15-{args.label}-coordinator.log")
-    with open(log_path, "w") as lf:
-        proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT)
-        print(f"coordinator up on :{args.port}  (arm: {args.label})")
+    last = None
+
+    if args.url:
+        # RECORD-ONLY. The deployment supplies its own --ice-server flags, so
+        # this arm is defined by how the coordinator was deployed, not by what
+        # is typed here — and the snapshot records which, so the two arms
+        # cannot be mixed up afterwards.
+        base = args.url.rstrip("/")
+        print(f"recording {base}  (arm: {args.label})")
         print("join from the OTHER machine now; Ctrl-C when the render is done")
-        last = None
-        try:
-            while RUNNING and proc.poll() is None:
-                m = metrics(args.port)
-                if m is not None:
-                    last = m
-                    print(f"\r  workers={m['workers']} tasks={m['tasks_by_state'][4]} "
-                          f"ice: attempts={m['ice_fetches']} "
-                          f"connected={m['ice_connected']} "
-                          f"srflx={m['ice_srflx']} relay={m['ice_relay']}   ",
-                          end="", flush=True)
-                time.sleep(1.0)
-        finally:
-            if proc.poll() is None:
-                proc.terminate()
-                time.sleep(0.5)
-            if proc.poll() is None:
-                proc.kill()
+        while RUNNING:
+            m = metrics(base)
+            if m is not None:
+                last = m
+                print(f"\r  workers={m['workers']} tasks={m['tasks_by_state'][4]} "
+                      f"ice: attempts={m['ice_fetches']} "
+                      f"connected={m['ice_connected']} "
+                      f"srflx={m['ice_srflx']} relay={m['ice_relay']}   ",
+                      end="", flush=True)
+            time.sleep(1.0)
+    else:
+        with open(log_path, "w") as lf:
+            proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT)
+            print(f"coordinator up on :{args.port}  (arm: {args.label})")
+            print("join from the OTHER machine now; Ctrl-C when the render is done")
+            base = f"http://localhost:{args.port}"
+            try:
+                while RUNNING and proc.poll() is None:
+                    m = metrics(base)
+                    if m is not None:
+                        last = m
+                        print(f"\r  workers={m['workers']} tasks={m['tasks_by_state'][4]} "
+                              f"ice: attempts={m['ice_fetches']} "
+                              f"connected={m['ice_connected']} "
+                              f"srflx={m['ice_srflx']} relay={m['ice_relay']}   ",
+                              end="", flush=True)
+                    time.sleep(1.0)
+            finally:
+                if proc.poll() is None:
+                    proc.terminate()
+                    time.sleep(0.5)
+                if proc.poll() is None:
+                    proc.kill()
 
     if last is None:
         print("\nno metrics collected")
@@ -178,7 +217,20 @@ def main():
                                  "ice_host", "ice_srflx", "ice_relay",
                                  "asset_from_peer", "asset_from_coordinator",
                                  "coordinator_asset_egress")}
-    snap["ice_servers"] = args.ice_server
+    # REDACTED BEFORE IT TOUCHES DISK. `results/` is a TRACKED directory, and a
+    # TURN URL carries `user:password@`. Writing the raw flags here would commit
+    # live relay credentials to git — recoverable from history even after a
+    # later deletion. What the arm needs on record is WHICH KIND of server was
+    # configured, which survives redaction intact.
+    def _redact(url):
+        if "@" not in url:
+            return url                      # a bare stun: URL has no secret
+        scheme, rest = url.split(":", 1)
+        return f"{scheme}:<redacted>@{rest.split('@', 1)[1]}"
+
+    snap["ice_servers"] = ([_redact(u) for u in args.ice_server]
+                           if args.ice_server else "(from the deployment)")
+    snap["source"] = args.url or f"localhost:{args.port}"
     # Which machines produced this, so the arm is attributable (D-0101).
     snap["adapters"] = [
         {"worker_id": w["worker_id"], "vendor": w.get("adapter_vendor", ""),
