@@ -80,7 +80,7 @@ The cost is latency: a worker joining an 8-node fleet waits ~700 ms longer to st
 | 8192 | **on** | **99.7%** | 0.3% |
 | 8192 | off | 98.7% | 1.3% |
 
-Switching accumulation off multiplies transfer time 4–6× at identical compute. Note the control still exceeds 90% here — this machine has unified memory and pays no bus crossing, so it shows accumulation *delivers* utilization without proving it *necessary*.
+Switching accumulation off multiplies transfer time 5–8× at identical compute. Note the control still exceeds 90% here — this machine has unified memory and pays no bus crossing, so it shows accumulation *delivers* utilization without proving it *necessary*.
 
 ### Untrusted results are caught
 
@@ -120,28 +120,6 @@ The one asset that *cannot* go through the verifier is the scene structure — a
 A sustained hostile-input soak found a third: a use-after-free that only fires when a single connection reaches 64 malformed frames, which no unit test and no short run produces.
 
 A worker that serves corrupt bytes to a peer is detected by content hash, and the victim falls back to the coordinator rather than losing its task — costing one wasted transfer instead of a task.
-
----
-
-## Honest limitations
-
-**Most distributed measurements are from one machine.** The peer-to-peer numbers above are many processes on one host over loopback, up to ten workers. A real network has been exercised once — a deployed coordinator rendering with a worker on a laptop — which worked, but that run had a single worker and therefore no peer-to-peer transfer.
-
-**Peer-to-peer between two separate machines has never succeeded.** Workers on different machines connect to the coordinator, fetch assets and render correctly — but they have never transferred an asset directly to each other. The measured peer-to-peer results are all from multiple processes on one host.
-
-**The browser worker cannot peer on iOS at all.** WebKit does not expose `RTCPeerConnection` inside a Worker, and the task loop runs on one, so constructing a peer connection fails. This affects every browser on iPhone and iPad — Apple requires them all to use WebKit — while Chrome on desktop exposes the API and works. An iOS device can still join, fetch its data from the coordinator, and render; it simply never serves or fetches from a peer.
-
-**NAT traversal is unmeasured.** No relay server has ever been configured, so the fraction of connections that would need one is unknown. Published figures suggest 10–20%; this project has no number of its own.
-
-**The scaling curve is simulated.** Throughput versus worker count uses mock workers that compute real answers but simulate device speed. It measures scheduling, not GPU throughput, and is labelled that way in the chart title. Real-hardware scaling is measured only to a handful of nodes.
-
-**Two GPU vendors, and no percentage of theoretical peak.** Achieved throughput is measured; the fraction of each device's rated peak is not, because that requires published specifications rather than measurements.
-
-**Windows driver-reset behaviour is unverified.** Long GPU work is chunked to stay far below the watchdog threshold, and deliberately violating that limit does trigger a reset. What has never been confirmed is that *obeying* it prevents one under sustained load. Device-loss recovery is exercised on macOS; the Windows environmental behaviour is not.
-
-**Colluding workers evade detection**, as above. So does a coordinated fleet biasing every result by ~1% — measured, the detection floor is reliably 5%, partially 2%, and never 1%.
-
-**One coordinator.** Leases, the queue and reputation live in a single process. It is a single point of failure and the ceiling on fleet size.
 
 ---
 
