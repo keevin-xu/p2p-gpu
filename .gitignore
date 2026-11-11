@@ -99,3 +99,5 @@ fuzz/dist/
 # source model is not.
 assets/
 deploy/*.md
+
+portfolio.html
